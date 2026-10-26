@@ -89,7 +89,7 @@ The [release workflow](../.github/workflows/release.yml) builds manylinux_2_28 w
 git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
 ```
 
-The wheel and tarballs ship `licenses/rust-dependencies.md`, the license texts of every Rust crate linked into the binary. The release workflow fails if it no longer matches `Cargo.lock`. After changing dependencies, regenerate it with [cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.2:
+The wheel and tarballs ship `licenses/rust-dependencies.md`, the license texts of every Rust crate linked into the binary. The release workflow fails if it no longer matches `Cargo.lock`. After changing dependencies or the workspace version, regenerate it with [cargo-about](https://github.com/EmbarkStudios/cargo-about) 0.9.2:
 
 ```sh
 cargo fetch --locked
