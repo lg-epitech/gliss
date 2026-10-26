@@ -57,6 +57,21 @@ jobs:
             exit 1
           fi
 
+      # cargo-about sees crate license files only. OpenH264 compiles C/C++ and
+      # assembly whose per-file notices THIRD_PARTY_NOTICES.md reproduces (Cisco,
+      # ARM). Fail on any other holder in sources built for x86_64 or aarch64.
+      - name: Check OpenH264 source notices
+        run: |
+          src="$(dirname "$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name == "openh264-sys2") | .manifest_path')")"
+          unexpected="$(grep -rhoI --exclude-dir=mips --exclude-dir=loongarch --exclude='*.rc' \
+            --exclude=loongson_intrinsics.h --exclude=msa_macros.h --exclude=asmdefs_mmi.h \
+            -E 'Copyright[^*]*' "$src/upstream/codec" | grep -v -e 'Cisco Systems' -e 'ARM Ltd' | sort -u || true)"
+          if [ -n "$unexpected" ]; then
+            echo "$unexpected"
+            echo "::error::OpenH264 sources carry new copyright notices; add them to THIRD_PARTY_NOTICES.md and this check"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
     needs: licenses
