@@ -1,0 +1,62 @@
+{
+  "configuration": {
+    "codec": "avc1.42c015",
+    "codedHeight": 66,
+    "codedWidth": 98,
+    "flip": false,
+    "hardwareAcceleration": "prefer-software",
+    "optimizeForLatency": true,
+    "rotation": 0
+  },
+  "frames": [
+    {
+      "sequence": 10,
+      "inputId": 100,
+      "width": 96,
+      "height": 64,
+      "keyframe": true,
+      "meanRgbError": 2.3202039930555554
+    },
+    {
+      "sequence": 11,
+      "inputId": 101,
+      "width": 96,
+      "height": 64,
+      "keyframe": false,
+      "meanRgbError": 2.115993923611111
+    },
+    {
+      "sequence": 12,
+      "inputId": 102,
+      "width": 96,
+      "height": 64,
+      "keyframe": true,
+      "meanRgbError": 2.880154079861111
+    },
+    {
+      "sequence": 13,
+      "inputId": 103,
+      "width": 98,
+      "height": 66,
+      "keyframe": true,
+      "meanRgbError": 2.8244176458462174
+    }
+  ],
+  "browser": "151.0.7922.34",
+  "browserArgs": [
+    "--disable-gpu",
+    "--disable-gpu-compositing",
+    "--disable-accelerated-video-decode",
+    "--disable-accelerated-video-encode",
+    "--use-gl=disabled",
+    "--disable-dev-shm-usage",
+    "--disable-background-timer-throttling",
+    "--disable-renderer-backgrounding"
+  ],
+  "gpuVideoLines": [
+    "*   Video Decode: Software only. Hardware acceleration disabled",
+    "*   Video Encode: Software only. Hardware acceleration disabled",
+    "*   Accelerated video encode has been disabled, either via blocklist, about:flags or the command line.    Disabled Features: video_encode\n\n",
+    "*   Accelerated video decode has been disabled, either via blocklist, about:flags or the command line.    Disabled Features: video_decode\n\n"
+  ]
+}

@@ -1,0 +1,75 @@
+# Development
+
+Run these commands from the repository root on Linux. The release toolchain is Rust 1.98.0 with rustfmt and Clippy, Node.js 24.10.0 with npm, and Python 3.14. Keep Cargo.lock and package-lock.json in place.
+
+Install a C/C++ compiler, linker, make and NASM. The workspace builds Cisco OpenH264 from its bundled source; it does not need an installed FFmpeg or OpenH264 library. CMake and pkg-config are useful for other native toolchains but are not dependencies of the current locked workspace. On Debian or Ubuntu, the native build tools are available as `build-essential nasm`; Python virtual environments require the matching Python venv package.
+
+```sh
+rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+rustup override set 1.98.0
+python3.14 -m venv .venv
+.venv/bin/python -m pip install -r integration/distribox/prototype/requirements.txt
+npm ci
+npx playwright install --with-deps chromium
+```
+
+Playwright's `--with-deps` installs Chromium's Linux system dependencies and can require administrator access. The repository pins Playwright and uses its installed Chromium by default. Set `CHROMIUM_PATH` only to select an installed Chromium explicitly. Browser tests use the shared [CPU browser flags](../tests/helpers.mjs), which disable GPU rendering, compositing and hardware video encoding and decoding.
+
+## Build and check
+
+Run builds and suites sequentially. Cargo compilation is limited to two jobs, and the repository configuration defaults Rust tests to two threads.
+
+```sh
+cargo fmt --all -- --check
+cargo test --locked --workspace -j 2
+cargo clippy --locked --workspace --all-targets -j 2 -- -D warnings
+cargo build --locked --release --workspace -j 2
+export GLISS_BINARY="$PWD/target/release/gliss-server"
+npm test
+npm run test:vendor
+```
+
+`GLISS_BINARY` selects the freshly built executable. The public browser helper otherwise uses `target/release/gliss-server` in this checkout. The Linux native-FD test uses an owned mock RFB peer and requires Python, `/proc` and pidfds; it needs no prepared VM. Codec and tile interoperability fixtures are retained under [test-support](../test-support/).
+
+`npm test` runs the portable `tests/*.test.mjs` suite and the bounded inflater contracts serially. The suite needs no VM; it does not cover real QEMU or D-Bus guest integration. `test:vendor` runs the inflater contracts separately, including malformed-input and provenance checks.
+
+## Reference gateway
+
+The adapter unit tests require no native worker or browser:
+
+```sh
+.venv/bin/python -B -m unittest discover -s tests/integration-adapter -v
+.venv/bin/python -B -m unittest \
+  integration.distribox.prototype.tests.test_codec_presets \
+  integration.distribox.prototype.tests.test_gateway.SchemaTests -v
+node --test integration/distribox/prototype/tests/viewer-media.test.mjs
+```
+
+After the release build, run the owned-peer integration cases sequentially:
+
+```sh
+export GLISS_BINARY="$PWD/target/release/gliss-server"
+export GLISS_PROTOTYPE_PYTHON="$PWD/.venv/bin/python"
+.venv/bin/python -B -m unittest discover -s integration/distribox/prototype/tests -v
+node --test --test-concurrency=1 integration/distribox/prototype/tests/browser.test.mjs
+node --test --test-concurrency=1 integration/distribox/prototype/tests/browser-glh4.test.mjs
+```
+
+Without `GLISS_BINARY`, some Python native cases and the lossless browser case skip; those skips do not establish integration correctness. The GLH4 browser case fails without the explicit executable. These tests use fresh mock RFB peers, not real VM attachment. See the [prototype guide](../integration/distribox/prototype/README.md) for the precise coverage.
+
+## Benchmarks
+
+The verifier recomputes the published terminal table and exclusion counts from the retained measurement extract. It does not rerun the historical experiments:
+
+```sh
+python3.14 -B benchmarks/verify.py
+```
+
+The component benchmark generates deterministic synthetic frames and checks decoded pixels while measuring codec CPU time and bytes. It replaces the selected output file if it exists:
+
+```sh
+cargo run --locked --release -j 2 -p gliss-codec --bin codec-bench -- \
+  --repetitions 3 --output output.json
+```
+
+Its output is a local component measurement, not a live desktop, browser latency or network comparison. See [benchmarks](benchmarks.md) for the published results and their limits.

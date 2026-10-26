@@ -1,0 +1,26 @@
+{
+  "version": "0.8.3",
+  "registry": "https://registry.npmjs.org/fflate/0.8.3",
+  "source": "https://github.com/101arrowz/fflate/tree/v0.8.3",
+  "tarball": "https://registry.npmjs.org/fflate/-/fflate-0.8.3.tgz",
+  "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==",
+  "files": {
+    "bench/flush-batch/vendor/esm/browser.js": {
+      "bytes": 90922,
+      "sha256": "b7ca4450b19559a1d50eb381adcee94b82449674be4cd17789d9beba7e6122a1"
+    },
+    "bench/flush-batch/vendor/LICENSE": {
+      "bytes": 1069,
+      "sha256": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551"
+    },
+    "bench/flush-batch/vendor/package.json": {
+      "bytes": 3543,
+      "sha256": "5922d8150b307bc0e4e441491c779c45379e9913d348848fca8d5cf02db4d134"
+    },
+    "bench/flush-batch/vendor/index.ts": {
+      "bytes": 121061,
+      "sha256": "74515f941b5e06fa4df0ceedb0e68c0878a090a277264e907574b8717500d43b"
+    }
+  },
+  "note": "Vendored unmodified official package ESM and license; no project package dependency changed."
+}

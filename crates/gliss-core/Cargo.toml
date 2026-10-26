@@ -1,0 +1,9 @@
+[package]
+name = "gliss-core"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

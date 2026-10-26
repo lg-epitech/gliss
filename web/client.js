@@ -1,0 +1,181 @@
+import { Decoder } from './decoder.js';
+import { VideoDecoderAdapter } from './video-decoder.js';
+import { decodeProbe } from './probe.js';
+
+const keysyms = {Backspace:0xff08,Tab:0xff09,Enter:0xff0d,Escape:0xff1b,Delete:0xffff,Home:0xff50,End:0xff57,PageUp:0xff55,PageDown:0xff56,ArrowLeft:0xff51,ArrowUp:0xff52,ArrowRight:0xff53,ArrowDown:0xff54,Insert:0xff63,Shift:0xffe1,Control:0xffe3,Alt:0xffe9,Meta:0xffeb,CapsLock:0xffe5,NumLock:0xff7f,ScrollLock:0xff14,PrintScreen:0xff61,Pause:0xff13,ContextMenu:0xff67};
+for(let n=1;n<=24;n++)keysyms[`F${n}`]=0xffbd+n;
+
+export class GlissClient {
+  constructor(canvas, onStatus=()=>{}, onEvent=()=>{}) {
+    this.canvas=canvas; this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new Decoder(); this.onStatus=onStatus; this.onEvent=onEvent;
+    this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
+    this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
+    this.pendingInputs=new Map(); this.pixelInputs=new Map();
+    this.renderStrategy='full';this.codec=null;
+    this.bindInput();
+  }
+  async connect() {
+    this.disconnect(); this.decoder=new Decoder(); this.chain=Promise.resolve();
+    let decoder=this.decoder;const epoch=++this.epoch;
+    let socket;
+    if(location.pathname==='/datagram'){
+      try{
+        const {openDatagramSocket}=await import('./tile-connect.js');
+        if(epoch!==this.epoch)return;
+        socket=await openDatagramSocket({isCurrent:()=>epoch===this.epoch,canvas:this.canvas,onPaint:batch=>this.recordTilePaint(batch,epoch)});
+        if(!socket)return;
+        if(epoch!==this.epoch){socket.close();return;}
+        this.tileMedia=socket.tileMedia??null;
+      }catch(error){if(epoch===this.epoch)this.onStatus(`Datagram connection failed: ${error.message}`);return;}
+    }else socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
+    this.socket=socket; socket.binaryType='arraybuffer';
+    socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
+    socket.onclose=()=>{
+      if(epoch!==this.epoch)return;
+      ++this.epoch;decoder.close?.();this.keys.clear();this.buttons=0;
+      this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
+    };
+    socket.onerror=()=>{if(epoch===this.epoch)this.onStatus('Connection failed');};
+    socket.onmessage=event=>{if(epoch!==this.epoch)return;this.chain=this.chain.then(async()=>{
+      if(epoch!==this.epoch)return;
+      if(typeof event.data==='string'){
+        const message=JSON.parse(event.data);
+        if(message.type==='hello'){
+          this.codec=message.codec;
+          if(message.codec==='h264'){decoder=new VideoDecoderAdapter({timeoutMs:socket.predictiveVideo===true?250:5000,configureTimeoutMs:socket.predictiveVideo===true?250:null});this.decoder=decoder;}
+          else if(message.codec==='hybrid'){
+            // Negotiate before loading optional media modules, leaving room for
+            // the WebSocket on bounded HTTP/1 connection relays.
+            const {HybridDecoder}=await import('./hybrid-decoder.js');
+            if(epoch!==this.epoch)return;
+            decoder=new HybridDecoder();this.decoder=decoder;
+          }else if(message.codec==='hybrid-grid'){
+            const {HybridGridDecoder}=await import('./hybrid-grid-decoder.js');
+            if(epoch!==this.epoch)return;
+            decoder=new HybridGridDecoder();this.decoder=decoder;
+          }else if(message.codec==='hybrid-continuity'){
+            const {HybridContinuityDecoder}=await import('./hybrid-continuity-decoder.js');
+            if(epoch!==this.epoch)return;
+            decoder=new HybridContinuityDecoder();this.decoder=decoder;
+          }
+        }
+        this.onEvent(message);return;
+      }
+      const started=performance.now();
+      try {
+        socket.beginVideoDecode?.(event.data,decoder);
+        const frame=await decoder.decode(event.data);
+        if(epoch!==this.epoch){frame.videoFrame?.close();return;}
+        const decodeMs=performance.now()-started;
+        this.metrics.decodeMs.push(decodeMs);
+        if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
+        await new Promise(resolve=>requestAnimationFrame(resolve));
+        if(epoch!==this.epoch){frame.videoFrame?.close();return;}
+        const paintStarted=performance.now();
+        if(socket.completeVideoDecode && !socket.completeVideoDecode(frame.sequence,true)){
+          frame.videoFrame?.close();return;
+        }
+        if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
+        if(frame.videoFrame){try{this.ctx.drawImage(frame.videoFrame,0,0);}finally{frame.videoFrame.close();}}
+        else if(this.renderStrategy==='damage'){
+          const area=frame.damage;
+          if(area)this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0,area.x,area.y,area.width,area.height);
+        }else this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0);
+        // This is CPU submission + requestAnimationFrame, not physical photon presentation.
+        const presented=performance.now();
+        this.presentationState={codec:this.codec,sequence:frame.sequence,width:frame.width,height:frame.height,presentedAtMs:presented,wholeFrame:true};
+        (this.metrics.paintMs??=[]).push(presented-paintStarted);
+        this.metrics.frames++;this.metrics.bytes+=frame.bytes;this.metrics.presentTimes.push(presented);
+        const inputTime=this.pendingInputs.get(frame.inputId);
+        if(inputTime!==undefined)this.metrics.forwardedInputAgeMs.push(presented-inputTime);
+        for(const id of this.pendingInputs.keys())if(id<=frame.inputId)this.pendingInputs.delete(id);
+        const echo=this.pixelInputs.size?this.readProbe():null;
+        const pixelTime=this.pixelInputs.get(echo);
+        if(pixelTime!==undefined){this.metrics.pixelEchoLatencyMs.push(presented-pixelTime);(this.metrics.pixelEchoEvents??=[]).push({id:echo,latencyMs:presented-pixelTime,presentedAtMs:presented});this.pixelInputs.delete(echo);}
+        for(const array of [this.metrics.decodeMs,this.metrics.presentTimes,this.metrics.forwardedInputAgeMs,this.metrics.pixelEchoLatencyMs,this.metrics.pixelEchoEvents??[],this.metrics.paintMs??[]])if(array.length>10000)array.splice(0,array.length-10000);
+        socket.send(JSON.stringify({type:'ack',sequence:frame.sequence}));
+        this.onEvent({type:'frame',frame,decodeMs});
+      }catch(error){if(epoch!==this.epoch)return;this.metrics.errors++;decoder.reset();this.onStatus(`Display recovery: ${error.message}`);if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resync'}));}
+    }).catch(error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}});};
+  }
+  recordTilePaint(batch,epoch){
+    if(epoch!==this.epoch)return;
+    const presented=batch.presented;this.presentationState={codec:this.codec,epoch:batch.epoch,width:batch.width,height:batch.height,presentedAtMs:presented,wholeFrame:false,tiles:batch.tiles};this.metrics.frames++;this.metrics.bytes=this.socket?.transportStats?.mediaBytes??this.metrics.bytes;
+    this.metrics.decodeMs.push(batch.decodeMs);this.metrics.presentTimes.push(presented);(this.metrics.paintMs??=[]).push(batch.paintMs);
+    this.metrics.tileMedia={...this.tileMedia?.painter.snapshot(),unit:'Actual partial Canvas paint batches; not full-frame FPS.',epoch:batch.epoch};
+    const echo=this.pixelInputs.size?this.readProbe():null,pixelTime=this.pixelInputs.get(echo);
+    if(pixelTime!==undefined){this.metrics.pixelEchoLatencyMs.push(presented-pixelTime);this.metrics.pixelEchoEvents.push({id:echo,latencyMs:presented-pixelTime,presentedAtMs:presented});this.pixelInputs.delete(echo);}
+    for(const array of[this.metrics.decodeMs,this.metrics.presentTimes,this.metrics.paintMs,this.metrics.pixelEchoLatencyMs,this.metrics.pixelEchoEvents])if(array.length>10000)array.splice(0,array.length-10000);
+    // Tile headers have no input ID. Forwarded-input age stays unassociated;
+    // input-response measurement uses the actual painted probe pixels.
+    this.onEvent({type:'frame',frame:{width:batch.width,height:batch.height,epoch:batch.epoch,partial:true,tiles:batch.tiles,bytes:batch.bytes},decodeMs:batch.decodeMs});
+  }
+  send(input,{pixelEcho=false}={}) {
+    if(this.socket?.readyState!==WebSocket.OPEN)return 0;
+    const id=this.inputId=(this.inputId+1)>>>0;
+    if(this.pendingInputs.size>1024)this.pendingInputs.clear();
+    this.pendingInputs.set(id,performance.now());
+    if(this.pixelInputs.size>1024)this.pixelInputs.clear();
+    if(pixelEcho)this.pixelInputs.set(id&0xffffff,performance.now());
+    this.socket.send(JSON.stringify({...input,id}));
+    if(input.type==='pointer'){this.point={x:input.x,y:input.y};this.buttons=input.buttons&7;}
+    return id;
+  }
+  readProbe(){return decodeProbe((x,y)=>this.ctx.getImageData(x,y,1,1).data);}
+  release() {
+    for(const keysym of this.keys.values())this.send({type:'key',keysym,down:false});
+    this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
+    if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
+  }
+  disconnect(){this.release();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  bindInput(){
+    const canvas=this.canvas;
+    const coordinates=e=>{const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-r.left)*canvas.width/r.width))),y:Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-r.top)*canvas.height/r.height)))};};
+    const button=e=>[1,4,2][e.button]||0;
+    canvas.addEventListener('pointerdown',e=>{e.preventDefault();canvas.focus();canvas.setPointerCapture(e.pointerId);this.point=coordinates(e);this.buttons|=button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});});
+    canvas.addEventListener('pointerup',e=>{e.preventDefault();this.point=coordinates(e);this.buttons&=~button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});});
+    canvas.addEventListener('pointercancel',()=>this.release());
+    let motion=null,scheduled=false;
+    canvas.addEventListener('pointermove',e=>{motion=coordinates(e);if(!scheduled){scheduled=true;requestAnimationFrame(()=>{scheduled=false;if(motion){this.point=motion;motion=null;this.send({type:'pointer',...this.point,buttons:this.buttons});}});}});
+    canvas.addEventListener('contextmenu',e=>e.preventDefault());
+    canvas.addEventListener('wheel',e=>{e.preventDefault();this.point=coordinates(e);const mask=e.deltaY?e.deltaY<0?8:16:e.deltaX<0?32:64;this.send({type:'pointer',...this.point,buttons:this.buttons|mask});this.send({type:'pointer',...this.point,buttons:this.buttons});},{passive:false});
+    canvas.addEventListener('keydown',e=>{e.preventDefault();let symbol=keysyms[e.key];if(e.location===2&&symbol>=0xffe1&&symbol<=0xffeb)symbol++;if(symbol===undefined&&[...e.key].length===1){const code=e.key.codePointAt(0);symbol=code<=255?code:0x01000000|code;}symbol=this.keys.get(e.code)??symbol;if(symbol!==undefined){this.keys.set(e.code,symbol);this.send({type:'key',keysym:symbol,down:true});}});
+    canvas.addEventListener('keyup',e=>{e.preventDefault();const symbol=this.keys.get(e.code);if(symbol!==undefined){this.send({type:'key',keysym:symbol,down:false});this.keys.delete(e.code);}});
+    canvas.addEventListener('blur',()=>this.release());
+    window.addEventListener('blur',()=>this.release());
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.release();});
+  }
+}
+
+const $=id=>document.getElementById(id);
+let cliptext='';let sourceType='';
+const client=new GlissClient($('screen'),text=>$('status').textContent=text,event=>{
+  if(event.type==='hello')sourceType=event.source;
+  if(event.type==='frame'){
+    $('resolution').textContent=`${event.frame.width} × ${event.frame.height}`;
+    $('traffic').textContent=`${(client.metrics.bytes/1048576).toFixed(2)} MiB received`;
+    const ts=client.metrics.presentTimes;const tail=ts.slice(-60);const fps=tail.length>1?(tail.length-1)*1000/(tail.at(-1)-tail[0]):0;
+    $('rate').textContent=`${fps.toFixed(1)} updates/s`;
+    $('decode').textContent=`Decode ${event.decodeMs.toFixed(1)} ms`;
+  }
+  if(event.type==='clipboard'){cliptext=event.text;$('cliptext').value=cliptext;}
+  if(event.type==='cursor'){
+    if(!event.width||!event.height){$('screen').style.cursor='none';return;}
+    if(event.width<=128&&event.height<=128&&event.pixels.length===event.width*event.height*4){const c=document.createElement('canvas');c.width=event.width;c.height=event.height;c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(event.pixels),c.width,c.height),0,0);$('screen').style.cursor=`url(${c.toDataURL()}) ${event.hotspot_x} ${event.hotspot_y}, default`;}
+  }
+  if(event.type==='error'||event.type==='input_error')$('status').textContent=event.message;
+  if(event.type==='resize_result'&&event.status!==0)$('status').textContent='The VM declined the desktop size change.';
+  if(event.type==='display_state')$('status').textContent=event.available?'Connected':'The VM display is temporarily unavailable.';
+});
+window.gliss=client;
+window.glissSource=()=>sourceType;
+
+$('login').addEventListener('submit',async e=>{
+  e.preventDefault();$('error').textContent='';
+  try{const response=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:$('token').value})});if(!response.ok)throw new Error(response.status===429?'Too many attempts. Try again in a minute.':'The access key was rejected.');$('token').value='';$('login').hidden=true;$('desktop').style.display='block';for(const id of ['clipboard','fit','fullscreen','disconnect'])$(id).hidden=false;client.connect();}catch(error){$('error').textContent=error.message;}
+});
+$('disconnect').onclick=async()=>{client.disconnect();await fetch('/api/session',{method:'DELETE'});$('desktop').style.display='none';$('login').hidden=false;for(const id of ['clipboard','fit','fullscreen','disconnect'])$(id).hidden=true;};
+$('clipboard').onclick=()=>{$('cliptext').value=cliptext;$('clipdialog').showModal();};
+$('sendclip').onclick=()=>{client.send({type:'clipboard',text:$('cliptext').value});$('clipdialog').close();};
+$('fit').onclick=()=>{const box=$('viewport').getBoundingClientRect();let width=Math.max(320,Math.min(client.codec==='h264'||client.codec?.startsWith('glt2-')?3840:4096,Math.round(box.width-2))),height=Math.max(200,Math.min(2160,Math.round(window.innerHeight-box.top-80)));if(client.codec==='h264'){width-=width%2;height-=height%2;}client.send({type:'resize',width,height});};
+$('fullscreen').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();else $('viewport').requestFullscreen();};

@@ -1,0 +1,88 @@
+name: CPU CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_TERM_COLOR: always
+      RUST_TEST_THREADS: "1"
+      GLISS_BINARY: ${{ github.workspace }}/target/release/gliss-server
+    steps:
+      # Release provenance: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
+
+      # Release provenance: https://github.com/actions/setup-node/releases/tag/v6.0.0
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "24.10.0"
+          package-manager-cache: false
+
+      # Release provenance: https://github.com/actions/setup-python/releases/tag/v6.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
+        with:
+          python-version: "3.14.0"
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y nasm
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+      - name: Test Rust
+        run: cargo test --workspace --all-targets --locked -j 2 -- --test-threads=1
+
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets --locked -j 2 -- -D warnings
+
+      - name: Build the release binaries
+        run: cargo build --release --workspace --locked -j 2
+
+      - name: Install the pinned browser test dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      # The portable runner uses CPU browser flags and excludes prepared-VM tests.
+      - name: Test the browser and codecs
+        run: npm test
+
+      - name: Install the gateway test dependency
+        run: python -m pip install -r integration/distribox/prototype/requirements.txt
+
+      - name: Test the integration adapter
+        run: python -B -m unittest discover -s tests/integration-adapter -v
+
+      # Native gateway tests create their own loopback RFB peers; no VM is used.
+      - name: Test the scoped gateway
+        run: python -B -m unittest discover -s integration/distribox/prototype/tests -v
+
+      - name: Verify published benchmark arithmetic
+        run: python -B benchmarks/verify.py
+
+      - name: Test gateway rendering and browser interactions
+        run: |
+          node --test integration/distribox/prototype/tests/viewer-media.test.mjs
+          node --test --test-concurrency=1 integration/distribox/prototype/tests/browser.test.mjs
+          node --test --test-concurrency=1 integration/distribox/prototype/tests/browser-glh4.test.mjs

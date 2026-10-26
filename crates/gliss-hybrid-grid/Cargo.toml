@@ -1,0 +1,17 @@
+[package]
+name = "gliss-hybrid-grid"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gliss-core = { path = "../gliss-core" }
+gliss-codec = { path = "../gliss-codec" }
+gliss-video = { path = "../gliss-video" }
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+serde_json.workspace = true
+gliss-hybrid = { path = "../gliss-hybrid" }
+sha2 = "0.10"
+libc = "0.2"

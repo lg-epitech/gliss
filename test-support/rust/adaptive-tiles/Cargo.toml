@@ -1,0 +1,25 @@
+[package]
+name = "gliss-adaptive-tiles-experiment"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+gliss-independent-tiles-experiment = { path = "../independent-tiles" }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+gliss-core = { path = "../../../crates/gliss-core" }
+gliss-codec = { path = "../../../crates/gliss-codec" }
+gliss-video = { path = "../../../crates/gliss-video" }
+libc = "0.2"
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+

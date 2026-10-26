@@ -1,0 +1,17 @@
+[package]
+name = "gliss-tiles"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gliss-core = { path = "../gliss-core" }
+serde.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+gliss-adaptive-tiles-experiment = { path = "../../test-support/rust/adaptive-tiles" }
+serde_json.workspace = true
+sha2 = "0.10"

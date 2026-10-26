@@ -1,0 +1,17 @@
+[package]
+name = "gliss-hybrid"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gliss-core.workspace = true
+gliss-codec.workspace = true
+gliss-video.workspace = true
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+serde_json.workspace = true
+libc = "0.2"
+sha2 = "0.10"
+

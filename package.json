@@ -1,0 +1,10 @@
+{
+  "name": "gliss-browser-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/test-browser.mjs",
+    "test:vendor": "node --test --test-concurrency=1 third_party/fflate/inflate.test.mjs"
+  },
+  "devDependencies": { "playwright": "1.61.1" }
+}

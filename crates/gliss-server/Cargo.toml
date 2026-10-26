@@ -1,0 +1,38 @@
+[package]
+name = "gliss-server"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gliss-core.workspace = true
+gliss-rfb.workspace = true
+gliss-codec.workspace = true
+gliss-video.workspace = true
+gliss-tiles = { path = "../gliss-tiles" }
+flate2.workspace = true
+gliss-dbus.workspace = true
+gliss-hybrid.workspace = true
+gliss-hybrid-grid.workspace = true
+gliss-hybrid-continuity = { path = "../gliss-hybrid-continuity" }
+libc = "0.2"
+socket2 = { version = "0.6", features = ["all"] }
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+hmac = "0.12"
+sha2 = "0.10"
+subtle = "2"
+rand = "0.9"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wtransport = { version = "0.7.2", features = ["quinn"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

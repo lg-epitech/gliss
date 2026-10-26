@@ -1,0 +1,66 @@
+{
+  "schema": "gliss-production-fflate-provenance-v1",
+  "upstream": {
+    "package": "fflate",
+    "version": "0.8.3",
+    "source": "https://github.com/101arrowz/fflate/tree/v0.8.3",
+    "esm_sha256": "b7ca4450b19559a1d50eb381adcee94b82449674be4cd17789d9beba7e6122a1",
+    "license": "MIT",
+    "license_path": "third_party/fflate/vendor/LICENSE",
+    "license_sha256": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551",
+    "provenance_path": "third_party/fflate/vendor/provenance.json",
+    "provenance_sha256": "9c1266704d24411fcc7454ecff164e7c3bffad7da7ff97fda8e8b1c7203c495b",
+    "attribution": "The production inflater is a guarded fork, not unmodified upstream. Retain upstream copyright/license and the exact reconstruction recipe.",
+    "recorded_paths_scope": "Paths inside the unchanged upstream provenance receipt refer to an earlier repository layout; portable copies retain the same vendor-relative layout under third_party/fflate."
+  },
+  "classification": "Guarded fixed-output research fork. Core copied byte-for-byte from the sealed CPU component experiment; no package or remote runtime import.",
+  "pinned_sources": {
+    "guarded_core": {
+      "path": "third_party/fflate/fflate-bounded-core.mjs",
+      "sha256": "74be8eb9e285e0684462aceba37198275f5f4fe0d65b4b4407334c589e74a1e1"
+    },
+    "wrapper_source": {
+      "path": "third_party/fflate/inflate.mjs",
+      "sha256": "5cbe90657ac2c6f9e9584975d8452217eeba6b4f20a0d75a34fafa0403cda686"
+    },
+    "patch_recipe": {
+      "path": "third_party/fflate/fflate-patches.json",
+      "sha256": "1568afb52abcc112f9302db21eac32a3da8eea03a5a9784bb08fefc66b8b752a"
+    },
+    "safety_suite": {
+      "path": "third_party/fflate/inflate.test.mjs",
+      "sha256": "626cf6b7f7a17cc7bd1b83820501097007fd76a49cbe87e8fe16b9477fd057f9",
+      "tests": 16
+    }
+  },
+  "production": {
+    "web/tile-inflate.js": {
+      "bytes": 1069,
+      "sha256": "cb3c1e52cf97fd3f6a92ae0ebbcec92a6aef52c67ee088434cf9622cbcce78d6"
+    },
+    "web/vendor/fflate-bounded-core.js": {
+      "bytes": 93336,
+      "sha256": "74be8eb9e285e0684462aceba37198275f5f4fe0d65b4b4407334c589e74a1e1"
+    },
+    "web/vendor/fflate-LICENSE": {
+      "bytes": 1069,
+      "sha256": "0a1df3a083d0c010560aa342e87959c8c1070e6fd54545741f083f22d0c8b551"
+    }
+  },
+  "wrapper_extraction": {
+    "prefix": "Production comment and production-local core import only.",
+    "ranges": [
+      [
+        "const require=",
+        "export function combineAdler"
+      ],
+      [
+        "const footer=",
+        "export async function boundedStream"
+      ]
+    ],
+    "method": "Concatenate exact original source substrings with exclusive end markers; this includes require, BASE, adler32, footer and boundedFflate only.",
+    "source_identity_test": "tests/tile-inflate.test.mjs"
+  },
+  "contract": "One synchronous CPU inflate; Uint8Array body8..4096, exact output1..4096, fixed output allocation, exact raw-deflate end extent and Adler32, CINFO-declared maximum history, strict default-zlib tree grammar/reserved-symbol and available-distance checks. No automatic fallback."
+}

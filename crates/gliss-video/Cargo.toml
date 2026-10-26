@@ -1,0 +1,11 @@
+[package]
+name = "gliss-video"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+gliss-core.workspace = true
+openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
