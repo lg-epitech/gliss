@@ -3,6 +3,7 @@
 //! Wire formats follow [RFC 6143](https://www.rfc-editor.org/rfc/rfc6143.html).
 //! Screen resizing follows the [RFB extension specification](https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst).
 
+mod clipboard;
 mod teardown;
 pub mod trace;
 #[cfg(test)]
@@ -34,7 +35,7 @@ use tokio::{
 };
 
 const PIXEL_FORMAT: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0];
-const ENCODINGS: [i32; 5] = [0, 1, -239, -223, -308];
+const ENCODINGS: [i32; 6] = [0, 1, -239, -223, -308, clipboard::ENCODING];
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,9 +88,15 @@ pub struct RfbWriter {
     traced_commands: u64,
 }
 
+enum WriteMessage {
+    Bytes(Vec<u8>),
+    ClipboardInput(String),
+    ClipboardRemote { extended: bool, bytes: Vec<u8> },
+}
+
 struct WriteCommand {
-    bytes: Vec<u8>,
-    completed: oneshot::Sender<Result<()>>,
+    message: WriteMessage,
+    completed: oneshot::Sender<Result<Option<String>>>,
     ordinal: u64,
     input_id: Option<u32>,
     capture_request: bool,
@@ -260,6 +267,8 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let layout = Arc::new(Mutex::new(None));
+    let (commands, command_rx) = mpsc::channel(8);
+    let read_commands = commands.clone();
     let (event_tx, events) = mpsc::channel(2);
     let read_layout = layout.clone();
     let (drain_tx, mut drain_rx) = mpsc::channel::<teardown::DrainRequest>(1);
@@ -276,7 +285,14 @@ where
         let outcome = {
             // Cancellation drops the decode future but retains its borrowed
             // stream for the terminal drain of that exact same owned half.
-            let decode = decode(&mut read, frame, read_layout, &event_tx, &read_trace);
+            let decode = decode(
+                &mut read,
+                frame,
+                read_layout,
+                &read_commands,
+                &event_tx,
+                &read_trace,
+            );
             tokio::pin!(decode);
             tokio::select! {
                 biased;
@@ -300,7 +316,6 @@ where
         }
     });
     let drain = ReaderDrainControl::new(drain_tx, read_task.abort_handle());
-    let (commands, command_rx) = mpsc::channel(8);
     let write_trace = trace.clone();
     let write_task = tokio::spawn(async move {
         let _trace_actor = write_actor;
@@ -458,10 +473,10 @@ impl RfbWriter {
         let mut bytes = vec![3, u8::from(incremental), 0, 0, 0, 0];
         bytes.extend_from_slice(&width.to_be_bytes());
         bytes.extend_from_slice(&height.to_be_bytes());
-        self.send(bytes, None, true).await
+        self.send(WriteMessage::Bytes(bytes), None, true).await
     }
 
-    /// Base RFB clipboard text is Latin-1; unsupported characters return an error.
+    /// Clipboard text uses UTF-8 when negotiated, otherwise the base Latin-1 format.
     pub async fn send_input(&mut self, input: &Input) -> Result<()> {
         let bytes = match input {
             Input::Key { keysym, down, .. } => {
@@ -480,18 +495,13 @@ impl RfbWriter {
                     text.len() <= MAX_CLIPBOARD,
                     "clipboard exceeds {MAX_CLIPBOARD} bytes"
                 );
-                let mut encoded = Vec::with_capacity(text.len());
-                for character in text.chars() {
-                    ensure!(
-                        u32::from(character) <= 255,
-                        "base RFB clipboard supports only Latin-1 text"
-                    );
-                    encoded.push(character as u8);
-                }
-                let mut bytes = vec![6, 0, 0, 0];
-                bytes.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
-                bytes.extend_from_slice(&encoded);
-                bytes
+                return self
+                    .send(
+                        WriteMessage::ClipboardInput(text.clone()),
+                        Some(input.id()),
+                        false,
+                    )
+                    .await;
             }
             Input::Resize { width, height, .. } => {
                 dimensions(*width, *height)?;
@@ -512,12 +522,13 @@ impl RfbWriter {
                 bytes
             }
         };
-        self.send(bytes, Some(input.id()), false).await
+        self.send(WriteMessage::Bytes(bytes), Some(input.id()), false)
+            .await
     }
 
     async fn send(
         &mut self,
-        bytes: Vec<u8>,
+        message: WriteMessage,
         input_id: Option<u32>,
         capture_request: bool,
     ) -> Result<()> {
@@ -555,7 +566,7 @@ impl RfbWriter {
         let sent = self
             .commands
             .send(WriteCommand {
-                bytes,
+                message,
                 completed,
                 ordinal,
                 input_id,
@@ -568,7 +579,7 @@ impl RfbWriter {
             trace::Outcome::Rejected
         });
         sent.context("RFB writer closed")?;
-        result.await.context("RFB writer closed")?
+        result.await.context("RFB writer closed")?.map(|_| ())
     }
 }
 
@@ -577,7 +588,14 @@ async fn write_messages<W: AsyncWrite + Unpin>(
     mut commands: mpsc::Receiver<WriteCommand>,
     trace: trace::Sink,
 ) {
+    let mut clipboard = clipboard::Clipboard::default();
     while let Some(command) = commands.recv().await {
+        // Ordinal zero is reserved for internal clipboard protocol replies.
+        let trace = if command.ordinal == 0 {
+            None
+        } else {
+            trace.clone()
+        };
         if let Some(trace) = &trace {
             trace.record(trace::Record {
                 kind: trace::Kind::WriteStarted,
@@ -599,12 +617,35 @@ async fn write_messages<W: AsyncWrite + Unpin>(
                 capture_request: command.capture_request,
             },
         );
-        let result = write
-            .write_all(&command.bytes)
-            .await
-            .context("write RFB message");
-        let failed = result.is_err();
-        terminal.finish(if failed {
+        let mut failed = false;
+        let result = async {
+            // Clipboard negotiation, ownership and response selection share the
+            // same actor as input writes, so crossed updates cannot reorder a
+            // cached provide after a newer notification.
+            let (bytes, text) = match command.message {
+                WriteMessage::Bytes(bytes) => (Some(bytes), None),
+                WriteMessage::ClipboardInput(text) => (Some(clipboard.input(&text)?), None),
+                WriteMessage::ClipboardRemote {
+                    extended: true,
+                    bytes,
+                } => clipboard.receive(&bytes)?,
+                WriteMessage::ClipboardRemote {
+                    extended: false,
+                    bytes,
+                } => {
+                    clipboard.remote_copy();
+                    (None, Some(bytes.into_iter().map(char::from).collect()))
+                }
+            };
+            if let Some(bytes) = bytes {
+                let result = write.write_all(&bytes).await.context("write RFB message");
+                failed = result.is_err();
+                result?;
+            }
+            Ok(text)
+        }
+        .await;
+        terminal.finish(if result.is_err() {
             trace::Outcome::Error
         } else {
             trace::Outcome::Accepted
@@ -638,6 +679,7 @@ async fn decode<R: AsyncRead + Unpin>(
     mut read: R,
     mut frame: Frame,
     layout: Arc<Mutex<Option<Screen>>>,
+    commands: &mpsc::Sender<WriteCommand>,
     events: &mpsc::Sender<Result<Event>>,
     trace: &trace::Sink,
 ) -> Result<()> {
@@ -903,18 +945,37 @@ async fn decode<R: AsyncRead + Unpin>(
             3 => {
                 let mut padding = [0; 3];
                 read.read_exact(&mut padding).await?;
-                let length = read.read_u32().await? as usize;
-                ensure!(
-                    length <= MAX_CLIPBOARD,
-                    "RFB clipboard exceeds {MAX_CLIPBOARD} bytes"
-                );
-                let mut bytes = vec![0; length];
+                let length = read.read_i32().await?;
+                let size = length.unsigned_abs() as usize;
+                let limit = if length < 0 {
+                    clipboard::MAX_MESSAGE
+                } else {
+                    MAX_CLIPBOARD
+                };
+                ensure!(size <= limit, "RFB clipboard exceeds {limit} bytes");
+                let mut bytes = vec![0; size];
                 read.read_exact(&mut bytes).await?;
-                let text = bytes.into_iter().map(char::from).collect();
-                events
-                    .send(Ok(Event::Clipboard(text)))
+                let (completed, result) = oneshot::channel();
+                commands
+                    .send(WriteCommand {
+                        message: WriteMessage::ClipboardRemote {
+                            extended: length < 0,
+                            bytes,
+                        },
+                        completed,
+                        ordinal: 0,
+                        input_id: None,
+                        capture_request: false,
+                    })
                     .await
-                    .context("RFB receiver dropped")?;
+                    .context("RFB writer closed")?;
+                let text = result.await.context("RFB writer closed")??;
+                if let Some(text) = text {
+                    events
+                        .send(Ok(Event::Clipboard(text)))
+                        .await
+                        .context("RFB receiver dropped")?;
+                }
             }
             other => bail!("unsupported RFB server message {other}"),
         }
