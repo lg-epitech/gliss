@@ -10,7 +10,12 @@ dynamic = ["version"]
 description = "CPU-only VM desktop streaming to the browser"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "web/vendor/fflate-LICENSE"]
+license-files = [
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
+  "licenses/rust-dependencies.md",
+  "web/vendor/fflate-LICENSE",
+]
 requires-python = ">=3.8"
 keywords = ["vnc", "rfb", "remote-desktop", "webtransport", "streaming", "qemu"]
 classifiers = [

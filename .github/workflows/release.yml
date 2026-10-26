@@ -13,6 +13,7 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
+      - licenses/**
   workflow_dispatch:
 
 permissions:
@@ -24,8 +25,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  licenses:
+    name: Check dependency licenses
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # Release provenance: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Release provenance: https://github.com/EmbarkStudios/cargo-about/releases/tag/0.9.2
+      - name: Install cargo-about 0.9.2
+        run: |
+          archive=cargo-about-0.9.2-x86_64-unknown-linux-musl
+          curl --proto '=https' --tlsv1.2 -sSfL -o "$RUNNER_TEMP/$archive.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.2/$archive.tar.gz"
+          echo "9099a59e820c38a68b9d65f300662a567d56562f9a10f6aa4c7e86c17c2566af  $RUNNER_TEMP/$archive.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive.tar.gz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/$archive/cargo-about" "$HOME/.cargo/bin/cargo-about"
+
+      # The wheel and tarball ship this file; it must match Cargo.lock.
+      - name: Check that the dependency licenses are current
+        run: |
+          cargo fetch --locked
+          cargo about generate --frozen --fail -c licenses/about.toml -m crates/gliss-server/Cargo.toml \
+            licenses/about.hbs -o licenses/rust-dependencies.md
+          if [ -n "$(git status --porcelain -- licenses/rust-dependencies.md)" ]; then
+            git diff --stat -- licenses/rust-dependencies.md
+            echo "::error::licenses/rust-dependencies.md is stale; regenerate it as described in docs/development.md"
+            exit 1
+          fi
+
   build:
     name: Build ${{ matrix.target }}
+    needs: licenses
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
@@ -67,7 +101,7 @@ jobs:
           mkdir -p "staging/$name"
           python3 -m zipfile -e "$wheel" wheel
           install -m 0755 wheel/*.data/scripts/gliss-server "staging/$name/gliss-server"
-          cp LICENSE THIRD_PARTY_NOTICES.md "staging/$name/"
+          cp LICENSE THIRD_PARTY_NOTICES.md licenses/rust-dependencies.md "staging/$name/"
           cp web/vendor/fflate-LICENSE "staging/$name/fflate-LICENSE"
           tar -C staging -czf "dist/$name.tar.gz" "$name"
           ls -l dist

@@ -53,7 +53,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Resolved dependencies and external tools
 
-[Cargo.lock](Cargo.lock) records the Rust dependency versions. Their package manifests and accompanying license/notice files remain authoritative for those packages and their native dependencies. This includes the HTTP/WebSocket, async, compression, cryptography, QUIC and D-Bus stacks; this document is not an exhaustive license-text bundle for every target or build feature. Preserve the resolved packages' required notices with redistributed binaries.
+[Cargo.lock](Cargo.lock) records the Rust dependency versions, and [licenses/rust-dependencies.md](licenses/rust-dependencies.md) collects the license texts of every crate linked into the released binary. Their package manifests and accompanying license/notice files remain authoritative for those packages and their native dependencies. This includes the HTTP/WebSocket, async, compression, cryptography, QUIC and D-Bus stacks; this document is not an exhaustive license-text bundle for every target or build feature. Preserve the resolved packages' required notices with redistributed binaries.
 
 The optional Python gateway pins **aiohttp 3.13.5** in its [requirements file](integration/distribox/prototype/requirements.txt); see [aiohttp's source and license](https://github.com/aio-libs/aiohttp/tree/v3.13.5). Its installed dependencies retain their own licenses. They are not embedded into the Rust executable by that requirements file.
 
