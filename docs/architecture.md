@@ -46,6 +46,20 @@ The datagram path publishes the newest captured state and admits whole pictures 
 
 WebTransport needs browser support for unreliable datagrams and direct UDP routing; an ordinary HTTP reverse proxy cannot carry it. By default the datagram listener is loopback-only. A public media host requires the managed-FD mode described in the [security guide](security.md).
 
+## Embedding the viewer
+
+`web/client.js` exports `GlissClient`, the browser side of the WebSocket path. Another web app can serve its modules and connect through its own authenticated relay:
+
+```js
+const { GlissClient } = await import("/gliss/client.js");
+const client = new GlissClient(canvas, onStatus, onEvent, { url: "wss://example.org/desktop" });
+client.connect();
+client.send({ type: "key", keysym: 0xff0d, down: true });
+client.dispose(); // disconnects and removes its listeners
+```
+
+`gliss-server --export-web DIR` writes the modules embedded in that binary, so the browser code always matches the server. The relay logs in with the access key (`POST /api/session`), then forwards text and binary messages unchanged between the browser and the server's `/ws`, presenting the session cookie and the server's own Origin. `onEvent` receives `hello`, `frame`, `clipboard`, `cursor`, `error` and `close` events; input messages are `key`, `pointer`, `clipboard` and `resize`.
+
 ## Authentication
 
 The listener authenticates an access key and issues a signed cookie for its fixed desktop. It checks Origin and bounds session lifetime and client admission. WebTransport connections additionally need a single-use ticket and a pinned certificate. This is a single-source operator model, not multi-tenant authorization; the [security guide](security.md) describes its limits.

@@ -6,8 +6,8 @@ const keysyms = {Backspace:0xff08,Tab:0xff09,Enter:0xff0d,Escape:0xff1b,Delete:0
 for(let n=1;n<=24;n++)keysyms[`F${n}`]=0xffbd+n;
 
 export class GlissClient {
-  constructor(canvas, onStatus=()=>{}, onEvent=()=>{}) {
-    this.canvas=canvas; this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new Decoder(); this.onStatus=onStatus; this.onEvent=onEvent;
+  constructor(canvas, onStatus=()=>{}, onEvent=()=>{}, {url}={}) {
+    this.canvas=canvas; this.url=url; this.listeners=new AbortController(); this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new Decoder(); this.onStatus=onStatus; this.onEvent=onEvent;
     this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
@@ -18,7 +18,7 @@ export class GlissClient {
     this.disconnect(); this.decoder=new Decoder(); this.chain=Promise.resolve();
     let decoder=this.decoder;const epoch=++this.epoch;
     let socket;
-    if(location.pathname==='/datagram'){
+    if(!this.url&&location.pathname==='/datagram'){
       try{
         const {openDatagramSocket}=await import('./tile-connect.js');
         if(epoch!==this.epoch)return;
@@ -27,13 +27,14 @@ export class GlissClient {
         if(epoch!==this.epoch){socket.close();return;}
         this.tileMedia=socket.tileMedia??null;
       }catch(error){if(epoch===this.epoch)this.onStatus(`Datagram connection failed: ${error.message}`);return;}
-    }else socket=new WebSocket(`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
+    }else socket=new WebSocket(this.url??`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
     this.socket=socket; socket.binaryType='arraybuffer';
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
-    socket.onclose=()=>{
+    socket.onclose=event=>{
       if(epoch!==this.epoch)return;
       ++this.epoch;decoder.close?.();this.keys.clear();this.buttons=0;
       this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
+      this.onEvent({type:'close',code:event.code,reason:event.reason});
     };
     socket.onerror=()=>{if(epoch===this.epoch)this.onStatus('Connection failed');};
     socket.onmessage=event=>{if(epoch!==this.epoch)return;this.chain=this.chain.then(async()=>{
@@ -128,54 +129,24 @@ export class GlissClient {
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
   disconnect(){this.release();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
+  dispose(){this.disconnect();this.listeners.abort();}
   bindInput(){
-    const canvas=this.canvas;
+    const canvas=this.canvas,{signal}=this.listeners;
     const coordinates=e=>{const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-r.left)*canvas.width/r.width))),y:Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-r.top)*canvas.height/r.height)))};};
     const button=e=>[1,4,2][e.button]||0;
-    canvas.addEventListener('pointerdown',e=>{e.preventDefault();canvas.focus();canvas.setPointerCapture(e.pointerId);this.point=coordinates(e);this.buttons|=button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});});
-    canvas.addEventListener('pointerup',e=>{e.preventDefault();this.point=coordinates(e);this.buttons&=~button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});});
-    canvas.addEventListener('pointercancel',()=>this.release());
+    canvas.addEventListener('pointerdown',e=>{e.preventDefault();canvas.focus();canvas.setPointerCapture(e.pointerId);this.point=coordinates(e);this.buttons|=button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});},{signal});
+    canvas.addEventListener('pointerup',e=>{e.preventDefault();this.point=coordinates(e);this.buttons&=~button(e);this.send({type:'pointer',...this.point,buttons:this.buttons});},{signal});
+    canvas.addEventListener('pointercancel',()=>this.release(),{signal});
     let motion=null,scheduled=false;
-    canvas.addEventListener('pointermove',e=>{motion=coordinates(e);if(!scheduled){scheduled=true;requestAnimationFrame(()=>{scheduled=false;if(motion){this.point=motion;motion=null;this.send({type:'pointer',...this.point,buttons:this.buttons});}});}});
-    canvas.addEventListener('contextmenu',e=>e.preventDefault());
-    canvas.addEventListener('wheel',e=>{e.preventDefault();this.point=coordinates(e);const mask=e.deltaY?e.deltaY<0?8:16:e.deltaX<0?32:64;this.send({type:'pointer',...this.point,buttons:this.buttons|mask});this.send({type:'pointer',...this.point,buttons:this.buttons});},{passive:false});
-    canvas.addEventListener('keydown',e=>{e.preventDefault();let symbol=keysyms[e.key];if(e.location===2&&symbol>=0xffe1&&symbol<=0xffeb)symbol++;if(symbol===undefined&&[...e.key].length===1){const code=e.key.codePointAt(0);symbol=code<=255?code:0x01000000|code;}symbol=this.keys.get(e.code)??symbol;if(symbol!==undefined){this.keys.set(e.code,symbol);this.send({type:'key',keysym:symbol,down:true});}});
-    canvas.addEventListener('keyup',e=>{e.preventDefault();const symbol=this.keys.get(e.code);if(symbol!==undefined){this.send({type:'key',keysym:symbol,down:false});this.keys.delete(e.code);}});
-    canvas.addEventListener('blur',()=>this.release());
-    window.addEventListener('blur',()=>this.release());
-    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.release();});
+    canvas.addEventListener('pointermove',e=>{motion=coordinates(e);if(!scheduled){scheduled=true;requestAnimationFrame(()=>{scheduled=false;if(motion){this.point=motion;motion=null;this.send({type:'pointer',...this.point,buttons:this.buttons});}});}},{signal});
+    canvas.addEventListener('contextmenu',e=>e.preventDefault(),{signal});
+    canvas.addEventListener('wheel',e=>{e.preventDefault();this.point=coordinates(e);const mask=e.deltaY?e.deltaY<0?8:16:e.deltaX<0?32:64;this.send({type:'pointer',...this.point,buttons:this.buttons|mask});this.send({type:'pointer',...this.point,buttons:this.buttons});},{passive:false,signal});
+    canvas.addEventListener('keydown',e=>{e.preventDefault();let symbol=keysyms[e.key];if(e.location===2&&symbol>=0xffe1&&symbol<=0xffeb)symbol++;if(symbol===undefined&&[...e.key].length===1){const code=e.key.codePointAt(0);symbol=code<=255?code:0x01000000|code;}symbol=this.keys.get(e.code)??symbol;if(symbol!==undefined){this.keys.set(e.code,symbol);this.send({type:'key',keysym:symbol,down:true});}},{signal});
+    canvas.addEventListener('keyup',e=>{e.preventDefault();const symbol=this.keys.get(e.code);if(symbol!==undefined){this.send({type:'key',keysym:symbol,down:false});this.keys.delete(e.code);}},{signal});
+    canvas.addEventListener('blur',()=>this.release(),{signal});
+    window.addEventListener('blur',()=>this.release(),{signal});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden)this.release();},{signal});
   }
 }
 
-const $=id=>document.getElementById(id);
-let cliptext='';let sourceType='';
-const client=new GlissClient($('screen'),text=>$('status').textContent=text,event=>{
-  if(event.type==='hello')sourceType=event.source;
-  if(event.type==='frame'){
-    $('resolution').textContent=`${event.frame.width} × ${event.frame.height}`;
-    $('traffic').textContent=`${(client.metrics.bytes/1048576).toFixed(2)} MiB received`;
-    const ts=client.metrics.presentTimes;const tail=ts.slice(-60);const fps=tail.length>1?(tail.length-1)*1000/(tail.at(-1)-tail[0]):0;
-    $('rate').textContent=`${fps.toFixed(1)} updates/s`;
-    $('decode').textContent=`Decode ${event.decodeMs.toFixed(1)} ms`;
-  }
-  if(event.type==='clipboard'){cliptext=event.text;$('cliptext').value=cliptext;}
-  if(event.type==='cursor'){
-    if(!event.width||!event.height){$('screen').style.cursor='none';return;}
-    if(event.width<=128&&event.height<=128&&event.pixels.length===event.width*event.height*4){const c=document.createElement('canvas');c.width=event.width;c.height=event.height;c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(event.pixels),c.width,c.height),0,0);$('screen').style.cursor=`url(${c.toDataURL()}) ${event.hotspot_x} ${event.hotspot_y}, default`;}
-  }
-  if(event.type==='error'||event.type==='input_error')$('status').textContent=event.message;
-  if(event.type==='resize_result'&&event.status!==0)$('status').textContent='The VM declined the desktop size change.';
-  if(event.type==='display_state')$('status').textContent=event.available?'Connected':'The VM display is temporarily unavailable.';
-});
-window.gliss=client;
-window.glissSource=()=>sourceType;
-
-$('login').addEventListener('submit',async e=>{
-  e.preventDefault();$('error').textContent='';
-  try{const response=await fetch('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:$('token').value})});if(!response.ok)throw new Error(response.status===429?'Too many attempts. Try again in a minute.':'The access key was rejected.');$('token').value='';$('login').hidden=true;$('desktop').style.display='block';for(const id of ['clipboard','fit','fullscreen','disconnect'])$(id).hidden=false;client.connect();}catch(error){$('error').textContent=error.message;}
-});
-$('disconnect').onclick=async()=>{client.disconnect();await fetch('/api/session',{method:'DELETE'});$('desktop').style.display='none';$('login').hidden=false;for(const id of ['clipboard','fit','fullscreen','disconnect'])$(id).hidden=true;};
-$('clipboard').onclick=()=>{$('cliptext').value=cliptext;$('clipdialog').showModal();};
-$('sendclip').onclick=()=>{client.send({type:'clipboard',text:$('cliptext').value});$('clipdialog').close();};
-$('fit').onclick=()=>{const box=$('viewport').getBoundingClientRect();let width=Math.max(320,Math.min(client.codec==='h264'||client.codec?.startsWith('glt2-')?3840:4096,Math.round(box.width-2))),height=Math.max(200,Math.min(2160,Math.round(window.innerHeight-box.top-80)));if(client.codec==='h264'){width-=width%2;height-=height%2;}client.send({type:'resize',width,height});};
-$('fullscreen').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();else $('viewport').requestFullscreen();};

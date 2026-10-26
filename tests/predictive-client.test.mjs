@@ -5,9 +5,9 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {VideoDecoderAdapter} from '../web/video-decoder.js';
 const source=await readFile(new URL('../web/client.js',import.meta.url),'utf8');
-const begin='const keysyms =',end='\nconst $=id=>';
-assert.equal(source.split(begin).length,2);assert.equal(source.split(end).length,2);
-const actualClass=source.slice(source.indexOf(begin),source.indexOf(end)).replace('export class GlissClient','class GlissClient');
+const begin='const keysyms =';
+assert.equal(source.split(begin).length,2);
+const actualClass=source.slice(source.indexOf(begin)).replace('export class GlissClient','class GlissClient');
 function actualClient(predictive){
   const events=[],sent=[];let width=32,height=32,registered,callback;
   const ctx={drawImage(){events.push(['draw',width,height]);}};
