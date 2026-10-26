@@ -94,7 +94,7 @@ struct Args {
     #[arg(long)]
     benchmark_capture_dir: Option<std::path::PathBuf>,
     /// Fixed upstream target. The browser cannot choose a VNC address.
-    #[arg(long, conflicts_with_all = ["demo", "rfb_fd"], required_unless_present_any = ["demo", "rfb_fd"])]
+    #[arg(long, conflicts_with_all = ["demo", "rfb_fd"], required_unless_present_any = ["demo", "rfb_fd", "export_web"])]
     vnc: Option<String>,
     /// Opt-in single-private-RFB receiver lifetime experiment; default immediate.
     #[arg(long, value_enum)]
@@ -120,8 +120,16 @@ struct Args {
     shared_dbus: bool,
     #[arg(long)]
     demo: bool,
-    #[arg(long, env = "GLISS_TOKEN", hide_env_values = true)]
-    token: String,
+    #[arg(
+        long,
+        env = "GLISS_TOKEN",
+        hide_env_values = true,
+        required_unless_present = "export_web"
+    )]
+    token: Option<String>,
+    /// Write the embedded browser modules to DIR and exit, so another web app can serve them.
+    #[arg(long, value_name = "DIR")]
+    export_web: Option<std::path::PathBuf>,
     #[arg(long, env = "GLISS_VNC_PASSWORD", hide_env_values = true)]
     vnc_password: Option<String>,
     /// Exact browser origin, required when listening outside loopback. Use TLS at your proxy.
@@ -195,8 +203,135 @@ struct App {
     shared_capture: Option<shared_capture::SharedCapture>,
 }
 
+/// Browser modules served at `/<path>`; `--export-web` writes the same files.
+const WEB_ASSETS: &[(&str, &str, &str)] = &[
+    (
+        "viewer.js",
+        "text/javascript",
+        include_str!("../../../web/viewer.js"),
+    ),
+    (
+        "client.js",
+        "text/javascript",
+        include_str!("../../../web/client.js"),
+    ),
+    (
+        "decoder.js",
+        "text/javascript",
+        include_str!("../../../web/decoder.js"),
+    ),
+    (
+        "video-decoder.js",
+        "text/javascript",
+        include_str!("../../../web/video-decoder.js"),
+    ),
+    (
+        "datagram-transport.js",
+        "text/javascript",
+        include_str!("../../../web/datagram-transport.js"),
+    ),
+    (
+        "predictive-state.js",
+        "text/javascript",
+        include_str!("../../../web/predictive-state.js"),
+    ),
+    (
+        "predictive-datagram.js",
+        "text/javascript",
+        include_str!("../../../web/predictive-datagram.js"),
+    ),
+    (
+        "xor-fec.js",
+        "text/javascript",
+        include_str!("../../../web/xor-fec.js"),
+    ),
+    (
+        "fec-predictive-state.js",
+        "text/javascript",
+        include_str!("../../../web/fec-predictive-state.js"),
+    ),
+    (
+        "tile-connect.js",
+        "text/javascript",
+        include_str!("../../../web/tile-connect.js"),
+    ),
+    (
+        "tile-transport.js",
+        "text/javascript",
+        include_str!("../../../web/tile-transport.js"),
+    ),
+    (
+        "tile-painter.js",
+        "text/javascript",
+        include_str!("../../../web/tile-painter.js"),
+    ),
+    (
+        "tile-worker.js",
+        "text/javascript",
+        include_str!("../../../web/tile-worker.js"),
+    ),
+    (
+        "tile-decoder.js",
+        "text/javascript",
+        include_str!("../../../web/tile-decoder.js"),
+    ),
+    (
+        "tile-inflate.js",
+        "text/javascript",
+        include_str!("../../../web/tile-inflate.js"),
+    ),
+    (
+        "vendor/fflate-bounded-core.js",
+        "text/javascript",
+        include_str!("../../../web/vendor/fflate-bounded-core.js"),
+    ),
+    (
+        "vendor/fflate-LICENSE",
+        "text/plain",
+        include_str!("../../../web/vendor/fflate-LICENSE"),
+    ),
+    (
+        "vendor/fflate-provenance.json",
+        "application/json",
+        include_str!("../../../web/vendor/fflate-provenance.json"),
+    ),
+    (
+        "hybrid-decoder.js",
+        "text/javascript",
+        include_str!("../../../web/hybrid-decoder.js"),
+    ),
+    (
+        "hybrid-grid-decoder.js",
+        "text/javascript",
+        include_str!("../../../web/hybrid-grid-decoder.js"),
+    ),
+    (
+        "hybrid-continuity-decoder.js",
+        "text/javascript",
+        include_str!("../../../web/hybrid-continuity-decoder.js"),
+    ),
+    (
+        "probe.js",
+        "text/javascript",
+        include_str!("../../../web/probe.js"),
+    ),
+];
+
+fn export_web(directory: &std::path::Path) -> Result<()> {
+    for (path, _, body) in WEB_ASSETS {
+        let target = directory.join(path);
+        std::fs::create_dir_all(target.parent().unwrap_or(directory))?;
+        std::fs::write(&target, body)
+            .with_context(|| format!("cannot write {}", target.display()))?;
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+    if let Some(directory) = &args.export_web {
+        return export_web(directory);
+    }
     // Reject unsupported sources before adopting any inherited descriptor.
     rfb_teardown::validate(&args)?;
     tile_send::validate(&args)?;
@@ -271,7 +406,7 @@ async fn run(
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-    if args.token.len() < 24 {
+    if args.token.as_ref().is_none_or(|token| token.len() < 24) {
         bail!("GLISS_TOKEN must contain at least 24 characters");
     }
     if args.fps == 0 || args.fps > 120 || args.max_clients == 0 || args.max_clients > 128 {
@@ -401,30 +536,22 @@ async fn run(
         let app = app.clone();
         datagram_tasks.spawn(async move { runtime.serve(app).await });
     }
-    let router = Router::new()
-        .route("/", get(|| async { Html(include_str!("../../../web/index.html")) }))
-        .route("/datagram", get(|| async { Html(include_str!("../../../web/index.html")) }))
-        .route("/client.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/client.js")) }))
-        .route("/decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/decoder.js")) }))
-        .route("/video-decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/video-decoder.js")) }))
-        .route("/datagram-transport.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/datagram-transport.js")) }))
-        .route("/predictive-state.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/predictive-state.js")) }))
-        .route("/predictive-datagram.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/predictive-datagram.js")) }))
-        .route("/xor-fec.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/xor-fec.js")) }))
-        .route("/fec-predictive-state.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/fec-predictive-state.js")) }))
-        .route("/tile-connect.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-connect.js")) }))
-        .route("/tile-transport.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-transport.js")) }))
-        .route("/tile-painter.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-painter.js")) }))
-        .route("/tile-worker.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-worker.js")) }))
-        .route("/tile-decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-decoder.js")) }))
-        .route("/tile-inflate.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/tile-inflate.js")) }))
-        .route("/vendor/fflate-bounded-core.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/vendor/fflate-bounded-core.js")) }))
-        .route("/vendor/fflate-LICENSE", get(|| async { ([(header::CONTENT_TYPE, "text/plain")], include_str!("../../../web/vendor/fflate-LICENSE")) }))
-        .route("/vendor/fflate-provenance.json", get(|| async { ([(header::CONTENT_TYPE, "application/json")], include_str!("../../../web/vendor/fflate-provenance.json")) }))
-        .route("/hybrid-decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/hybrid-decoder.js")) }))
-        .route("/hybrid-grid-decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/hybrid-grid-decoder.js")) }))
-        .route("/hybrid-continuity-decoder.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/hybrid-continuity-decoder.js")) }))
-        .route("/probe.js", get(|| async { ([(header::CONTENT_TYPE, "text/javascript")], include_str!("../../../web/probe.js")) }))
+    let mut router = Router::new()
+        .route(
+            "/",
+            get(|| async { Html(include_str!("../../../web/index.html")) }),
+        )
+        .route(
+            "/datagram",
+            get(|| async { Html(include_str!("../../../web/index.html")) }),
+        );
+    for &(path, content_type, body) in WEB_ASSETS {
+        router = router.route(
+            &format!("/{path}"),
+            get(move || async move { ([(header::CONTENT_TYPE, content_type)], body) }),
+        );
+    }
+    let router = router
         .route("/health", get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }))
         .route("/api/session", post(login).delete(logout))
         .route("/api/datagram-ticket", post(datagram_ticket))
@@ -1092,6 +1219,30 @@ mod datagram_option_tests {
             ]))
             .is_err()
         );
+    }
+
+    #[test]
+    fn export_web_writes_every_served_module_without_a_token_or_source() {
+        let directory = std::env::temp_dir().join(format!("gliss-export-{}", std::process::id()));
+        let args =
+            Args::try_parse_from(["gliss-server", "--export-web", directory.to_str().unwrap()])
+                .unwrap();
+        assert_eq!(args.export_web.as_deref(), Some(directory.as_path()));
+        export_web(&directory).unwrap();
+        for (path, _, body) in WEB_ASSETS {
+            assert_eq!(
+                std::fs::read_to_string(directory.join(path)).unwrap(),
+                *body,
+                "{path}"
+            );
+        }
+        for path in ["client.js", "decoder.js", "vendor/fflate-bounded-core.js"] {
+            assert!(
+                WEB_ASSETS.iter().any(|(name, _, _)| *name == path),
+                "{path}"
+            );
+        }
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1894,9 +2045,9 @@ async fn login(
         }
         rate.1 += 1;
     }
-    if !bool::from(
-        Sha256::digest(body.token.as_bytes()).ct_eq(&Sha256::digest(app.args.token.as_bytes())),
-    ) {
+    if !bool::from(Sha256::digest(body.token.as_bytes()).ct_eq(&Sha256::digest(
+        app.args.token.as_deref().unwrap_or_default().as_bytes(),
+    ))) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let secure = if app.origins[0].starts_with("https://") {
