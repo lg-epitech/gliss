@@ -1,0 +1,31 @@
+# Packages the native gliss-server executable as a binary-only wheel, so Python
+# projects can depend on it without a Rust toolchain. No Python module is built.
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "gliss-server"
+dynamic = ["version"]
+description = "CPU-only VM desktop streaming to the browser"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "web/vendor/fflate-LICENSE"]
+requires-python = ">=3.8"
+keywords = ["vnc", "rfb", "remote-desktop", "webtransport", "streaming", "qemu"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Rust",
+  "Topic :: System :: Emulators",
+]
+
+[project.urls]
+Repository = "https://github.com/lg-epitech/gliss"
+
+[tool.maturin]
+bindings = "bin"
+manifest-path = "crates/gliss-server/Cargo.toml"
+strip = true
