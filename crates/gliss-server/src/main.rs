@@ -50,7 +50,10 @@ use tokio::{
 };
 
 #[derive(Parser, Debug)]
-#[command(about = "CPU-only browser desktop streaming, bound to loopback by default")]
+#[command(
+    version,
+    about = "CPU-only browser desktop streaming, bound to loopback by default"
+)]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
@@ -1088,6 +1091,16 @@ mod datagram_option_tests {
                 "automatic"
             ]))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn version_flag_reports_the_package_version_without_other_arguments() {
+        let error = Args::try_parse_from(["gliss-server", "--version"]).unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            error.to_string().trim(),
+            concat!("gliss-server ", env!("CARGO_PKG_VERSION"))
         );
     }
 
