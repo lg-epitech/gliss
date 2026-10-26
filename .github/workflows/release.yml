@@ -1,0 +1,183 @@
+name: Release
+
+# Builds manylinux wheels and standalone binaries for x86_64 and aarch64 and
+# smoke-tests them on clean distributions. A pushed vX.Y.Z tag that matches the
+# Cargo version also publishes the wheels to PyPI and creates a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - pyproject.toml
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never interrupt a publish that is already running.
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64, aarch64]
+    steps:
+      # Release provenance: https://github.com/actions/checkout/releases/tag/v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check that a release tag matches the Cargo version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo version $version"
+            exit 1
+          fi
+
+      # Builds inside the manylinux_2_28 image (x86_64) or its cross image
+      # (aarch64), so the binary runs on glibc 2.28 and newer.
+      # Release provenance: https://github.com/PyO3/maturin-action/releases/tag/v1.51.0
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          manylinux: "2_28"
+          args: --release --locked --out dist
+          # OpenH264's x86 assembly needs NASM.
+          before-script-linux: |
+            if command -v dnf >/dev/null; then dnf install -y nasm; else apt-get update && apt-get install -y nasm; fi
+
+      - name: Package the standalone binary
+        run: |
+          wheel="$(ls dist/*.whl)"
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml)"
+          name="gliss-server-v${version}-${{ matrix.target }}-unknown-linux-gnu"
+          mkdir -p "staging/$name"
+          python3 -m zipfile -e "$wheel" wheel
+          install -m 0755 wheel/*.data/scripts/gliss-server "staging/$name/gliss-server"
+          cp LICENSE THIRD_PARTY_NOTICES.md "staging/$name/"
+          cp web/vendor/fflate-LICENSE "staging/$name/fflate-LICENSE"
+          tar -C staging -czf "dist/$name.tar.gz" "$name"
+          ls -l dist
+
+      # Release provenance: https://github.com/actions/upload-artifact/releases/tag/v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  smoke:
+    name: Smoke ${{ matrix.target }} on ${{ matrix.image }}
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Oldest supported glibc family still shipping Python, and the
+          # image Distribox's backend uses.
+          - { target: x86_64, platform: linux/amd64, image: "python:3.9-slim-bullseye" }
+          - { target: x86_64, platform: linux/amd64, image: "python:3.13" }
+          - { target: aarch64, platform: linux/arm64, image: "python:3.13-slim" }
+    steps:
+      # Release provenance: https://github.com/actions/download-artifact/releases/tag/v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist
+
+      # Release provenance: https://github.com/docker/setup-qemu-action/releases/tag/v4.4.0
+      - if: matrix.target == 'aarch64'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Install the wheel with pip and start the demo server
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" -v "$PWD/dist:/dist:ro" "${{ matrix.image }}" sh -euxc '
+            python -m venv /venv
+            /venv/bin/pip install --no-index /dist/*.whl
+            /venv/bin/gliss-server --version
+            GLISS_TOKEN=0123456789abcdef0123456789abcdef /venv/bin/gliss-server --demo --bind 127.0.0.1:18080 &
+            python - <<EOF
+          import json, time, urllib.request
+          for _ in range(120):
+              try:
+                  health = json.load(urllib.request.urlopen("http://127.0.0.1:18080/health", timeout=1))
+                  break
+              except OSError:
+                  time.sleep(0.5)
+          else:
+              raise SystemExit("gliss-server did not become healthy")
+          assert health["status"] == "ok", health
+          print(health)
+          EOF
+          '
+
+  pypi:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/project/gliss-server/
+    permissions:
+      # PyPI trusted publishing: no API token is stored in this repository.
+      id-token: write
+    steps:
+      # Release provenance: https://github.com/actions/download-artifact/releases/tag/v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Select the wheels
+        run: mkdir dist && mv artifacts/*.whl dist/ && ls -l dist
+
+      # Release provenance: https://github.com/pypa/gh-action-pypi-publish/releases/tag/v1.14.3
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+
+  github-release:
+    name: Create the GitHub release
+    needs: pypi
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      # Release provenance: https://github.com/actions/download-artifact/releases/tag/v8.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload the wheels, binaries and checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$GITHUB_REF_NAME" --generate-notes $prerelease ./*

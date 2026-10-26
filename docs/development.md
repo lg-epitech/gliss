@@ -73,3 +73,20 @@ cargo run --locked --release -j 2 -p gliss-codec --bin codec-bench -- \
 ```
 
 Its output is a local component measurement, not a live desktop, browser latency or network comparison. See [benchmarks](benchmarks.md) for the published results and their limits.
+
+## Releasing
+
+`pyproject.toml` packages `gliss-server` as a binary-only Python wheel with [maturin](https://www.maturin.rs/), so Python projects can depend on it without a Rust toolchain. Build one locally with:
+
+```sh
+pip install "maturin>=1.15,<2"
+maturin build --release --locked
+```
+
+The [release workflow](../.github/workflows/release.yml) builds manylinux_2_28 wheels and standalone tarballs for x86_64 and aarch64, then installs each wheel with pip on clean images and starts the demo server. Pull requests that touch packaging run those jobs without publishing. To release, set the version in the root `Cargo.toml`, merge, then push a matching tag:
+
+```sh
+git tag v0.1.0-alpha.1 && git push origin v0.1.0-alpha.1
+```
+
+The tag must equal `v` plus the Cargo version. The workflow then publishes the wheels to PyPI through trusted publishing and creates a GitHub release with the wheels, tarballs and `SHA256SUMS`. Cargo pre-release versions such as `0.1.0-alpha.1` become PEP 440 versions such as `0.1.0a1` on PyPI.
