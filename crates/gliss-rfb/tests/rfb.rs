@@ -46,7 +46,7 @@ async fn init_after_security(stream: &mut TcpStream, width: u16, height: u16) {
     for _ in 0..count {
         encodings.push(stream.read_i32().await.unwrap());
     }
-    assert_eq!(encodings, [0, 1, -239, -223, -308]);
+    assert_eq!(encodings, [0, 1, -239, -223, -308, 0xc0a1_e5ceu32 as i32]);
 }
 
 async fn rectangle(stream: &mut TcpStream, x: u16, y: u16, width: u16, height: u16, encoding: i32) {
@@ -485,5 +485,79 @@ async fn refused_authentication_is_reported_with_bounded_server_reason() {
         .unwrap()
         .to_string();
     assert!(error.contains("authentication failed: bad password"));
+    peer.await.unwrap();
+}
+
+// QEMU advertises zero unsolicited bytes: both directions must use notify/request.
+async fn extended_clipboard(stream: &mut TcpStream, flags: u32, data: &[u8]) {
+    stream.write_all(&[3, 0, 0, 0]).await.unwrap();
+    stream.write_i32(-((4 + data.len()) as i32)).await.unwrap();
+    stream.write_u32(flags).await.unwrap();
+    stream.write_all(data).await.unwrap();
+}
+
+async fn client_clipboard(stream: &mut TcpStream) -> (u32, Vec<u8>) {
+    let mut header = [0; 4];
+    stream.read_exact(&mut header).await.unwrap();
+    assert_eq!(header, [6, 0, 0, 0]);
+    let length = stream.read_i32().await.unwrap();
+    assert!(length <= -4);
+    let flags = stream.read_u32().await.unwrap();
+    let mut data = vec![0; (-length - 4) as usize];
+    stream.read_exact(&mut data).await.unwrap();
+    (flags, data)
+}
+
+#[tokio::test]
+async fn qemu_extended_clipboard_transfers_utf8_in_both_directions() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, 1, 1).await;
+        extended_clipboard(&mut stream, 0x1b00_0001, &0u32.to_be_bytes()).await;
+        let (caps, sizes) = client_clipboard(&mut stream).await;
+        assert_eq!(caps, 0x1b00_0001);
+        assert_eq!(sizes, 0u32.to_be_bytes());
+        extended_clipboard(&mut stream, 0x0800_0001, &[]).await;
+        assert_eq!(client_clipboard(&mut stream).await, (0x0200_0001, vec![]));
+        // Independent zlib fixture for UTF-8 text, including protocol CRLF and NUL.
+        let text = "guest: 日本語\r\n🙂\0".as_bytes();
+        let mut payload = (text.len() as u32).to_be_bytes().to_vec();
+        payload.extend_from_slice(text);
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut encoder, &payload).unwrap();
+        extended_clipboard(&mut stream, 0x1000_0001, &encoder.finish().unwrap()).await;
+        assert_eq!(client_clipboard(&mut stream).await, (0x0800_0001, vec![]));
+        extended_clipboard(&mut stream, 0x0200_0001, &[]).await;
+        let (flags, compressed) = client_clipboard(&mut stream).await;
+        assert_eq!(flags, 0x1000_0001);
+        let mut payload = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::ZlibDecoder::new(&compressed[..]),
+            &mut payload,
+        )
+        .unwrap();
+        let expected = "browser: Ελληνικά\r\n🚀\0".as_bytes();
+        assert_eq!(
+            u32::from_be_bytes(payload[..4].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        assert_eq!(&payload[4..], expected);
+        stream.write_u8(2).await.unwrap();
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    assert!(
+        matches!(event(&mut reader).await.unwrap(), Event::Clipboard(text) if text == "guest: 日本語\n🙂")
+    );
+    writer
+        .send_input(&Input::Clipboard {
+            id: 1,
+            text: "browser: Ελληνικά\n🚀".to_owned(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
     peer.await.unwrap();
 }

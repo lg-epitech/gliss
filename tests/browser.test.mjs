@@ -128,3 +128,16 @@ for(const codec of ['batch','h264'])test(`stream ${codec}: actual display probe,
   assert.ok(await page.evaluate(()=>window.gliss.metrics.pixelEchoLatencyMs.length>=1));
   assert.deepEqual(errors,[]);
 });
+
+
+test('QEMU extended clipboard: guest events and browser input preserve Unicode',async t=>{
+  const rfb=await startRfb({extendedClipboard:true});t.after(rfb.stop);
+  const server=await startServer({vnc:rfb.address});t.after(server.stop);
+  const browser=await launchBrowser();t.after(()=>browser.close());
+  const page=await browser.newPage();await loginPage(page,server);
+  await rfb.waitFor(inputs=>inputs.some(i=>i.type==='clipboard-caps'));
+  rfb.sendClipboard('guest: 日本語\r\n🙂');
+  await page.waitForFunction(()=>document.getElementById('cliptext').value==='guest: 日本語\n🙂');
+  await page.evaluate(()=>window.gliss.send({type:'clipboard',text:'browser: Ελληνικά\n🚀'}));
+  await rfb.waitFor(inputs=>inputs.some(i=>i.type==='clipboard'&&i.text==='browser: Ελληνικά\r\n🚀\0'));
+});
