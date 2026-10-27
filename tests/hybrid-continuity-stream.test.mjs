@@ -75,8 +75,12 @@ for(const grid of [32,16])test(`GLH4 grid${grid}: lazy negotiated composition, e
   await page.waitForFunction(()=>window.__continuityFrames.some(frame=>frame.activeVideoTiles>0&&!frame.videoKeyframe&&frame.videoBytes>24&&frame.nativeId!==null),null,{timeout:10000});
   const id=await exactInput(page,97,true);assert.ok(await page.evaluate(id=>window.gliss.decoder.inputId>=id,id));
   await page.evaluate(()=>window.gliss.send({type:'key',keysym:97,down:false}));
-  const before=await page.evaluate(()=>{
-    const previous=window.__continuityFrames.at(-1);window.gliss.decoder.reset();window.gliss.socket.send(JSON.stringify({type:'resync'}));
+  const before=await page.evaluate(async()=>{
+    // Exercise resync during decoding through the transport. Resetting the
+    // decoder directly would cancel this frame and create a recovery error.
+    const decoder=window.gliss.decoder,decode=decoder.decode.bind(decoder);
+    await new Promise(resolve=>{decoder.decode=buffer=>{decoder.decode=decode;const pending=decode(buffer);resolve();return pending;};});
+    const previous=window.__continuityFrames.at(-1);window.gliss.socket.send(JSON.stringify({type:'resync'}));
     return {sequence:previous.sequence,nativeId:previous.nativeId};
   });
   await page.waitForFunction(before=>window.__continuityFrames.some(frame=>frame.sequence>before.sequence&&frame.keyframe&&frame.videoKeyframe&&frame.activeVideoTiles>0&&frame.nativeId!==before.nativeId),before,{timeout:5000});
