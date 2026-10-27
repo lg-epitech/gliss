@@ -8,7 +8,7 @@ real remote clients and browser compatibility remain unvalidated.
 
 ## Standalone access
 
-The native server defaults to plain HTTP on `127.0.0.1:8080`. The operator fixes the VNC target, demo or private graphics FD at startup; browser messages cannot select another host, port or VM. A standalone access key grants display and input access to that fixed source, including clipboard and resize when supported. There are no per-user roles or read-only grants in standalone mode.
+The native server defaults to plain HTTP on `127.0.0.1:8080`. The operator fixes the VNC target, demo or private graphics FD at startup; browser messages cannot select another host, port or VM. A standalone access key grants display and input access to that fixed source, including clipboard and resize when supported, plus VM audio on request. There are no per-user roles or read-only grants in standalone mode.
 
 Set a random `GLISS_TOKEN` of at least 24 characters and keep it private. `GLISS_VNC_PASSWORD` separately supplies optional upstream VNC authentication. Standard VNC authentication does not encrypt its transport; keep that connection node-local or inside an authenticated private tunnel.
 
@@ -30,7 +30,7 @@ The standalone client uses root paths such as `/api/session` and `/ws`, and its 
 
 The QUIC/WebTransport viewer is a separate transport. By default its server requires a loopback UDP bind and peer. An authenticated, Origin-checked HTTP call issues a single-use ticket valid for five seconds, with at most 32 pending tickets and client capacity reserved while pending. The connection checks the ticket's Origin and cookie expiry, then retains a session deadline. The descriptor carries the runtime certificate fingerprint, which the browser pins. Its ticket-bearing URL is a secret and should not enter access logs.
 
-`--datagram-public-host` advertises a non-loopback media endpoint. It requires private loopback HTTP, a launcher-supplied `--rfb-fd`, `--max-clients 1` and an exact HTTPS `--origin`. `--datagram-display-input-only` removes clipboard and resize, and authenticated `POST /api/datagram-revoke` permanently closes the worker's datagram admission and input. A public HTTP/WSS proxy does not expose this UDP transport. NAT traversal and certificate handling beyond the pinned runtime certificate are the deployer's responsibility. Media datagrams are unreliable; reliable control and input do not make dropped media reliable.
+`--datagram-public-host` advertises a non-loopback media endpoint. It requires private loopback HTTP, a launcher-supplied `--rfb-fd`, `--max-clients 1` and an exact HTTPS `--origin`. `--datagram-display-input-only` removes clipboard, resize and audio, and authenticated `POST /api/datagram-revoke` permanently closes the worker's datagram admission and input. A public HTTP/WSS proxy does not expose this UDP transport. NAT traversal and certificate handling beyond the pinned runtime certificate are the deployer's responsibility. Media datagrams are unreliable; reliable control and input do not make dropped media reliable.
 
 ## Private single-use graphics FD
 
@@ -44,7 +44,7 @@ Socket-shape validation does not authenticate a VM or QEMU generation. The launc
 
 The default client limit is eight; an operator may select 1–128. One viewer is the conservative setting. Capture/input queues are bounded, and an overflowing input queue terminates that stream rather than accumulating unlimited commands. The server attempts held-key/button release on the original source during cleanup, with a one-second bound. Failed peers can prevent delivery. Shared capture does not arbitrate competing viewers' input or resize ownership.
 
-HTTP bodies and WS messages are bounded to 1 MiB plus 1 KiB; clipboard text is bounded to 1 MiB. RFB clipboard uses UTF-8 when the extended clipboard is negotiated, with Latin-1 as the base-protocol fallback. Compressed clipboard messages and decompressed text have separate bounds, including CRLF expansion. Resize requires upstream support; full-frame H.264 requests additionally require even dimensions from 16×16 through 3840×2160. Core frame allocation is limited to 16,777,216 pixels. These are individual protocol/allocation bounds, not a total memory quota.
+HTTP bodies and WS messages are bounded to 1 MiB plus 1 KiB; clipboard text is bounded to 1 MiB. RFB clipboard uses UTF-8 when the extended clipboard is negotiated, with Latin-1 as the base-protocol fallback. Compressed clipboard messages and decompressed text have separate bounds, including CRLF expansion. QEMU VNC audio chunks are bounded to 64 KiB. Resize requires upstream support; full-frame H.264 requests additionally require even dimensions from 16×16 through 3840×2160. Core frame allocation is limited to 16,777,216 pixels. These are individual protocol/allocation bounds, not a total memory quota.
 
 The media window defaults to one acknowledged frame and an 8 MiB reservation budget. One oversized packet may make exclusive progress, so that budget is not a strict packet-size or process-memory ceiling. Writes and missing acknowledgements have deadlines. FPS/client/window limits and a soft video bitrate target do not impose a hard CPU quota. The deployment supervisor must supply node CPU/memory admission appropriate to the chosen resolution and concurrency.
 

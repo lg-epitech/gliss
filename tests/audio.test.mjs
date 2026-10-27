@@ -237,7 +237,8 @@ test('audio: mute cancels pending activation and delayed mute acknowledgement ca
   assert.equal(peer.controls.some(control => control.type === 'audio' && control.enabled), false);
   await page.evaluate(() => {AudioDecoder.isConfigSupported = window.originalAudioSupport;});
   await page.click('#sound');await page.evaluate(() => window.soundRequest);
+  const before = await page.evaluate(() => window.events.filter(event => event.type === 'audio_status' && !event.enabled).length);
   peer.send({type: 'audio_status', available: true, enabled: false});
-  await page.waitForFunction(() => window.events.filter(event => event.type === 'audio_status' && !event.enabled).length >= 3);
+  await page.waitForFunction(before => window.events.filter(event => event.type === 'audio_status' && !event.enabled).length > before, before);
   assert.equal(await page.evaluate(() => window.client.audio.enabled), true);
 });

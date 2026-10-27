@@ -137,8 +137,8 @@ export class GlissClient {
     if(this.socket?.readyState===WebSocket.OPEN)this.socket.send(JSON.stringify({type:'audio',enabled,codec}));
   }
   async setAudioEnabled(enabled){
-    if(!enabled){this.audioRequested=false;this.audioControl(false);this.audio.stop();this.audio.state();return;}
-    if(this.socket?.readyState!==WebSocket.OPEN)return;
+    if(!enabled){const requested=this.audioRequested;this.audioRequested=false;if(requested)this.audioControl(false);this.audio.stop();this.audio.state();return;}
+    if(!this.audio.available||this.socket?.readyState!==WebSocket.OPEN)return;
     const socket=this.socket,epoch=this.epoch;
     const codec=await this.audio.enable();
     if(!codec||epoch!==this.epoch||socket!==this.socket||socket.readyState!==WebSocket.OPEN)return;

@@ -32,6 +32,16 @@ function actualClient(predictive){
       return{before,closed};
     }};
 }
+test('muting unrequested audio sends no unsupported control and preserves datagram video',async()=>{
+  const fixture=actualClient(true);await fixture.hello();
+  await fixture.app.setAudioEnabled(false);
+  fixture.app.audio.enable=()=>assert.fail('unsupported audio must not allocate playback resources');
+  await fixture.app.setAudioEnabled(true);
+  assert.deepEqual(fixture.sent,[],'datagram control does not accept audio messages');
+  await fixture.frame(true,1);
+  assert.equal(fixture.app.metrics.frames,1);assert.equal(fixture.app.metrics.errors,0);
+  assert.deepEqual(fixture.sent,[{type:'ack',sequence:1}]);
+});
 test('actual client defers predictive resize until approval; rejected output leaves Canvas untouched',async()=>{
   const fixture=actualClient(true);await fixture.hello();assert.equal(fixture.app.decoder.timeoutMs,250);assert.equal(fixture.app.decoder.configureTimeoutMs,250);
   const rejected=await fixture.frame(false,1);
