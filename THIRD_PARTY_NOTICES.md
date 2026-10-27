@@ -12,6 +12,10 @@ The browser includes a modified **fflate 0.8.3** inflater by **Arjun Barrett**, 
 
 `web/vendor/fflate-bounded-core.js` is a guarded fork, not unmodified upstream. Gliss adds fixed output storage, stream-extent/checksum checks and stricter malformed-input/history validation. Preserve the upstream notice with redistributed copies, including a browser asset bundle. The patch recipe and provenance distinguish Gliss's modifications from the original implementation.
 
+## Opus audio
+
+The server uses `opus` 0.4.0 ([opus-rs](https://github.com/SpaceManiac/opus-rs), MIT) and `opusic-sys` 0.7.6 ([source](https://github.com/DoumanAsh/opusic-sys), BSD-3-Clause). The latter's default `bundled` feature statically compiles its vendored libopus source. The native Opus copyright, BSD license and patent-license references are retained in [the generated dependency notices](licenses/rust-dependencies.md), using the same text as the bundled `opus/COPYING`. Released binaries need no system libopus. Browser decoding uses the browser's own Opus implementation; no decoder library is shipped in the web client.
+
 ## OpenH264 and Rust bindings
 
 The [video crate](crates/gliss-video/Cargo.toml) pins **openh264 0.9.8** and selects its `source` feature with default features disabled. The [encoder](crates/gliss-video/src/lib.rs) uses `OpenH264API::from_source()`: this configuration compiles the bundled native source rather than selecting Cisco's separately supplied prebuilt library.

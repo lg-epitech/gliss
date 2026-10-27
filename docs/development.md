@@ -2,7 +2,7 @@
 
 Run these commands from the repository root on Linux. The release toolchain is Rust 1.98.0 with rustfmt and Clippy, Node.js 24.10.0 with npm, and Python 3.14. Keep Cargo.lock and package-lock.json in place.
 
-Install a C/C++ compiler, linker, make and NASM. The workspace builds Cisco OpenH264 from its bundled source; it does not need an installed FFmpeg or OpenH264 library. CMake and pkg-config are useful for other native toolchains but are not dependencies of the current locked workspace. On Debian or Ubuntu, the native build tools are available as `build-essential nasm`; Python virtual environments require the matching Python venv package.
+Install a C/C++ compiler, linker, make, NASM and CMake. The workspace builds OpenH264 and Opus from bundled source; no installed FFmpeg, OpenH264 or Opus library is needed. On Debian or Ubuntu, install `build-essential nasm cmake`; Python virtual environments require the matching Python venv package.
 
 ```sh
 rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
@@ -73,6 +73,50 @@ cargo run --locked --release -j 2 -p gliss-codec --bin codec-bench -- \
 ```
 
 Its output is a local component measurement, not a live desktop, browser latency or network comparison. See [benchmarks](benchmarks.md) for the published results and their limits.
+
+## Real QEMU audio smoke
+
+This opt-in test boots a temporary diskless Linux guest with an output-only HDA
+device. Its ALSA player generates different tones on the left and right channels.
+The test checks those tones at the browser's actual Web Audio output after QEMU
+VNC capture, Gliss Opus encoding and native browser decoding; it repeats with the
+PCM fallback. It also checks wire bitrate, bounded queues, video decoding and
+mute cleanup. It runs outside the portable `npm test` suite.
+
+```sh
+export GLISS_BINARY="$PWD/target/release/gliss-server"
+node scripts/test-qemu-audio.mjs
+```
+
+The fixture requires an x86_64 Linux host with a readable kernel and matching
+`snd-hda-intel` and `snd-hda-codec-generic` modules, QEMU, KVM access, GCC, ALSA
+development headers/library, binutils, Python, cpio and zstd if the modules use
+that compression. On Debian or Ubuntu, the additional packages are
+`qemu-system-x86 libasound2-dev cpio zstd kmod`. It uses the installed Playwright
+Chromium. Set `GLISS_AUDIO_KERNEL` if the kernel is outside `/boot/vmlinuz-$(uname -r)`
+or `/boot/vmlinuz-linux`; `GLISS_QEMU_ACCEL=tcg` selects software emulation.
+
+The fixture creates no disk images or libvirt definitions and requires no host
+audio daemon. It removes its temporary initramfs and stops its own QEMU and
+Gliss processes on completion. The measured bitrate and playback queues describe
+this local tone test; they do not establish WAN latency or music quality.
+
+The cross-repository smoke also exercises Distribox's real React sound button,
+backend process startup, exported browser modules and WebSocket relay for local
+credential and slave VM access:
+
+```sh
+export DISTRIBOX_ROOT=/absolute/path/to/Distribox
+export DISTRIBOX_PYTHON=/absolute/path/to/Distribox/backend/venv/bin/python
+node --test integration/distribox/audio-client.test.mjs
+```
+
+Install the frontend dependencies in that Distribox checkout and the backend
+requirements, including the audio-capable Gliss wheel, in its Python environment
+first. This test uses the wheel's actual executable and embedded web assets. It
+stubs authentication/database lookups and VM discovery to target only its own
+disposable QEMU guest; it does not validate deployed credentials, networks or VM
+provisioning. VM-id access is entered through client navigation after hydration.
 
 ## Releasing
 

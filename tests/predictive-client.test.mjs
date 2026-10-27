@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {VideoDecoderAdapter} from '../web/video-decoder.js';
+import {AudioPlayer,isAudioPacket} from '../web/audio-player.js';
 const source=await readFile(new URL('../web/client.js',import.meta.url),'utf8');
 const begin='const keysyms =';
 assert.equal(source.split(begin).length,2);
@@ -16,8 +17,8 @@ function actualClient(predictive){
   const raf=work=>{callback=work;registered();return 1;};
   class Decoder{close(){}reset(){}}
   class Socket{static OPEN=1;constructor(){this.readyState=1;this.predictiveVideo=predictive;}send(text){sent.push(JSON.parse(text));}close(){this.readyState=3;}}
-  const Client=new Function('Decoder','VideoDecoderAdapter','decodeProbe','window','document','location','WebSocket','requestAnimationFrame','performance',
-    actualClass+'\nreturn GlissClient;')(Decoder,VideoDecoderAdapter,()=>0,{addEventListener(){}},{addEventListener(){}},
+  const Client=new Function('Decoder','VideoDecoderAdapter','decodeProbe','AudioPlayer','isAudioPacket','window','document','location','WebSocket','requestAnimationFrame','performance',
+    actualClass+'\nreturn GlissClient;')(Decoder,VideoDecoderAdapter,()=>0,AudioPlayer,isAudioPacket,{addEventListener(){}},{addEventListener(){}},
       {pathname:'/',protocol:'http:',host:'127.0.0.1'},Socket,raf,performance);
   const app=new Client(canvas);
   return{app,events,sent,canvas,

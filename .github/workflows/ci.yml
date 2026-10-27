@@ -45,7 +45,7 @@ jobs:
       - name: Install native build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y nasm
+          sudo apt-get install --no-install-recommends -y nasm cmake
 
       - name: Check Rust formatting
         run: cargo fmt --all -- --check

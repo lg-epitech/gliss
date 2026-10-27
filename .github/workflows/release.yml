@@ -104,9 +104,9 @@ jobs:
           target: ${{ matrix.target }}
           manylinux: "2_28"
           args: --release --locked --out dist
-          # OpenH264's x86 assembly needs NASM.
+          # OpenH264's x86 assembly needs NASM; bundled Opus uses CMake.
           before-script-linux: |
-            if command -v dnf >/dev/null; then dnf install -y nasm; else apt-get update && apt-get install -y nasm; fi
+            if command -v dnf >/dev/null; then dnf install -y nasm cmake; else apt-get update && apt-get install -y nasm cmake; fi
 
       - name: Package the standalone binary
         run: |

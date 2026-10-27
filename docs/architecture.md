@@ -60,6 +60,16 @@ client.dispose(); // disconnects and removes its listeners
 
 `gliss-server --export-web DIR` writes the modules embedded in that binary, so the browser code always matches the server. The relay logs in with the access key (`POST /api/session`), then forwards text and binary messages unchanged between the browser and the server's `/ws`, presenting the session cookie and the server's own Origin. `onEvent` receives `hello`, `frame`, `clipboard`, `cursor`, `error` and `close` events; input messages are `key`, `pointer`, `clipboard` and `resize`.
 
+### Audio over WebSocket
+
+The viewer's sound button calls `client.setAudioEnabled(true)` directly from a user gesture. Audio starts off for each connection; `client.setAudioEnabled(false)` stops playback and capture. The `audio_state` event reports `available`, `enabled`, `blocked` and an optional `message`. Closing or disposing the client releases the audio decoder, context and scheduled sources.
+
+QEMU advertises its VNC audio extension through pseudoencoding `-259` when its VNC display has an audio backend. Gliss requests 48 kHz stereo s16le only while sound is enabled. For a headless VM, map both the sound device and VNC graphics to the same `<audio id='1' type='none'/>` backend. No host audio daemon is needed. Unsupported VNC servers keep streaming the desktop with audio unavailable. Audio currently uses the WebSocket path.
+
+The browser chooses native WebCodecs Opus decoding when supported, otherwise Web Audio PCM playback. The server encodes Opus at a 96 kbit/s target in 20 ms packets with complexity 4. PCM preserves compatibility at roughly 1.54 Mbit/s before transport overhead. Raw and encoded audio queues are bounded; stale packets are dropped after 100 ms. Browser decoding runs outside the video paint queue, and scheduled playback is capped at 200 ms. Video and audio still share TCP, so network congestion can delay both.
+
+The control message is `{"type":"audio","enabled":true,"codec":"opus"}` (or `"pcm"`); disabling uses `"enabled":false`. The server returns `audio_status` with `available`, `enabled`, the chosen `codec` and an optional `message`. Each binary audio message has a 20-byte little-endian header: `GLA1`, codec byte (`0` PCM or `1` Opus), channel count byte (`2`), zero reserved u16, sample rate u32 (`48000`), wrapping sequence u32, and frame count u32 (`960`). Its payload is one Opus packet or interleaved signed PCM16. Audio messages do not consume the video ACK window.
+
 ## Authentication
 
 The listener authenticates an access key and issues a signed cookie for its fixed desktop. It checks Origin and bounds session lifetime and client admission. WebTransport connections additionally need a single-use ticket and a pinned certificate. This is a single-source operator model, not multi-tenant authorization; the [security guide](security.md) describes its limits.

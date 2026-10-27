@@ -1,3 +1,4 @@
+mod audio;
 mod benchmark_recorder;
 mod datagram;
 mod demo;
@@ -214,6 +215,11 @@ const WEB_ASSETS: &[(&str, &str, &str)] = &[
         "client.js",
         "text/javascript",
         include_str!("../../../web/client.js"),
+    ),
+    (
+        "audio-player.js",
+        "text/javascript",
+        include_str!("../../../web/audio-player.js"),
     ),
     (
         "decoder.js",
@@ -2271,6 +2277,7 @@ struct Captured {
 }
 
 struct Source {
+    audio: audio::Session,
     frames: watch::Receiver<Option<Captured>>,
     input: mpsc::Sender<Input>,
     events: mpsc::Receiver<serde_json::Value>,
@@ -2289,6 +2296,7 @@ async fn source(app: &App) -> Result<Source> {
     let (frame_tx, frames) = watch::channel(None);
     let (input, mut input_rx) = mpsc::channel::<Input>(128);
     let (event_tx, events) = mpsc::channel(16);
+    let (audio, mut audio_requests, audio_status) = audio::channel();
     let mut tasks = JoinSet::new();
     let mut shutdown = None;
     let mut capture_lease = None;
@@ -2337,6 +2345,13 @@ async fn source(app: &App) -> Result<Source> {
         .await
         .context("VNC connect timeout")??;
         let teardown_control = reader.teardown_control();
+        let raw_audio = reader.audio_events();
+        let mut audio_available = writer.audio_available();
+        tasks.spawn(audio::encode(
+            raw_audio,
+            audio.request.subscribe(),
+            audio.packets.clone(),
+        ));
         let close_policy = app.args.rfb_close_policy.unwrap_or_default();
         let input_id = Arc::new(AtomicU32::new(0));
         let dimensions = Arc::new(AtomicU32::new(
@@ -2459,8 +2474,22 @@ async fn source(app: &App) -> Result<Source> {
             let mut first = true;
             let mut keys = HashSet::new();
             let mut pointer = None;
+            let mut audio_enabled = false;
+            let initial_audio_request = *audio_requests.borrow_and_update();
+            audio::update_capture(&mut writer, initial_audio_request, &mut audio_enabled, &audio_status, !display_input_only).await;
             loop {
                 tokio::select! {
+                    changed = audio_requests.changed() => {
+                        if changed.is_err() { break; }
+                        let request = *audio_requests.borrow_and_update();
+                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status, !display_input_only).await;
+                    }
+                    changed = audio_available.changed() => {
+                        if changed.is_err() { break; }
+                        audio_available.borrow_and_update();
+                        let request = *audio_requests.borrow();
+                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status, !display_input_only).await;
+                    }
                     command = input_rx.recv() => {
                         let Some(command) = command else { break; };
                         stage_trace::emit(&input_trace,stage_trace::Kind::InputDequeued,||stage_trace::Fields { input_id:Some(u64::from(command.id())),..stage_trace::Fields::default() });
@@ -2491,6 +2520,7 @@ async fn source(app: &App) -> Result<Source> {
                     }
                 }
             }
+            if audio_enabled { let _ = writer.set_audio(false).await; }
             let release_start = tokio::time::Instant::now();
             let mut releases = rfb_teardown::Releases::default();
             for keysym in keys {
@@ -2507,6 +2537,7 @@ async fn source(app: &App) -> Result<Source> {
         });
     }
     Ok(Source {
+        audio,
         frames,
         input,
         events,
@@ -2633,6 +2664,11 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     let input_trace = app.stage_trace.clone();
     let input_actor = stage_trace::lease(&input_trace)?;
     let video = app.args.codec == "h264";
+    let display_input_only = app.args.datagram_display_input_only;
+    let audio_request = source.audio.request.clone();
+    let writer_audio_request = audio_request.subscribe();
+    let mut audio_status = source.audio.status.clone();
+    let mut audio_packets = source.audio.packets.subscribe();
     // This task forwards input independently of semaphore waits, encoding and writes.
     // Dropping the session's JoinSet aborts it and releases its input sender clone.
     io_tasks.spawn(async move {
@@ -2647,6 +2683,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                             Some(StreamCommand::Ack(sequence))
                         }
                         Some("resync") => Some(StreamCommand::Resync),
+                        Some("audio") => { if !display_input_only { audio::request(&audio_request, value)?; } None }
                         Some("ping") => Some(StreamCommand::Reply(Message::Text(json!({"type":"pong","id":value.get("id")}).to_string().into()))),
                         _ => {
                             let command: Input = serde_json::from_value(value)?;
@@ -2681,8 +2718,26 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
         let _trace_actor = writer_actor;
         // Keep hello first on the wire while the independent receiver forwards input.
         tokio::time::timeout(Duration::from_secs(10), sink.send(hello)).await.context("hello write timed out")??;
+        let initial_audio_status = audio_status.borrow_and_update().message();
+        tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Text(initial_audio_status.to_string().into()))).await.context("audio status write timed out")??;
+        let mut audio_status_open = true;
         loop {
             let packet = tokio::select! {
+                changed = audio_status.changed(), if audio_status_open => {
+                    if changed.is_err() { audio_status_open = false; continue; }
+                    let status = audio_status.borrow_and_update().message();
+                    tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Text(status.to_string().into()))).await.context("audio status write timed out")??;
+                    continue;
+                }
+                packet = audio_packets.recv() => {
+                    if let Ok(packet) = packet {
+                        let request = *writer_audio_request.borrow();
+                        if request.codec.is_some() && packet.generation == request.generation && packet.received.elapsed() <= audio::MAX_AGE {
+                            tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Binary(packet.bytes.to_vec().into()))).await.context("audio write timed out")??;
+                        }
+                    }
+                    continue;
+                }
                 Some(control) = controls.recv() => {
                     tokio::time::timeout(Duration::from_secs(10), sink.send(control.message)).await.context("control write timed out")??;
                     if let Some(flushed) = control.flushed { let _ = flushed.send(()); }

@@ -1,6 +1,6 @@
 # Gliss
 
-An experimental codec for streaming VM desktops to the browser. A Rust server captures a VM over VNC, encodes on the CPU and forwards keyboard and mouse input back. The browser needs no GPU, guest agent or plugin. Alpha quality. The code, experiments and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
+An experimental codec for streaming VM desktops to the browser. A Rust server captures a VM's display and audio over VNC, encodes on the CPU and forwards keyboard and mouse input back. The browser needs no GPU, guest agent or plugin. Alpha quality. The code, experiments and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
 
 | Workload (1280×800 VM, CPU only) | Stack | p95 response | Traffic |
 | --- | --- | ---: | ---: |
