@@ -1,6 +1,7 @@
 import { Decoder } from './decoder.js';
 import { VideoDecoderAdapter } from './video-decoder.js';
 import { decodeProbe } from './probe.js';
+import { AudioPlayer, isAudioPacket } from './audio-player.js';
 
 const keysyms = {Backspace:0xff08,Tab:0xff09,Enter:0xff0d,Escape:0xff1b,Delete:0xffff,Home:0xff50,End:0xff57,PageUp:0xff55,PageDown:0xff56,ArrowLeft:0xff51,ArrowUp:0xff52,ArrowRight:0xff53,ArrowDown:0xff54,Insert:0xff63,Shift:0xffe1,Control:0xffe3,Alt:0xffe9,Meta:0xffeb,CapsLock:0xffe5,NumLock:0xff7f,ScrollLock:0xff14,PrintScreen:0xff61,Pause:0xff13,ContextMenu:0xff67};
 for(let n=1;n<=24;n++)keysyms[`F${n}`]=0xffbd+n;
@@ -12,6 +13,10 @@ export class GlissClient {
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
     this.renderStrategy='full';this.codec=null;
+    this.audio=new AudioPlayer(state=>{
+      if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
+      this.onEvent(state);
+    });this.audioRequested=false;
     this.bindInput();
   }
   async connect() {
@@ -32,15 +37,23 @@ export class GlissClient {
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
-      ++this.epoch;decoder.close?.();this.keys.clear();this.buttons=0;
+      ++this.epoch;decoder.close?.();this.audioRequested=false;this.audio.dispose();this.keys.clear();this.buttons=0;
       this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
       this.onEvent({type:'close',code:event.code,reason:event.reason});
     };
     socket.onerror=()=>{if(epoch===this.epoch)this.onStatus('Connection failed');};
-    socket.onmessage=event=>{if(epoch!==this.epoch)return;this.chain=this.chain.then(async()=>{
+    socket.onmessage=event=>{if(epoch!==this.epoch)return;
+      // Audio must keep running when video waits for a decoder or animation frame.
+      if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
+      let textMessage,textError;
+      if(typeof event.data==='string'){
+        try{textMessage=JSON.parse(event.data);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}}catch(error){textError=error;}
+      }
+      this.chain=this.chain.then(async()=>{
       if(epoch!==this.epoch)return;
       if(typeof event.data==='string'){
-        const message=JSON.parse(event.data);
+        if(textError)throw textError;
+        const message=textMessage;
         if(message.type==='hello'){
           this.codec=message.codec;
           if(message.codec==='h264'){decoder=new VideoDecoderAdapter({timeoutMs:socket.predictiveVideo===true?250:5000,configureTimeoutMs:socket.predictiveVideo===true?250:null});this.decoder=decoder;}
@@ -122,13 +135,24 @@ export class GlissClient {
     if(input.type==='pointer'){this.point={x:input.x,y:input.y};this.buttons=input.buttons&7;}
     return id;
   }
+  audioControl(enabled,codec=this.audio.codec??'pcm'){
+    if(this.socket?.readyState===WebSocket.OPEN)this.socket.send(JSON.stringify({type:'audio',enabled,codec}));
+  }
+  async setAudioEnabled(enabled){
+    if(!enabled){const requested=this.audioRequested;this.audioRequested=false;if(requested)this.audioControl(false);this.audio.stop();this.audio.state();return;}
+    if(!this.audio.available||this.socket?.readyState!==WebSocket.OPEN)return;
+    const socket=this.socket,epoch=this.epoch;
+    const codec=await this.audio.enable();
+    if(!codec||epoch!==this.epoch||socket!==this.socket||socket.readyState!==WebSocket.OPEN)return;
+    this.audioRequested=true;this.audioControl(true,codec);
+  }
   readProbe(){return decodeProbe((x,y)=>this.ctx.getImageData(x,y,1,1).data);}
   release() {
     for(const keysym of this.keys.values())this.send({type:'key',keysym,down:false});
     this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
-  disconnect(){this.release();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  disconnect(){this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
   dispose(){this.disconnect();this.listeners.abort();}
   bindInput(){

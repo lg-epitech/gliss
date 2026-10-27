@@ -46,7 +46,10 @@ async fn init_after_security(stream: &mut TcpStream, width: u16, height: u16) {
     for _ in 0..count {
         encodings.push(stream.read_i32().await.unwrap());
     }
-    assert_eq!(encodings, [0, 1, -239, -223, -308, 0xc0a1_e5ceu32 as i32]);
+    assert_eq!(
+        encodings,
+        [0, 1, -239, -223, -308, 0xc0a1_e5ceu32 as i32, -259]
+    );
 }
 
 async fn rectangle(stream: &mut TcpStream, x: u16, y: u16, width: u16, height: u16, encoding: i32) {
@@ -60,6 +63,118 @@ async fn event(reader: &mut gliss_rfb::RfbReader) -> anyhow::Result<Event> {
     timeout(Duration::from_secs(2), reader.read_event())
         .await
         .unwrap()
+}
+
+async fn audio_ack(stream: &mut TcpStream) {
+    stream.write_all(&[0, 0, 0, 1]).await.unwrap();
+    rectangle(stream, 0, 0, 16, 16, -259).await;
+}
+
+#[tokio::test]
+async fn qemu_audio_waits_for_capability_and_sets_format_before_enabling() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, 16, 16).await;
+        // Ordinary servers are never sent QEMU controls before acknowledging.
+        let mut key = [0; 8];
+        stream.read_exact(&mut key).await.unwrap();
+        assert_eq!(key, [4, 1, 0, 0, 0, 0, 0, 65]);
+        audio_ack(&mut stream).await;
+        let mut enable = [0; 14];
+        stream.read_exact(&mut enable).await.unwrap();
+        assert_eq!(enable, [255, 1, 0, 2, 3, 2, 0, 0, 187, 128, 255, 1, 0, 0]);
+        stream.write_all(&[255, 1, 0, 1]).await.unwrap();
+        stream
+            .write_all(&[255, 1, 0, 2, 0, 0, 0, 8, 1, 0, 255, 127, 0, 128, 255, 255])
+            .await
+            .unwrap();
+        stream.write_all(&[2]).await.unwrap();
+        let mut disable = [0; 4];
+        stream.read_exact(&mut disable).await.unwrap();
+        assert_eq!(disable, [255, 1, 0, 1]);
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    let mut audio = reader.audio_events();
+    assert!(writer.set_audio(true).await.is_err());
+    writer
+        .send_input(&Input::Key {
+            keysym: 65,
+            down: true,
+            id: 1,
+        })
+        .await
+        .unwrap();
+    let mut available = writer.audio_available();
+    timeout(Duration::from_secs(2), available.wait_for(|value| *value))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    writer.set_audio(true).await.unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(2), audio.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        gliss_rfb::audio::Event::Begin
+    ));
+    let gliss_rfb::audio::Event::Data { bytes, .. } = timeout(Duration::from_secs(2), audio.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("audio data expected")
+    };
+    assert_eq!(bytes.as_ref(), &[1, 0, 255, 127, 0, 128, 255, 255]);
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
+    writer.set_audio(false).await.unwrap();
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn stalled_audio_consumer_does_not_block_display_events_or_input() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, 16, 16).await;
+        audio_ack(&mut stream).await;
+        let mut enable = [0; 14];
+        stream.read_exact(&mut enable).await.unwrap();
+        for number in 0..64u32 {
+            stream.write_all(&[255, 1, 0, 2, 0, 0, 0, 4]).await.unwrap();
+            stream.write_all(&number.to_le_bytes()).await.unwrap();
+        }
+        stream.write_all(&[2]).await.unwrap();
+        let mut key = [0; 8];
+        stream.read_exact(&mut key).await.unwrap();
+        assert_eq!(key, [4, 0, 0, 0, 0, 0, 0, 65]);
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    let mut audio = reader.audio_events();
+    let mut available = writer.audio_available();
+    timeout(Duration::from_secs(2), available.wait_for(|value| *value))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    writer.set_audio(true).await.unwrap();
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
+    assert!(matches!(
+        audio.recv().await,
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+    ));
+    writer
+        .send_input(&Input::Key {
+            keysym: 65,
+            down: false,
+            id: 2,
+        })
+        .await
+        .unwrap();
+    peer.await.unwrap();
 }
 
 #[tokio::test]

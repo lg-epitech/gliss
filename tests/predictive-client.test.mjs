@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {VideoDecoderAdapter} from '../web/video-decoder.js';
+import {AudioPlayer,isAudioPacket} from '../web/audio-player.js';
 const source=await readFile(new URL('../web/client.js',import.meta.url),'utf8');
 const begin='const keysyms =';
 assert.equal(source.split(begin).length,2);
@@ -16,8 +17,8 @@ function actualClient(predictive){
   const raf=work=>{callback=work;registered();return 1;};
   class Decoder{close(){}reset(){}}
   class Socket{static OPEN=1;constructor(){this.readyState=1;this.predictiveVideo=predictive;}send(text){sent.push(JSON.parse(text));}close(){this.readyState=3;}}
-  const Client=new Function('Decoder','VideoDecoderAdapter','decodeProbe','window','document','location','WebSocket','requestAnimationFrame','performance',
-    actualClass+'\nreturn GlissClient;')(Decoder,VideoDecoderAdapter,()=>0,{addEventListener(){}},{addEventListener(){}},
+  const Client=new Function('Decoder','VideoDecoderAdapter','decodeProbe','AudioPlayer','isAudioPacket','window','document','location','WebSocket','requestAnimationFrame','performance',
+    actualClass+'\nreturn GlissClient;')(Decoder,VideoDecoderAdapter,()=>0,AudioPlayer,isAudioPacket,{addEventListener(){}},{addEventListener(){}},
       {pathname:'/',protocol:'http:',host:'127.0.0.1'},Socket,raf,performance);
   const app=new Client(canvas);
   return{app,events,sent,canvas,
@@ -31,6 +32,16 @@ function actualClient(predictive){
       return{before,closed};
     }};
 }
+test('muting unrequested audio sends no unsupported control and preserves datagram video',async()=>{
+  const fixture=actualClient(true);await fixture.hello();
+  await fixture.app.setAudioEnabled(false);
+  fixture.app.audio.enable=()=>assert.fail('unsupported audio must not allocate playback resources');
+  await fixture.app.setAudioEnabled(true);
+  assert.deepEqual(fixture.sent,[],'datagram control does not accept audio messages');
+  await fixture.frame(true,1);
+  assert.equal(fixture.app.metrics.frames,1);assert.equal(fixture.app.metrics.errors,0);
+  assert.deepEqual(fixture.sent,[{type:'ack',sequence:1}]);
+});
 test('actual client defers predictive resize until approval; rejected output leaves Canvas untouched',async()=>{
   const fixture=actualClient(true);await fixture.hello();assert.equal(fixture.app.decoder.timeoutMs,250);assert.equal(fixture.app.decoder.configureTimeoutMs,250);
   const rejected=await fixture.frame(false,1);

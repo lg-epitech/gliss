@@ -40,13 +40,13 @@ async fn server_init(stream: &mut UnixStream, width: u16, height: u16) {
     stream.read_exact(&mut format).await.unwrap();
     assert_eq!(&format[..4], &[0, 0, 0, 0]);
     assert_eq!(&format[4..], &PIXEL_FORMAT);
-    let mut encodings = [0; 28];
+    let mut encodings = [0; 32];
     stream.read_exact(&mut encodings).await.unwrap();
     assert_eq!(
         encodings,
         [
-            2, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 1, 255, 255, 255, 17, 255, 255, 255, 33, 255, 255,
-            254, 204, 0xc0, 0xa1, 0xe5, 0xce
+            2, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0, 1, 255, 255, 255, 17, 255, 255, 255, 33, 255, 255,
+            254, 204, 0xc0, 0xa1, 0xe5, 0xce, 255, 255, 254, 253
         ]
     );
 }

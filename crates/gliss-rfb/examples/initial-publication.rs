@@ -68,8 +68,8 @@ async fn handshake(peer: &mut UnixStream) {
     assert_eq!(peer.read_u8().await.unwrap(), 2);
     assert_eq!(peer.read_u8().await.unwrap(), 0);
     let count = peer.read_u16().await.unwrap();
-    assert_eq!(count, 6);
-    for expected in [0, 1, -239, -223, -308, 0xc0a1_e5ceu32 as i32] {
+    assert_eq!(count, 7);
+    for expected in [0, 1, -239, -223, -308, 0xc0a1_e5ceu32 as i32, -259] {
         assert_eq!(peer.read_i32().await.unwrap(), expected);
     }
 }

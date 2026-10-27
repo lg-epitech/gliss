@@ -3,6 +3,7 @@
 //! Wire formats follow [RFC 6143](https://www.rfc-editor.org/rfc/rfc6143.html).
 //! Screen resizing follows the [RFB extension specification](https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst).
 
+pub mod audio;
 mod clipboard;
 mod teardown;
 pub mod trace;
@@ -29,13 +30,13 @@ use tokio::net::UnixStream;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::timeout,
 };
 
 const PIXEL_FORMAT: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0];
-const ENCODINGS: [i32; 6] = [0, 1, -239, -223, -308, clipboard::ENCODING];
+const ENCODINGS: [i32; 7] = [0, 1, -239, -223, -308, clipboard::ENCODING, audio::ENCODING];
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -73,6 +74,7 @@ pub enum Event {
 /// Dropping this handle stops wire decoding. Cancelling `read_event` leaves it intact.
 pub struct RfbReader {
     events: mpsc::Receiver<Result<Event>>,
+    audio: broadcast::Sender<audio::Event>,
     task: JoinHandle<()>,
     drain: ReaderDrainControl,
     trace: trace::Sink,
@@ -82,6 +84,7 @@ pub struct RfbReader {
 /// Messages are serialized by an owned task, even if the caller cancels its wait.
 pub struct RfbWriter {
     commands: mpsc::Sender<WriteCommand>,
+    audio_available: watch::Receiver<bool>,
     task: JoinHandle<()>,
     layout: Arc<Mutex<Option<Screen>>>,
     trace: trace::Sink,
@@ -270,6 +273,12 @@ where
     let (commands, command_rx) = mpsc::channel(8);
     let read_commands = commands.clone();
     let (event_tx, events) = mpsc::channel(2);
+    let (audio, _) = broadcast::channel(8);
+    let (audio_available_tx, audio_available) = watch::channel(false);
+    let reader_audio = audio::Sink {
+        events: audio.clone(),
+        available: audio_available_tx,
+    };
     let read_layout = layout.clone();
     let (drain_tx, mut drain_rx) = mpsc::channel::<teardown::DrainRequest>(1);
     let read_trace = trace.clone();
@@ -292,6 +301,7 @@ where
                 &read_commands,
                 &event_tx,
                 &read_trace,
+                &reader_audio,
             );
             tokio::pin!(decode);
             tokio::select! {
@@ -324,6 +334,7 @@ where
     Ok((
         RfbReader {
             events,
+            audio,
             task: read_task,
             drain,
             trace: trace.clone(),
@@ -331,6 +342,7 @@ where
         },
         RfbWriter {
             commands,
+            audio_available,
             task: write_task,
             layout,
             trace,
@@ -418,6 +430,11 @@ async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
 }
 
 impl RfbReader {
+    /// Audio never waits for a consumer: lagging subscribers lose old samples.
+    pub fn audio_events(&self) -> broadcast::Receiver<audio::Event> {
+        self.audio.subscribe()
+    }
+
     pub fn teardown_control(&self) -> ReaderDrainControl {
         self.drain.clone()
     }
@@ -459,6 +476,20 @@ impl Drop for RfbWriter {
 }
 
 impl RfbWriter {
+    pub fn audio_available(&self) -> watch::Receiver<bool> {
+        self.audio_available.clone()
+    }
+
+    /// Enable capture only after the server acknowledges QEMU's audio extension.
+    pub async fn set_audio(&mut self, enabled: bool) -> Result<()> {
+        ensure!(
+            *self.audio_available.borrow(),
+            "RFB server has not confirmed audio support"
+        );
+        self.send(WriteMessage::Bytes(audio::control(enabled)), None, false)
+            .await
+    }
+
     pub fn supports_resize(&self) -> bool {
         self.layout.lock().is_ok_and(|layout| layout.is_some())
     }
@@ -682,6 +713,7 @@ async fn decode<R: AsyncRead + Unpin>(
     commands: &mpsc::Sender<WriteCommand>,
     events: &mpsc::Sender<Result<Event>>,
     trace: &trace::Sink,
+    audio: &audio::Sink,
 ) -> Result<()> {
     let mut update_ordinal = 0u64;
     loop {
@@ -723,6 +755,9 @@ async fn decode<R: AsyncRead + Unpin>(
                         let height = read.read_u16().await?;
                         let encoding = read.read_i32().await?;
                         match encoding {
+                            audio::ENCODING => {
+                                audio.available.send_replace(true);
+                            }
                             0 => {
                                 changed |= width > 0 && height > 0;
                                 bounds(&frame, x, y, width, height)?;
@@ -976,6 +1011,11 @@ async fn decode<R: AsyncRead + Unpin>(
                         .await
                         .context("RFB receiver dropped")?;
                 }
+            }
+            255 => {
+                ensure!(*audio.available.borrow(), "unnegotiated QEMU audio message");
+                let event = audio::read(&mut read).await?;
+                let _ = audio.events.send(event);
             }
             other => bail!("unsupported RFB server message {other}"),
         }
