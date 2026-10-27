@@ -5,7 +5,8 @@ const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
 const MAX_FRAMES = 5760;
 const MAX_BUFFER_SECONDS = 0.2;
-const START_DELAY_SECONDS = 0.02;
+// Leave room for ordinary packet jitter before the first playback deadline.
+const START_DELAY_SECONDS = 0.06;
 const MAX_DECODE_QUEUE = 8;
 
 export function isAudioPacket(data) {

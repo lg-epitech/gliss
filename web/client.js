@@ -45,13 +45,15 @@ export class GlissClient {
     socket.onmessage=event=>{if(epoch!==this.epoch)return;
       // Audio must keep running when video waits for a decoder or animation frame.
       if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
+      let textMessage,textError;
       if(typeof event.data==='string'){
-        try{const message=JSON.parse(event.data);if(message.type==='audio_status'){this.audio.status(message);this.onEvent(message);return;}}catch{}
+        try{textMessage=JSON.parse(event.data);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}}catch(error){textError=error;}
       }
       this.chain=this.chain.then(async()=>{
       if(epoch!==this.epoch)return;
       if(typeof event.data==='string'){
-        const message=JSON.parse(event.data);
+        if(textError)throw textError;
+        const message=textMessage;
         if(message.type==='hello'){
           this.codec=message.codec;
           if(message.codec==='h264'){decoder=new VideoDecoderAdapter({timeoutMs:socket.predictiveVideo===true?250:5000,configureTimeoutMs:socket.predictiveVideo===true?250:null});this.decoder=decoder;}
