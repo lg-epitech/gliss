@@ -1,0 +1,15 @@
+{
+  "schema": "gliss-audio-marker-public-v1",
+  "date": "2026-10-28",
+  "binary_source_commit": "2db6d735",
+  "binary_sha256": "fb0eaf78b25b446bb831b86fb273cb73d26f0042637ad29f45bd44246640382f",
+  "qemu_version": "11.1.0",
+  "mixer": {
+    "file": "mixer-components.json.gz",
+    "compressed_sha256": "f08d69303680a243a9435e1f3e32258d82064a2744ffcd6c72df70638106eadc",
+    "original_sha256": "17722131a5a524dba4a3b65a860f3bb65187ec9a92f7445de1bd53eb9af623f2",
+    "plan": "mixer-plan.json",
+    "plan_sha256": "4f7bd34ef4eba7b43e3b1741dbb21e8f3cfb5b9762f49f98b3b418639467d145"
+  },
+  "qualification": "Four fresh owned guests, two codecs per guest, six source markers per codec. Trigger-to-analyser observations and pure-tone amplitude, not physical speaker latency or music quality."
+}

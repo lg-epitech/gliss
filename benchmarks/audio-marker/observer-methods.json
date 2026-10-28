@@ -1,0 +1,31 @@
+{
+  "schema": "gliss-audio-marker-method-failures-v1",
+  "no_marker_latency_results_collected": true,
+  "attempts": [
+    {
+      "method": "page-route worklet module",
+      "outcome": "AbortError before source pulses"
+    },
+    {
+      "method": "routing diagnostic initial test",
+      "outcome": "Test bug: Fetch response.status was called as a function; corrected before diagnosis"
+    },
+    {
+      "method": "page-route diagnostic",
+      "outcome": "Worklet load aborted; ordinary module fetch returned 200; no worklet response observed"
+    },
+    {
+      "method": "context-route diagnostic",
+      "outcome": "Same worklet load failure"
+    },
+    {
+      "method": "direct HTTP worklet control",
+      "outcome": "Loaded successfully under the same CPU-only browser flags"
+    },
+    {
+      "method": "native-CSP HTTP versus blob control",
+      "outcome": "HTTP loaded; blob load rejected with AbortError"
+    }
+  ],
+  "decision": "Use standard AnalyserNode taps without changing native CSP or the production transport. These observations do not establish the root cause of the worklet routing failure."
+}

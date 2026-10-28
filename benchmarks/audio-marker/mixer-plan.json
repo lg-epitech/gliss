@@ -1,0 +1,38 @@
+{
+  "schema": "gliss-audio-mixer-component-plan-v1",
+  "order": [
+    44100,
+    48000,
+    48000,
+    44100
+  ],
+  "codecs": [
+    "opus",
+    "pcm"
+  ],
+  "codes": [
+    1,
+    10,
+    20,
+    30,
+    40,
+    48
+  ],
+  "per_marker_deadline_ms": 1500,
+  "marker_duration_ms": 160,
+  "sample_rate": 48000,
+  "expected_amplitude": [
+    0.3662109375,
+    0.244140625
+  ],
+  "source_pins": {
+    "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+    "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08",
+    "test-support/qemu-audio-marker/browser.mjs": "e8fd20ee982bff8f675dba00ccc405ee4e77f8647cfde1eb66404243c3cfff8b",
+    "test-support/qemu-audio-marker/fixture.mjs": "9a714ea1053a98dcdefc23b164154241a3c0706732186305bd505b92bafa9d66",
+    "test-support/qemu-audio-marker/detector.js": "ea15ce3966add08d9caf39727fc587c2982f271e465f21cb56357271d3a9e02e",
+    "scripts/test-qemu-audio-marker.mjs": "44f81db92ded34bbe2e4436fd785d59ea7088a05225b9518e761de9b204a4f25",
+    "tests/audio-marker-detector.test.mjs": "aa0f12c2808189079dbd2378dee669cc1789067d51756c071a2b86b37258bb20"
+  },
+  "qualification": "Loopback trigger-to-analyser observation and steady tone amplitude. Not physical speaker latency or matched perceptual music quality."
+}

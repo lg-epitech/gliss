@@ -72,6 +72,8 @@ The browser chooses native WebCodecs Opus decoding when supported, otherwise Web
 
 The control message is `{"type":"audio","enabled":true,"codec":"opus"}` (or `"pcm"`); disabling uses `"enabled":false`. The server returns `audio_status` with `available`, `enabled`, the chosen `codec` and an optional `message`. Each binary audio message has a 20-byte little-endian header: `GLA1`, codec byte (`0` PCM or `1` Opus), channel count byte (`2`), zero reserved u16, sample rate u32 (`48000`), wrapping sequence u32, and frame count u32 (`960`). Its payload is one Opus packet or interleaved signed PCM16. Audio messages do not consume the video ACK window.
 
+For a 48 kHz guest and Gliss capture path, configure the QEMU backend's fixed output at 48 kHz, stereo s16. The [guest marker study](../benchmarks/audio-marker/README.md) found high-frequency attenuation when the same path passed through QEMU's fixed 44.1 kHz mixer; its libvirt example shows the explicit output settings. This does not eliminate conversion for guests using other formats or establish a latency improvement.
+
 ## Authentication
 
 The listener authenticates an access key and issues a signed cookie for its fixed desktop. It checks Origin and bounds session lifetime and client admission. WebTransport connections additionally need a single-use ticket and a pinned certificate. This is a single-source operator model, not multi-tenant authorization; the [security guide](security.md) describes its limits.
