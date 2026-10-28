@@ -23,8 +23,8 @@
     },
     "benchmarks/audio-packet-duration/verify.py": {
       "registered_sha256": "3a49e6bc2bee99bde6acf6af5a85640df1fe93ca8537a0c787f51b15deba3ad3",
-      "final_sha256": "175e7d1b84debf96a63f644b72ec157eba41345791482f156bf1c641a243b39e",
-      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+      "final_sha256": "fefc10a57adae034ede4b3658157d4fde7f8347d2782556eb7f110333d0e64ed",
+      "scope": "Offline validation of ineligible rows and hash binding for post hoc audit disclosures; original selector, criteria, runtime and observations unchanged."
     },
     "benchmarks/audio-packet-duration/verify_shared.py": {
       "registered_sha256": "fb188fb51a2d744fb8d65b9ed888768bafc7ba147b65daa2c684696d29076766",
@@ -34,7 +34,7 @@
   },
   "criteria_sha256": "4933f2de7ab6306a32e269f2833b6e2040c717e20df3042a876b2ba57c98a0e3",
   "decision_sha256": "e043adcd2dc4c0feb7d3ec350b5014af51138813175542c8a99edda94544970b",
-  "validation_sha256": "37d07dadef035430e8edcfb6aa06d494c2abbd3ef018e8556140edbb625d57fb",
+  "validation_sha256": "539d2fd2584a805208e80a2607fe505d4323122adada72457719bfe5fecb2018",
   "retrospective_quality": {
     "files": {
       "quality.json": "12960f69b5647365b48bc0cf2e5eee61c96407b485ee3ad02169bb670f3b87b7",
@@ -49,5 +49,10 @@
       "arm-3.f32le.gz": "609ffa3fe417e5c455c6ed90587e6f5c87aa5f0c4971cdd99ea843deda6276ed"
     },
     "qualification": "Post hoc320ms two-tone analysis of previously retained native prerequisite packets. Fresh libopus1.6.1 decoding, recorded312-frame alignment. No new encoding, music-quality, live-pipeline, browser, speaker or default-acceptance claim."
+  },
+  "audit_files": {
+    "audit.json": "49a90a5ba63c8ef307276f7cddbdfdbb20db6fabff6ee15c070c6a883cc38423",
+    "audit_evidence.py": "e504784a228c3f9998980be97cd9912f72588c77da5c301d179c2b2c63e00cff",
+    "audit-evidence.json": "ebfa33849014d06112f1192b58d2eed2efed6dbb7bd3201a790dd6de306d6c33"
   }
 }

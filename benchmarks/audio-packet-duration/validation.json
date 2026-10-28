@@ -75,8 +75,8 @@
     },
     "benchmarks/audio-packet-duration/verify.py": {
       "registered_sha256": "3a49e6bc2bee99bde6acf6af5a85640df1fe93ca8537a0c787f51b15deba3ad3",
-      "final_sha256": "175e7d1b84debf96a63f644b72ec157eba41345791482f156bf1c641a243b39e",
-      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+      "final_sha256": "fefc10a57adae034ede4b3658157d4fde7f8347d2782556eb7f110333d0e64ed",
+      "scope": "Offline validation of ineligible rows and hash binding for post hoc audit disclosures; original selector, criteria, runtime and observations unchanged."
     },
     "benchmarks/audio-packet-duration/verify_shared.py": {
       "registered_sha256": "fb188fb51a2d744fb8d65b9ed888768bafc7ba147b65daa2c684696d29076766",
@@ -101,5 +101,10 @@
     "tasks_max": 64,
     "outer_limit_seconds": 30
   },
-  "offline_evidence_verifiers_passed": 15
+  "offline_evidence_verifiers_passed": 15,
+  "independent_data_audit": {
+    "file": "audit.json",
+    "sha256": "49a90a5ba63c8ef307276f7cddbdfdbb20db6fabff6ee15c070c6a883cc38423",
+    "verdict": "clean within source/data scope; root runtime attestations remain qualified"
+  }
 }

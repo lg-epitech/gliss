@@ -1,0 +1,32 @@
+{
+  "schema": "gliss-audio-duration-independent-audit-v1",
+  "reviewed_commit": "111af2a9",
+  "review": "[Audit packet duration measurements and the decision to keep 20 ms](t3-thread://v1/thread:delegated-task:command%3Amcp%3A8b647592-ac0e-4619-af1a-04fdcfa8863d%3Adelegate-task%3Agliss-audio-duration-results-audit-t3-r1-20261028)",
+  "verdict": "clean within source/data scope; published figures and rejection reproduced independently",
+  "independent_checks": [
+    "All132 archived registered file hashes and all23 runtime source pins",
+    "All8 fixed positions,48 timely unique sound probes and160 controls",
+    "Stable native/guest identities and complete7-process browser endpoint sets; raw CPU arithmetic",
+    "Packet, frame and byte totals; eligibility reasons; sampled native counter deltas",
+    "Retained input hash, aligned waveforms, per-channel SNR and312-frame alignment",
+    "Original selector unchanged; disclosed verifier repairs strengthen validation of ineligible observations"
+  ],
+  "root_runtime_attestations_not_independently_verified": [
+    "Test/build/Clippy execution and private log identities",
+    "Service owner terminal states and runtime isolation/resource settings",
+    "Decoder library identity and version string"
+  ],
+  "disclosures": [
+    "All16 audio-arrival gaps over100ms occur on the constrained profile and end2.4..12.1ms after18.1..18.4kB keyframes. This supports a shared-TCP/video-burst inference; the aggregate counter retains no exact playback branch witness.",
+    "All2000 live40ms packets and18 prerecorded40ms fixture packets have499wire bytes. The20ms live packets span252..450bytes. Constant observed sizes do not prove the encoder VBR setting was disabled.",
+    "The scheduled-output count cannot measure already-scheduled sound cleared by a reset. Observer/serialization overhead scales with packet count and slightly favours the500-packet arm. No speedup is claimed.",
+    "Per-profile guest build identities are complete; their initramfs hashes differ while kernel/init binary hashes match.",
+    "The source-set aggregate recipe is now retained in audit_evidence.py; original per-file/archive hashes already verify."
+  ],
+  "root_adjustments_to_review": [
+    "The review text counted1500 live40ms packets; root rechecked the full cohort and corrected that count to2000. Packet-size constancy is unchanged.",
+    "The head-of-line/reset attribution is kept as an inference, without claiming an exact reset branch or that every future trial must fail."
+  ],
+  "selection_or_runtime_changed": false,
+  "new_live_experiment_required": false
+}

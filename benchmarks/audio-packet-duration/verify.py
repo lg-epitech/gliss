@@ -77,6 +77,8 @@ def main():
     require(registration['positions_executed']==0 and registration['status']=='prospective','registration no longer prospective')
     for name in ['criteria','decision','validation']:
         require(digest((HERE/(name+'.json')).read_bytes())==inventory[name+'_sha256'],name+' changed')
+    for name,expected in inventory.get('audit_files',{}).items():
+        require(digest((HERE/name).read_bytes())==expected,'audit disclosure changed: '+name)
     require(registration['criteria_sha256']==inventory['criteria_sha256'],'prospective criteria changed')
     for name,change in inventory.get('post_execution_verifier_repairs',{}).items():
         require(registration['sources'][name]==change['registered_sha256'] and digest((ROOT/name).read_bytes())==change['final_sha256'],'verifier repair binding changed')

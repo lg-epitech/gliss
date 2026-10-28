@@ -34,6 +34,22 @@ changing the default or the browser jitter buffer.
   were about 19 seconds, rather than the entire 20-second window. Their zero
   deltas cannot prove delivery or cover an unobserved tail.
 
+A post hoc [arrival-trace derivation](audit-evidence.json) found sixteen audio
+arrival gaps over 100 ms, all on the constrained link. They lasted **149–183 ms**
+and ended **2.4–12.1 ms after 18.1–18.4 kB keyframes**. At the configured
+125 kB/s rate, one such picture takes roughly 145 ms to serialize. This supports
+shared-TCP head-of-line blocking followed by playback resets as an explanation.
+The exact reset subcondition was not recorded, and a repeat is not guaranteed
+to fail identically. These events affected both packet durations; the failed
+gate does not isolate a packet-duration effect.
+
+All **2,000 live 40 ms packets** and **18 prerequisite 40 ms packets** were
+499 bytes each, while live 20 ms packets ranged from 252 to 450 bytes. The
+encoder settings were the same; observed fixed sizes do not prove VBR was
+disabled. Most of the roughly 4.5 kbit/s saving comes from sending 25 fewer
+20-byte Gliss headers per second. The waveform check below compares these
+encoded outputs, not an assurance of matched quality.
+
 The aggregate browser counter prevents accepting a CPU reduction earned by
 clearing scheduled sound. A false `measurement_valid` here means **ineligible
 for the registered CPU comparison**; it does not erase the measured responses
@@ -97,3 +113,12 @@ python3 -I -B benchmarks/audio-packet-duration/quality_verify.py
 The live controller is opt-in and requires the private isolation, resource
 limits and immutable executable specified above. It is not an unconfined
 launch recipe. The release default remains 20 ms.
+
+The final [independent audit](audit.json) reproduced the published figures,
+raw CPU arithmetic, failed selection and aligned-waveform metrics. Its scope
+excludes independent verification of runtime/test attestations. It also notes
+that observer work scales with packet count and that a scheduled-output count
+cannot detect sound later cleared from the queue. Those limits favour caution;
+no speedup is claimed. `audit_evidence.py` retains the source-set hash recipe
+and the post hoc packet-size/keyframe-correlation derivation. Neither changes
+the original registration, selector, observations or runtime.
