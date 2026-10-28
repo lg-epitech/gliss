@@ -1,0 +1,19 @@
+{
+  "schema": "gliss-audio-navigation-probe-registration-v1",
+  "status": "prospective",
+  "positions_executed": 0,
+  "order": [
+    128,
+    256
+  ],
+  "sources": {
+    "test-support/audio-direct-fill/navigation-probe.mjs": "06e1290f59ac6117629dac73838fb9f45d133d944e15713a806e196f59e28176",
+    "test-support/audio-direct-fill/page.mjs": "b9f7dee9eadbb977b0005fb6689bf65747c6f0c1f9d82dc1251676969677b612",
+    "test-support/audio-direct-fill/audio-player.js": "795389625fac39d26be1890eaa731f0759fc570b2c0edd358b47d8c5a5f5f8f9",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+  },
+  "scope": "Only repeated setup and own-cgroup kernel counters; no CPU/media performance position. One browser per owned unit, serial128/256task ceilings, fixed2GiB memory/60s timeout. Five-second navigation diagnostic does not replace any media deadline."
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "gliss-audio-direct-fill-rejected-setup-v1",
+  "positions_executed": 0,
+  "timed_positions_executed": 0,
+  "retained_pcm_sample_proof": true,
+  "failure": "TimeoutError during Opus setup; original runner did not retain the failing phase",
+  "cleanup_complete": true,
+  "controller_exit_status": 1,
+  "files": {
+    "plan.json": "1ed832576802b750b3cf26c8ca4becb5038cbf5bc129c7c9245271c7141951a9",
+    "registration.json": "0b9e098ab673b42f29667913d25eb1367a8647321247273df2b85c9a39c6132a",
+    "cohort.json.gz": "ccac64649dd5de69da85d4d792ae3cbab365b299c517154bb7660b25b3cd7786",
+    "source.tar.gz": "4b5aeb9225b9dfdc6ad73e17652f1b8e8d7a934782042fef63b0699a4600eead"
+  },
+  "original_report_sha256": "3f258b34fe8ccd3d18412b27a7fa0d590bef9c3c7b21a68bb769a4c1873896ee",
+  "original_report_bytes": 3894
+}

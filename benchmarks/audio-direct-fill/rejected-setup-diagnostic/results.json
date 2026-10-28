@@ -1,0 +1,23 @@
+{
+  "schema": "gliss-audio-direct-fill-rejected-setup-v1",
+  "timed_positions_executed": 0,
+  "retained_sample_proofs": {
+    "pcm": true,
+    "opus": true
+  },
+  "failure": "TimeoutError",
+  "phase": "cost-pcm-baseline-navigate",
+  "cleanup_complete": true,
+  "controller_exit_status": 1,
+  "files": {
+    "plan.json": "1ed832576802b750b3cf26c8ca4becb5038cbf5bc129c7c9245271c7141951a9",
+    "registration.json": "0305fcb0ab071120f3aae8225c6be838b2c44ee5c1adbd46d99487b1e1f0f438",
+    "cohort.json.gz": "7631555d4ad6aecf5f4d3b67873bbfdb795b0f3dafa1f28f85602eb658df126d",
+    "source.tar.gz": "ee765f745c0b390012fdc9ebed44bc76f99c33996c3454067d93e2d8140ccc43"
+  },
+  "original_report_sha256": "8488ddb493946a8aaaf35b341028d1ff7c84a8e747111fe0da9e1ac351e173c9",
+  "original_report_bytes": 5082,
+  "private_log_sha256": "37829b21fb110b3ac5a82d58e9065d32ad013dacf261664a6c6100089bd0d0f0",
+  "private_log_bytes": 1497,
+  "qualification": "All sample proofs completed; first cost position failed at real loopback navigation before any CPU measurement. No speed result. Original log is hashed rather than published because it includes private runtime paths."
+}

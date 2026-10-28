@@ -1,0 +1,30 @@
+{
+  "schema": "gliss-audio-direct-fill-registration-v3",
+  "status": "prospective",
+  "positions_executed": 0,
+  "base_commit": "c3ec7c7b",
+  "plan_sha256": "778039f69dde03312026b08f8c99a4161ee8c22bbfc844032ed80d6863c0cb82",
+  "sources": {
+    "test-support/audio-direct-fill/audio-player.js": "795389625fac39d26be1890eaa731f0759fc570b2c0edd358b47d8c5a5f5f8f9",
+    "test-support/audio-direct-fill/page.mjs": "b9f7dee9eadbb977b0005fb6689bf65747c6f0c1f9d82dc1251676969677b612",
+    "test-support/audio-direct-fill/candidate.test.mjs": "f1b82c08e31e62bf92e88bad4dbf204ae59a9a14a5f39ff1506e562e36250d2c",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "test-support/qemu-audio-motion/cpu.mjs": "c8ab59505cec3ba65fa11397b19a8675c486626fff29280511697cb2293df029",
+    "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e",
+    "scripts/bench-audio-direct-fill-256.mjs": "b06b3cc4cbcce94cb4e8999b6dee8341ac586a8e65b690f497520d6db98bda64",
+    "benchmarks/audio-direct-fill-256/plan.json": "778039f69dde03312026b08f8c99a4161ee8c22bbfc844032ed80d6863c0cb82",
+    "test-support/audio-direct-fill/resources.mjs": "8ff1f2eb4e033b710fc142d8de4c6a04af3de9ad7856784357eb477d9be67b4a"
+  },
+  "parent_sources": {
+    "scripts/bench-audio-direct-fill.mjs": "b3780d93b887121ccf6b91fb254c1b30fda354a2b25024e53eb00b7e98a0ff01",
+    "benchmarks/audio-direct-fill/plan.json": "1ed832576802b750b3cf26c8ca4becb5038cbf5bc129c7c9245271c7141951a9"
+  },
+  "setup_probe": {
+    "registration_sha256": "a6b3f592ef6ec173cc503cd62f6e527f91cc99f7a2a220f8e052a8aaa5d833f6",
+    "128": "a3d586f59dc19b3b9d5b2adeababfd69fc938e6ecb5f3a8b36ddd7d28162f250",
+    "256": "b11b4ccdae73dea700deb678c7d95d3e7b213374df635d0cd321210fa0967fab"
+  },
+  "qualification": "Fresh cohort after retained zero-position128task failures; fixed media/windows/cadence/buffer/retention criteria. Candidate and page sources unchanged.256task own-cgroup admission requires zero kernel denial events."
+}

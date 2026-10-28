@@ -1,0 +1,14 @@
+{
+  "schema": "gliss-audio-navigation-inventory-v1",
+  "files": {
+    "registration.json": "a6b3f592ef6ec173cc503cd62f6e527f91cc99f7a2a220f8e052a8aaa5d833f6",
+    "probe-128.json": "a3d586f59dc19b3b9d5b2adeababfd69fc938e6ecb5f3a8b36ddd7d28162f250",
+    "probe-256.json": "b11b4ccdae73dea700deb678c7d95d3e7b213374df635d0cd321210fa0967fab",
+    "source.tar.gz": "e1aa326eb795a0ba0151f4bd6f8827e50f58d8d3157543dc671366628b4d646c"
+  },
+  "controller_exit_status": {
+    "128": 1,
+    "256": 0
+  },
+  "scope": "Repeated setup only; zero CPU/media positions. Own-cgroup counters show resource denial under128tasks, no denial with256. No tracing proves the cause of each original timed-out navigation."
+}

@@ -1,0 +1,568 @@
+{
+  "schema": "gliss-audio-navigation-probe-v1",
+  "tasks_max": 128,
+  "sources": {
+    "test-support/audio-direct-fill/navigation-probe.mjs": "06e1290f59ac6117629dac73838fb9f45d133d944e15713a806e196f59e28176",
+    "test-support/audio-direct-fill/page.mjs": "b9f7dee9eadbb977b0005fb6689bf65747c6f0c1f9d82dc1251676969677b612",
+    "test-support/audio-direct-fill/audio-player.js": "795389625fac39d26be1890eaa731f0759fc570b2c0edd358b47d8c5a5f5f8f9",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+  },
+  "checkpoints": [
+    {
+      "phase": "before-listen",
+      "audit": {
+        "pids.current": 12,
+        "pids.max": 128,
+        "pids.peak": 12,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 100024320,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "prepare-before-new-page",
+      "audit": {
+        "pids.current": 67,
+        "pids.max": 128,
+        "pids.peak": 68,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 200953856,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "prepare-before-navigation",
+      "audit": {
+        "pids.current": 90,
+        "pids.max": 128,
+        "pids.peak": 90,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 229031936,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "prepare-ready",
+      "audit": {
+        "pids.current": 92,
+        "pids.max": 128,
+        "pids.peak": 99,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 240795648,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "prepare-closed",
+      "audit": {
+        "pids.current": 107,
+        "pids.max": 128,
+        "pids.peak": 116,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 280113152,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-before-new-page",
+      "audit": {
+        "pids.current": 107,
+        "pids.max": 128,
+        "pids.peak": 116,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 280055808,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-before-navigation",
+      "audit": {
+        "pids.current": 114,
+        "pids.max": 128,
+        "pids.peak": 116,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 283242496,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-ready",
+      "audit": {
+        "pids.current": 116,
+        "pids.max": 128,
+        "pids.peak": 123,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 296353792,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-enabled",
+      "audit": {
+        "pids.current": 126,
+        "pids.max": 128,
+        "pids.peak": 126,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 358137856,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-samples",
+      "audit": {
+        "pids.current": 127,
+        "pids.max": 128,
+        "pids.peak": 127,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 360321024,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-baseline-closed",
+      "audit": {
+        "pids.current": 116,
+        "pids.max": 128,
+        "pids.peak": 127,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 339501056,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-before-new-page",
+      "audit": {
+        "pids.current": 116,
+        "pids.max": 128,
+        "pids.peak": 127,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 339501056,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-before-navigation",
+      "audit": {
+        "pids.current": 123,
+        "pids.max": 128,
+        "pids.peak": 127,
+        "pids.events": {
+          "max": 0
+        },
+        "memory.current": 340373504,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-ready",
+      "audit": {
+        "pids.current": 120,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 344698880,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-enabled",
+      "audit": {
+        "pids.current": 117,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 372772864,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-samples",
+      "audit": {
+        "pids.current": 117,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 373387264,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "pcm-direct-closed",
+      "audit": {
+        "pids.current": 107,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 350810112,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "opus-baseline-before-new-page",
+      "audit": {
+        "pids.current": 107,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 350810112,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "opus-baseline-before-navigation",
+      "audit": {
+        "pids.current": 123,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 1
+        },
+        "memory.current": 357363712,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "opus-baseline-ready",
+      "audit": {
+        "pids.current": 119,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 3
+        },
+        "memory.current": 364105728,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "opus-baseline-enabled",
+      "audit": {
+        "pids.current": 121,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 3
+        },
+        "memory.current": 367579136,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "failed",
+      "audit": {
+        "pids.current": 107,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 3
+        },
+        "memory.current": 349892608,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    },
+    {
+      "phase": "terminal",
+      "audit": {
+        "pids.current": 12,
+        "pids.max": 128,
+        "pids.peak": 128,
+        "pids.events": {
+          "max": 3
+        },
+        "memory.current": 213401600,
+        "memory.max": 2147483648,
+        "memory.events": {
+          "low": 0,
+          "high": 0,
+          "max": 0,
+          "oom": 0,
+          "oom_kill": 0,
+          "oom_group_kill": 0,
+          "sock_throttled": 0
+        }
+      }
+    }
+  ],
+  "sample_proofs": [
+    {
+      "codec": "pcm",
+      "mode": "baseline",
+      "buffers": 8,
+      "samples_sha256": "1806af6dd5b6267bc05a62cb8656c9a81bcadabc4247e7b98ebab9a79f579614",
+      "snapshot": {
+        "available": true,
+        "enabled": true,
+        "codec": "pcm",
+        "contextState": "running",
+        "sources": 4,
+        "queuedSeconds": 0.07199999999999995,
+        "decodeQueue": 0,
+        "pendingDecodes": 0,
+        "received": 8,
+        "scheduled": 8,
+        "dropped": 0
+      }
+    },
+    {
+      "codec": "pcm",
+      "mode": "direct",
+      "buffers": 8,
+      "samples_sha256": "1806af6dd5b6267bc05a62cb8656c9a81bcadabc4247e7b98ebab9a79f579614",
+      "snapshot": {
+        "available": true,
+        "enabled": true,
+        "codec": "pcm",
+        "contextState": "running",
+        "sources": 5,
+        "queuedSeconds": 0.08133333333333329,
+        "decodeQueue": 0,
+        "pendingDecodes": 0,
+        "received": 8,
+        "scheduled": 8,
+        "dropped": 0
+      }
+    }
+  ],
+  "cost_positions_executed": 0,
+  "cleanup_complete": true,
+  "browser_version": "149.0.7827.55",
+  "failure": {
+    "phase": "opus-baseline-enabled",
+    "name": "Error"
+  }
+}

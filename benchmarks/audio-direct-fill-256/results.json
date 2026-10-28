@@ -1,0 +1,22 @@
+{
+  "schema": "gliss-audio-direct-fill-inventory-v1",
+  "files": {
+    "plan.json": "778039f69dde03312026b08f8c99a4161ee8c22bbfc844032ed80d6863c0cb82",
+    "registration.json": "982aee4976c17f3b8639a18bb2deb4f3d955e1806d3ba3dd255a3140d44f593d",
+    "source.tar.gz": "5252633d05aa1fd34dcfd628dd8f5fe73f328a03f880431606c8fd1fde0b1341",
+    "cohort.json.gz": "5498eadc70e5a19297266144421a9443be2b4417c4e4a2d4b332a1b6b2906898",
+    "decision.json": "4ae62ba64db7ce3ab0915222f00882f68694b21f401e88bfdfe1355ebb90872f",
+    "validation.json": "5777ccf3634e72ab987541df81b639b1eeab777ead5c7532e175ad1ff13fcaea"
+  },
+  "original_report_bytes": 618726,
+  "original_report_sha256": "6035383c522caeafed35f256f28a649e34aa3702c96ae574910dae62d1e3cfac",
+  "setup_probe_inventory": {
+    "file": "../audio-direct-fill/navigation/results.json",
+    "sha256": "2140bf49bcb4362a0b8e7ca32118649c371b0a1999a1dcb2a6ab238d0e3b255f"
+  },
+  "scope": "Isolated unserved candidate; no native server/VM/network-media/production deployment. Original reports and frozen source bytes retained.",
+  "source_review": {
+    "file": "../audio-direct-fill/source-review.md",
+    "sha256": "706ad4d95fbb235e1a8b16bf2614cb9efb955539ffa4cf4f45fca8453253345d"
+  }
+}

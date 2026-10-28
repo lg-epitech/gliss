@@ -1,0 +1,42 @@
+{
+  "schema": "gliss-audio-direct-fill-plan-v1",
+  "positions_executed": 0,
+  "order": [
+    "baseline",
+    "direct",
+    "direct",
+    "baseline"
+  ],
+  "codecs": [
+    "pcm",
+    "opus"
+  ],
+  "positions": 8,
+  "packet_frames": 960,
+  "channels": 2,
+  "sample_rate": 48000,
+  "packet_interval_ms": 20,
+  "pool_input_packets": 64,
+  "verification_packets_per_mode": 8,
+  "warmup_ms": 1500,
+  "window_ms": 6000,
+  "packets_per_window": 300,
+  "max_submission_lateness_ms": 100,
+  "max_schedule_observations": 512,
+  "native_browser_cpu": 0,
+  "nice": 19,
+  "memory_max_bytes": 2147483648,
+  "swap_max_bytes": 0,
+  "tasks_max": 128,
+  "outer_limit_seconds": 120,
+  "startup_buffer_ms": 60,
+  "scheduled_cap_ms": 200,
+  "decode_age_ms": 100,
+  "decode_pending_cap": 8,
+  "retention_gate": {
+    "all_measurements_and_exact_sample_proofs_required": true,
+    "each_codec_mean_browser_cpu_reduction_at_least_fraction": 0.1,
+    "each_codec_candidate_cpu_range_below_baseline_range": true
+  },
+  "scope": "Real Chromium Web Audio scheduling component, without VM, network, video or physical-speaker measurement. Cadenced50packets/s; prepare Opus with browser AudioEncoder outside measurement. Two repetitions percodec/policy. Timing wraps schedule equally; COOP/COEP enables precise clock. Audio service/browser costs include independent endpoint counter windows. No production default or runtime source is changed."
+}

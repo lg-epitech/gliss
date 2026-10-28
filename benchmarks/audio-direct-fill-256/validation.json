@@ -1,0 +1,26 @@
+{
+  "schema": "gliss-audio-direct-fill-validation-v1",
+  "candidate_tests": {
+    "passed": 7,
+    "failed": 0
+  },
+  "syntax_checks": [
+    "scripts/bench-audio-direct-fill-256.mjs",
+    "test-support/audio-direct-fill/resources.mjs"
+  ],
+  "cohort_controller_exit_status": 0,
+  "cohort_log": {
+    "sha256": "8927b50c4c36f6368efebbafd873f957f2f5622bcdd22f87cd7d2f15a3cb03a0",
+    "bytes": 3655
+  },
+  "production_player_sha256": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+  "production_player_unchanged_from_commit": "c3ec7c7b",
+  "physical_gpu_devices": false,
+  "distribox_changes": false,
+  "scope": "Seven source tests predated registration. CPU/media evidence is the separately registered256task component; earlier128task runs measured no costs.",
+  "verifier_tests": {
+    "passed": 2,
+    "failed": 0,
+    "mutation_denials": 7
+  }
+}

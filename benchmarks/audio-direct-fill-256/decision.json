@@ -1,0 +1,69 @@
+{
+  "schema": "gliss-audio-direct-fill-decision-v1",
+  "all_measurements_and_exact_samples_valid": true,
+  "comparisons": [
+    {
+      "codec": "pcm",
+      "arms": {
+        "baseline": {
+          "cpu_percent": [
+            3.8120696333791257,
+            2.974095269101393
+          ],
+          "cpu_mean": 3.393082451240259,
+          "schedule_wall_ms": [
+            31.549999117851257,
+            27.929999709129333
+          ]
+        },
+        "direct": {
+          "cpu_percent": [
+            3.3161532602085697,
+            4.144220518125947
+          ],
+          "cpu_mean": 3.7301868891672587,
+          "schedule_wall_ms": [
+            28.855000019073486,
+            28.395000278949738
+          ]
+        }
+      },
+      "mean_cpu_reduction_fraction": -0.09935049995728207,
+      "mean_reduction_gate_passed": false,
+      "range_gate_passed": false
+    },
+    {
+      "codec": "opus",
+      "arms": {
+        "baseline": {
+          "cpu_percent": [
+            5.797023666420096,
+            4.627679589494392
+          ],
+          "cpu_mean": 5.2123516279572435,
+          "schedule_wall_ms": [
+            40.409999549388885,
+            34.455000817775726
+          ]
+        },
+        "direct": {
+          "cpu_percent": [
+            5.14462083670838,
+            6.462928221476972
+          ],
+          "cpu_mean": 5.803774529092676,
+          "schedule_wall_ms": [
+            33.95999985933304,
+            39.19499999284744
+          ]
+        }
+      },
+      "mean_cpu_reduction_fraction": -0.11346565683774013,
+      "mean_reduction_gate_passed": false,
+      "range_gate_passed": false
+    }
+  ],
+  "retain_candidate": false,
+  "production_audio_player_changed": false,
+  "qualification": "Two repetitions percodec/policy on a shared CPU. Failed predeclared10percent and disjoint-range retention criteria; no proof of a statistically significant regression. Schedule wall time is secondary and is not substituted after seeing CPU outcomes."
+}
