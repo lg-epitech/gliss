@@ -23,6 +23,88 @@ fn scene(width: u16, height: u16, step: usize) -> Frame {
 }
 
 #[test]
+fn native_rate_control_skips_are_not_packets_and_emitted_aus_remain_decodable() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
+        320,
+        192,
+        200_000,
+        VideoProfile::Screen,
+        timing,
+        true,
+    )
+    .unwrap();
+    let mut decoder = Decoder::new().unwrap();
+    let mut sequence = 1_u32;
+    let mut skips = 0;
+    let mut random = 0x1257_934b_u32;
+    for _ in 0..240 {
+        let mut frame = Frame::new(320, 192).unwrap();
+        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
+        }
+        if let Some(bytes) = encoder.encode_optional(&frame, sequence, 0).unwrap() {
+            let packet = parse_packet(&bytes).unwrap();
+            assert_eq!(packet.sequence, sequence);
+            assert!(!packet.payload.is_empty());
+            assert_eq!(
+                decoder
+                    .decode(packet.payload)
+                    .unwrap()
+                    .unwrap()
+                    .dimensions(),
+                (320, 192)
+            );
+            sequence += 1;
+        } else {
+            skips += 1;
+        }
+    }
+    assert!(
+        skips > 0,
+        "The bounded noise workload must exercise real encoder skips"
+    );
+    assert!(sequence > 2, "Skipping must still permit new pictures");
+}
+
+#[test]
+fn opt_in_skip_policy_survives_reset_and_resize_while_legacy_default_stays_off() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    assert!(
+        !VideoEncoder::with_timing(64, 48, 4_000_000, VideoProfile::Screen, timing)
+            .unwrap()
+            .frame_skip_enabled()
+    );
+    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
+        64,
+        48,
+        4_000_000,
+        VideoProfile::Screen,
+        timing,
+        true,
+    )
+    .unwrap();
+    for (id, width, height) in [(1, 64, 48), (2, 66, 50)] {
+        let bytes = encoder
+            .encode_optional(&scene(width, height, 0), id, 0)
+            .unwrap()
+            .unwrap();
+        assert!(parse_packet(&bytes).unwrap().keyframe);
+        assert!(encoder.frame_skip_enabled());
+    }
+    encoder.reset();
+    let bytes = encoder
+        .encode_optional(&scene(66, 50, 0), 3, 0)
+        .unwrap()
+        .unwrap();
+    assert!(parse_packet(&bytes).unwrap().keyframe);
+    assert!(encoder.frame_skip_enabled());
+}
+
+#[test]
 fn software_encode_decode_metadata_and_quality() {
     let mut encoder = VideoEncoder::new(96, 64, 30).unwrap();
     let mut decoder = Decoder::new().unwrap();
@@ -324,4 +406,84 @@ fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
         (98, 66)
     );
     assert_eq!(encoder.timing(), timing);
+}
+
+#[test]
+fn positive_qp_bounds_validate_and_preserve_legacy_screen_defaults() {
+    for (min, max) in [(0, 51), (26, 0), (36, 35), (1, 52), (52, 52)] {
+        assert!(QpBounds::new(min, max).is_err());
+    }
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut legacy =
+        VideoEncoder::with_timing(96, 64, 500_000, VideoProfile::Screen, timing).unwrap();
+    let options = VideoOptions {
+        frame_skip: false,
+        qp_bounds: Some(QpBounds::new(26, 35).unwrap()),
+    };
+    let mut explicit =
+        VideoEncoder::with_options(96, 64, 500_000, VideoProfile::Screen, timing, options).unwrap();
+    assert_eq!(legacy.qp_bounds(), None);
+    for (sequence, width, height) in [(1, 96, 64), (2, 96, 64), (3, 98, 66)] {
+        let frame = scene(width, height, sequence as usize);
+        assert_eq!(
+            legacy.encode(&frame, sequence, 0).unwrap(),
+            explicit.encode(&frame, sequence, 0).unwrap()
+        );
+        assert_eq!(explicit.qp_bounds(), options.qp_bounds);
+    }
+    legacy.reset();
+    explicit.reset();
+    assert_eq!(
+        legacy.encode(&scene(98, 66, 0), 4, 0).unwrap(),
+        explicit.encode(&scene(98, 66, 0), 4, 0).unwrap()
+    );
+}
+
+#[test]
+fn wider_requested_qp_range_reduces_noise_bytes_without_skipping_or_breaking_decode() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut default =
+        VideoEncoder::with_timing(320, 192, 500_000, VideoProfile::Screen, timing).unwrap();
+    let mut wider = VideoEncoder::with_options(
+        320,
+        192,
+        500_000,
+        VideoProfile::Screen,
+        timing,
+        VideoOptions {
+            frame_skip: false,
+            qp_bounds: Some(QpBounds::new(26, 51).unwrap()),
+        },
+    )
+    .unwrap();
+    let mut decoder = Decoder::new().unwrap();
+    let mut sums = [0usize; 2];
+    let mut random = 0x1257_934bu32;
+    for sequence in 1..=30 {
+        let mut frame = Frame::new(320, 192).unwrap();
+        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
+        }
+        let a = default.encode(&frame, sequence, 0).unwrap();
+        let b = wider.encode(&frame, sequence, 0).unwrap();
+        sums[0] += a.len();
+        sums[1] += b.len();
+        let parsed = parse_packet(&b).unwrap();
+        assert_eq!(parsed.sequence, sequence);
+        assert_eq!(
+            decoder
+                .decode(parsed.payload)
+                .unwrap()
+                .unwrap()
+                .dimensions(),
+            (320, 192)
+        );
+    }
+    assert!(
+        sums[1] < sums[0],
+        "The bounded deterministic noise case must exercise the wider range"
+    );
 }

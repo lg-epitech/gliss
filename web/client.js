@@ -47,7 +47,7 @@ export class GlissClient {
       if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
       let textMessage,textError;
       if(typeof event.data==='string'){
-        try{textMessage=JSON.parse(event.data);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}}catch(error){textError=error;}
+        try{textMessage=JSON.parse(event.data);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}if(textMessage?.type==='pong'){this.onEvent(textMessage);return;}}catch(error){textError=error;}
       }
       this.chain=this.chain.then(async()=>{
       if(epoch!==this.epoch)return;
