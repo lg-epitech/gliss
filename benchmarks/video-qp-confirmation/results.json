@@ -1,0 +1,65 @@
+{
+  "schema": "gliss-video-qp-confirmation-inventory-v1",
+  "cohort": {
+    "name": "confirmation",
+    "results": "cohort.json.gz",
+    "results_sha256": "6e04ecba483cb10a7c3655ccebad5c32460f1eb82ae569f2e442fc968157973b",
+    "original_bytes": 554177,
+    "original_sha256": "9936b4bba78b7a9a9b7cbcdc54bd391f1abfb8c6c1ddaec471d747bb34d202f1",
+    "plan": "plan.json",
+    "plan_sha256": "ec2e65e8477ccc06ed054fd5f7cb589524aeb4a7b76fb78cd7b6f831671508a0",
+    "registration": "registration.json",
+    "registration_sha256": "88971a3d48563377822b21d3e4cc5c0e5abc46be4f983943decb240669b462b0",
+    "source_archive": "source-additions.tar.gz",
+    "source_archive_sha256": "11511b304a33dcba627a73907c12240030842951497c94ab30b83883b82ca883",
+    "inherited_source_archives": [
+      {
+        "file": "../video-qp-high-floor/source-additions.tar.gz",
+        "sha256": "a85ac7bf779d7fca3f6cfde5effad5338f6b14e2d88c0e91c840e591121517dc"
+      },
+      {
+        "file": "../video-qp-floor/source-additions.tar.gz",
+        "sha256": "012a5bca3690566db634548dd1a9b38b7d77dde6ae72a75fb6507ce8c4ebae85"
+      },
+      {
+        "file": "../video-qp/source.tar.gz",
+        "sha256": "d4babe53b121b9e6374aec1452d383572f99ef11f67c8f88a19c3621a2a64a42"
+      }
+    ],
+    "binary_sha256": "ed2d21b9d54c7a9d16eb30755708746c61967dcf1cda717379a6b23593fb9041",
+    "observed_unregistered_source_pins": {}
+  },
+  "criteria_sha256": "779f0bfb6dab7211982cb628137e050bbb59b497a75a60e2e286d5a902456fa0",
+  "decision_sha256": "f91893710bde87ec35199c935789ac86a683ab8f2d99b9daa684e493f04f8edb",
+  "validation_sha256": "75f78e4bf94a69fb44a5e37753f1b468b170045f78a62a8fea5e0acee989ea4b",
+  "shared_verifier": "benchmarks/audio-motion/verify.py",
+  "shared_verifier_sha256": "5bb0fe0f98cc58788f954e4ec80976d09fac8bb3a1196a6bb361291da140dcda",
+  "pair_verifier": "benchmarks/video-qp-floor/verify.py",
+  "pair_verifier_sha256": "59beb2caadf67c9bcae5a3776f272222fa7cec2bb81f7bf92631b22106ec3afd",
+  "quality_references": [
+    {
+      "file": "../video-qp-floor/component.json.gz",
+      "compressed_sha256": "6876ee7ea807cd14f2fc85f2f8f917d38a2b535990b02fe94853f5b9a7969e77",
+      "arm_index": 0,
+      "requested_qp_bounds": {
+        "min": 26,
+        "max": 51
+      }
+    },
+    {
+      "file": "../video-qp-high-floor/component.json.gz",
+      "compressed_sha256": "602369058c516e258bec49d505c57bf3bb228596090a7311f6c26da560a2b14c",
+      "arm_index": 1,
+      "requested_qp_bounds": {
+        "min": 42,
+        "max": 51
+      }
+    }
+  ],
+  "qualifications": [
+    "Confirmation follows exploratory minimum-QP selection; it is a new fixed-criteria cohort, not a new codec search.",
+    "Every position/probe remains present, including all three missed control-arm audio codes. No intervals or source gates changed.",
+    "Quality references are prior shared-input measurements, separate from live capture phase. Quality acceptance, physical latency, packet loss and production capacity remain unproved.",
+    "Original report bytes unchanged; source archive metadata normalized. No production/Distribox/default changes."
+  ]
+}

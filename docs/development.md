@@ -129,6 +129,15 @@ The later [motion/audio comparison](../benchmarks/audio-motion/README.md) retain
 source archives, original failures, measurement limits and opt-in controller
 requirements. Verify it with `python3 -B benchmarks/audio-motion/verify.py`.
 
+The later [QP-floor confirmation](../benchmarks/video-qp-confirmation/README.md)
+tests an opt-in low-bandwidth profile with `--video-qp-min 42 --video-qp-max 51`.
+All twelve constrained-link sound probes met the deadline, with control p95
+94–104 ms. Higher image error remains a measured cost; no release default
+changed. Its fixed-criteria decision and all control-arm misses can be checked
+with `python3 -B benchmarks/video-qp-confirmation/verify.py`. The shared live
+controller accepts an explicit registered pair plan and rejects changes to the
+inherited workload, buffers or observation deadlines.
+
 The opt-in controller uses the same disposable guest as the audio smoke. It runs
 twelve fixed positions, with muted, Opus and forced PCM playback on loopback and
 a nominal 80 ms RTT / 1 Mbit/s TCP model. It needs the smoke dependencies plus

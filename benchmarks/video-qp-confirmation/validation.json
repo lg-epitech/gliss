@@ -1,0 +1,27 @@
+{
+  "schema": "gliss-video-qp-confirmation-validation-v1",
+  "confirmation_tests": {
+    "passed": 4,
+    "failed": 0
+  },
+  "unchanged_runtime_portable_tests": {
+    "passed": 180,
+    "failed": 0,
+    "revision": "83da1d1c",
+    "validation": "../video-qp-high-floor/validation.json",
+    "validation_sha256": "a3bdfbe2381463b5b91c4f8c7fb30ed9f5ec4dc7f52c6fa202654c210f86f5e8"
+  },
+  "production_runtime_unchanged": true,
+  "release_defaults_changed": false,
+  "distribox_changes": false,
+  "owner_terminal": {
+    "active_state": "inactive",
+    "main_pid": 0,
+    "result": "success",
+    "exit_status": 0
+  },
+  "cohort_log": {
+    "original_sha256": "be42f23ad8acbe94d9563edcb89ad5ddda159463cce874a4cb43f50d1ac963f3",
+    "original_bytes": 3698
+  }
+}

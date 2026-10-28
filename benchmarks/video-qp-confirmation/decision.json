@@ -1,0 +1,97 @@
+{
+  "schema": "gliss-video-qp-confirmation-decision-v1",
+  "accepted": true,
+  "candidate": "floor42",
+  "positions": [
+    {
+      "slot": 2,
+      "profile": "loopback",
+      "accepted": true,
+      "timely_sound": 6,
+      "wire_pongs": 20,
+      "wire_p95_ms": 2.200000047683716,
+      "distinct_painted_ids": 62,
+      "refresh_pictures": 1,
+      "checks": {
+        "sound": true,
+        "complete_controls": true,
+        "control_p95": true,
+        "marker_cadence": true,
+        "refresh_in_window": true,
+        "headers": true,
+        "decoder": true,
+        "sequence": true,
+        "observer": true,
+        "native_exit": true
+      }
+    },
+    {
+      "slot": 3,
+      "profile": "loopback",
+      "accepted": true,
+      "timely_sound": 6,
+      "wire_pongs": 20,
+      "wire_p95_ms": 1.0,
+      "distinct_painted_ids": 61,
+      "refresh_pictures": 1,
+      "checks": {
+        "sound": true,
+        "complete_controls": true,
+        "control_p95": true,
+        "marker_cadence": true,
+        "refresh_in_window": true,
+        "headers": true,
+        "decoder": true,
+        "sequence": true,
+        "observer": true,
+        "native_exit": true
+      }
+    },
+    {
+      "slot": 6,
+      "profile": "kernel-limited",
+      "accepted": true,
+      "timely_sound": 6,
+      "wire_pongs": 20,
+      "wire_p95_ms": 103.69999998807907,
+      "distinct_painted_ids": 65,
+      "refresh_pictures": 1,
+      "checks": {
+        "sound": true,
+        "complete_controls": true,
+        "control_p95": true,
+        "marker_cadence": true,
+        "refresh_in_window": true,
+        "headers": true,
+        "decoder": true,
+        "sequence": true,
+        "observer": true,
+        "native_exit": true
+      }
+    },
+    {
+      "slot": 7,
+      "profile": "kernel-limited",
+      "accepted": true,
+      "timely_sound": 6,
+      "wire_pongs": 20,
+      "wire_p95_ms": 93.89999997615814,
+      "distinct_painted_ids": 58,
+      "refresh_pictures": 1,
+      "checks": {
+        "sound": true,
+        "complete_controls": true,
+        "control_p95": true,
+        "marker_cadence": true,
+        "refresh_in_window": true,
+        "headers": true,
+        "decoder": true,
+        "sequence": true,
+        "observer": true,
+        "native_exit": true
+      }
+    }
+  ],
+  "failures": [],
+  "quality_acceptance_proved": false
+}

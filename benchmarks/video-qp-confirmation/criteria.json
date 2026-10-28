@@ -1,0 +1,26 @@
+{
+  "schema": "gliss-video-qp-confirmation-criteria-v1",
+  "status": "prospective",
+  "positions_executed": 0,
+  "candidate": "floor42",
+  "control": "floor26",
+  "required_candidate_slots": [
+    2,
+    3,
+    6,
+    7
+  ],
+  "all_eight_measurements_and_cleanup_required": true,
+  "each_candidate_position": {
+    "sound_responses_before_700ms": 6,
+    "complete_wire_pongs": 20,
+    "wire_p95_max_ms": 150,
+    "distinct_painted_source_ids_min": 48,
+    "refresh_pictures_min": 1,
+    "invalid_video_headers_max": 0,
+    "video_decode_errors_max": 0,
+    "sequence_gaps_max": 0
+  },
+  "quality_acceptance_proved": false,
+  "qualification": "Selected after the earlier36/42 exploratory pair. This fresh cohort confirms a scoped low-bandwidth candidate; it is not an independent codec search. Two fresh repetitions per profile; no real-font readability, physical speaker, scanout, loss, long-session or production capacity claim."
+}
