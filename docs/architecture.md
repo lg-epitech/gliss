@@ -64,6 +64,8 @@ client.dispose(); // disconnects and removes its listeners
 
 Accepted HTTP/WebSocket sockets use `TCP_NODELAY=true` by default; `--tcp-nodelay false` restores Nagle's small-write coalescing. The fixed option is applied and read back before HTTP can use each socket. The `hello.tcp_listener` metadata reports cumulative verification counts. Disabling coalescing reduces small-message delay on the measured audio path; it does not remove TCP congestion or retransmission delays.
 
+Pong replies dispatch to the application without waiting for video decoding or painting. This keeps an unrelated decoder stall out of application-control reply handling.
+
 The viewer's sound button calls `client.setAudioEnabled(true)` directly from a user gesture. Audio starts off for each connection; `client.setAudioEnabled(false)` stops playback and capture. The `audio_state` event reports `available`, `enabled`, `blocked` and an optional `message`. Closing or disposing the client releases the audio decoder, context and scheduled sources.
 
 QEMU advertises its VNC audio extension through pseudoencoding `-259` when its VNC display has an audio backend. Gliss requests 48 kHz stereo s16le only while sound is enabled. For a headless VM, map both the sound device and VNC graphics to the same `<audio id='1' type='none'/>` backend. No host audio daemon is needed. Unsupported VNC servers keep streaming the desktop with audio unavailable. Audio currently uses the WebSocket path.

@@ -132,6 +132,22 @@ test('audio: gesture enables real stereo PCM playback; mute releases audio and s
   assert.equal(await page.evaluate(() => window.client.audio.snapshot().scheduled), result.scheduled);
 });
 
+test('control: a real WebSocket pong is delivered while the browser video decoder is stalled', async t => {
+  const peer = await audioPeer(t), page = await openClient(t, peer);
+  await page.evaluate(() => {
+    window.releaseVideo = null;
+    window.client.decoder.decode = () => new Promise(resolve => {window.releaseVideo = () => resolve({width:1,height:1,
+      pixels:new Uint8ClampedArray([20,40,60,255]),sequence:1,inputId:0,bytes:4});});
+  });
+  peer.send(Buffer.from('video'));
+  await page.waitForFunction(() => window.releaseVideo !== null);
+  peer.send({type:'pong',id:17});
+  await page.waitForFunction(() => window.events.some(event => event.type === 'pong' && event.id === 17),null,{timeout:1000});
+  assert.equal(await page.evaluate(() => window.client.metrics.frames),0);
+  await page.evaluate(() => window.releaseVideo());
+  await page.waitForFunction(() => window.client.metrics.frames === 1);
+});
+
 test('audio: network bursts remain bounded and bypass a stalled video decode', async t => {
   const peer = await audioPeer(t), page = await openClient(t, peer);
   await page.click('#sound');await page.evaluate(() => window.soundRequest);
