@@ -1,0 +1,98 @@
+{
+  "schema": "gliss-audio-packet-duration-plan-v1",
+  "profiles": [
+    {
+      "name": "loopback",
+      "rttMs": 0,
+      "mbps": null
+    },
+    {
+      "name": "kernel-limited",
+      "rttMs": 80,
+      "mbps": 1
+    }
+  ],
+  "order": [
+    "ms20",
+    "ms40",
+    "ms40",
+    "ms20"
+  ],
+  "positions": 8,
+  "markers_per_position": 6,
+  "codes": "1 through 48, each used once across the complete cohort in position order",
+  "source_mix_frequency": 48000,
+  "sample_rate": 48000,
+  "marker_duration_ms": 160,
+  "source_alsa_buffer_us": 40000,
+  "window_ms": 20000,
+  "warmup_ms": 1500,
+  "pulse_offsets_ms": [
+    1000,
+    4000,
+    7000,
+    10000,
+    13000,
+    16000
+  ],
+  "pulse_deadline_ms": 700,
+  "max_submission_lateness_ms": 100,
+  "observation_cap_per_position": 128,
+  "sample_interval_ms": 50,
+  "tcp_nodelay": true,
+  "codec": "h264",
+  "fps_cap": 30,
+  "video_bitrate_target": 500000,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": 19,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "tasks_max": 256,
+  "outer_limit_seconds": 300,
+  "physical_speaker_latency": false,
+  "qualification": "Prospective eight-position full-pipeline Opus duration comparison. Video QP42..51, 500k target, 30fps cap, no native skipping, eight in-flight frames held fixed. Longer20s windows improve CPU tick resolution; no historical6s rate or count is relabeled. Each profile uses a fresh owned guest. All failures and48 probe slots remain. No default promotion or subjective quality claim.",
+  "audio_codec": "opus",
+  "control_probes_per_position": 20,
+  "ping_interval_ms": 900,
+  "paint_cap_per_position": 1024,
+  "rfb_surface": [
+    1280,
+    800
+  ],
+  "guest_rendering_area": [
+    1024,
+    768
+  ],
+  "nominal_source_fps": 30,
+  "animated_texture": [
+    600,
+    540,
+    360,
+    180
+  ],
+  "audio_latency_eligibility": "No observer/video failure or overflow; all source commands confirmed; each serial submission <=100ms late; preexisting or ambiguous output excluded. Missing/late responses remain failures.",
+  "video_marker_eligibility": "All paint markers valid; exact20s browser window. IDs/s is source-marker cadence, not scanout or whole-frame fidelity.",
+  "control_summary": "Twenty fixed probe slots; raw wire receipt and client dispatch cutoffs are independent. Missing submissions/replies retained; only complete sets support an overall p95.",
+  "cpu_eligibility": "Stable native/guest identities and complete browser endpoint set; independent midpoint acquisition windows.",
+  "stream_stats": true,
+  "frame_skip": {
+    "ms20": false,
+    "ms40": false
+  },
+  "sequence_eligibility": "All received GLV1 IDs within each window are contiguous modulo u32, with zero decode errors and valid source-counter paint markers. Skips emit no wire packet and consume no ACK credit.",
+  "skip_counter_scope": "Frame skipping is disabled in every position; native_skipped_frames must remain absent, not inferred as a measured zero.",
+  "video_in_flight_frames": 8,
+  "qp_bounds": {
+    "min": 42,
+    "max": 51
+  },
+  "audio_sample_cap_per_position": 404,
+  "audio_packet_ms": {
+    "ms20": 20,
+    "ms40": 40
+  },
+  "native_counter_scope": "Cumulative per native source, relaxed fields individually. Samples are receiver-timestamped, bounded32; first/last diagnostic span is distinct from the20s window. Lost or late diagnostic controls and final uncovered tail cannot be interpreted as zero loss.",
+  "cpu_resolution": "10ms process ticks and quantized CDP CPU deltas; independent endpoint windows. Stable endpoint sets required. Two repetitions on a shared core are descriptive, not statistical confidence.",
+  "audio_cost_eligibility": "20s delivered frames within2% of960000, valid contiguous GLA1Opus packets of selected duration, zero browser dropped increment, scheduled delta within4 packets of received count,18..21 native diagnostic samples spanning17..20s, no observed stale/reset/lag/encoder-error increments. Raw CPU boundaries retained; complete stable endpoint sets; counter windows20..22s."
+}

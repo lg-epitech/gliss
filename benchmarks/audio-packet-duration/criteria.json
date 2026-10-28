@@ -1,0 +1,14 @@
+{
+  "schema": "gliss-audio-packet-duration-criteria-v1",
+  "source": "prospective before execution",
+  "all_eight_valid_required": true,
+  "candidate_complete_audio_probes": 6,
+  "candidate_complete_pongs": 20,
+  "candidate_pong_p95_max_ms": 150,
+  "candidate_marker_rate_min_per_second": 8,
+  "cpu_mean_reduction_min_fraction": 0.05,
+  "candidate_max_cpu_below_baseline_min_each_profile": true,
+  "cpu_metric": "native plus complete-endpoint browser percent of one core; guest recorded separately",
+  "decision": "Further-testing candidate only if both ms40 positions pass response/cadence gates in each profile and combined CPU mean is at least5% lower with nonoverlapping two-position ranges in each profile. Failure retains20ms. This deterministic selection gate is not a significance test. Default promotion additionally needs fidelity evidence; this trial cannot approve one.",
+  "latency_qualification": "Every timely sound response uses the unchanged700ms deadline. Compare full observed ranges and retain misses. No physical speaker latency claim."
+}
