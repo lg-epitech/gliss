@@ -1,0 +1,46 @@
+{
+  "schema": "gliss-adpcm-audio-component-plan-v1",
+  "status": "prospective",
+  "signals": [
+    "tones",
+    "modulated-multitone",
+    "seeded-noise"
+  ],
+  "source_frames": 48000,
+  "sample_rate": 48000,
+  "channels": 2,
+  "arms": [
+    "ima-adpcm"
+  ],
+  "browser": "Chromium; WebCodecs disabled; native-equivalent CSP; pure IMA prediction with AudioBuffer copies",
+  "gates": [
+    "all independent files decode",
+    "exact sample rate, channels and source duration",
+    "finite samples",
+    "retain errors and native-reference differences"
+  ],
+  "limits": {
+    "cpu": 0,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "tasks_max": 256,
+    "watchdog_seconds": 180,
+    "no_physical_gpu": true
+  },
+  "quality_claims": "synthetic component distortion and boundary error only; no perceptual or end-to-end claim",
+  "sources": {
+    "crates/gliss-server/src/audio_ogg.rs": "cf5b0a2108ee9805a1afcb4950d918961c41a8ca7684f11d8114bd072c3fd752",
+    "crates/gliss-server/examples/ogg-audio-probe.rs": "fd2c9bf5dd47a62c1bd9b6afeed53359edc446658228de202e6be45c33b3fb23",
+    "test-support/ogg-audio/probe.mjs": "4806d0b3f48ac962dcbba5642254faa4e659a1b9daa25d30db5cebbd7da3d0b9",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b"
+  },
+  "bitrate_with_gliss_headers_bps": 394800,
+  "packet_frames": 960,
+  "native_csp": true,
+  "extra_sources": {
+    "crates/gliss-server/src/audio_adpcm.rs": "1248f811538381e9a73d7fe448b022aa10a2e0fafb5ad5a8edef209f8ca45a6d",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551"
+  },
+  "prior": "retained Ogg v1/v2/v3; no live integration yet"
+}

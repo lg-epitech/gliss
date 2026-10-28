@@ -1,0 +1,41 @@
+{
+  "schema": "gliss-audio-fallback-cost-plan-v1",
+  "source": "Owned diskless QEMU HDA fixture; 440/880 Hz stereo tones; static VGA desktop.",
+  "codec": "h264",
+  "video_fps_cap": 30,
+  "video_bitrate_target": 2000000,
+  "video_in_flight_frames": 4,
+  "profiles": [
+    {
+      "name": "loopback",
+      "rttMs": 0,
+      "mbps": null
+    }
+  ],
+  "order": [
+    "off",
+    "opus",
+    "ima-adpcm",
+    "pcm",
+    "pcm",
+    "ima-adpcm",
+    "opus",
+    "off"
+  ],
+  "measurement_ms": 6000,
+  "warmup_ms": 1500,
+  "ping_interval_ms": 300,
+  "sample_interval_ms": 50,
+  "proxy_max_queued_bytes_per_direction": 1048576,
+  "positions": 8,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": "Explicit distinct allowed CPU selected by root.",
+  "physical_gpu": false,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "outer_limit_seconds": 150,
+  "whole_frame_fps": false,
+  "source_to_speaker_latency": false,
+  "qualification": "Loopback tone/static-desktop comparison. Complete owned native and browser CPU counters use independent midpoint windows. No source-to-speaker, motion, or perceptual quality claim."
+}

@@ -1,0 +1,55 @@
+{
+  "schema": "gliss-audio-fallback-validation-v1",
+  "native_tests_passed": 166,
+  "portable_tests_passed": 165,
+  "clippy_all_server_targets": "passed",
+  "guest_marker_component": {
+    "codecs": [
+      "opus",
+      "ima-adpcm",
+      "pcm"
+    ],
+    "markers_per_codec": 6,
+    "observed": 18,
+    "video_errors": 0,
+    "local_drop_events": 0
+  },
+  "latency": {
+    "positions": 12,
+    "unique_markers": 48,
+    "timely": 40,
+    "late": 4,
+    "unobserved_at_cutoff": 4,
+    "cleanup_complete": true
+  },
+  "cost": {
+    "positions": 8,
+    "control_replies": 160,
+    "control_submissions": 160,
+    "cleanup_complete": true
+  },
+  "components": [
+    {
+      "phase": 1,
+      "decoded_files": 225
+    },
+    {
+      "phase": 2,
+      "decoded_files": 900
+    },
+    {
+      "phase": 3,
+      "decoded_files": 225
+    },
+    {
+      "phase": 4,
+      "decoded_files": 150
+    }
+  ],
+  "rejected_approaches": [
+    "reset-per-file Ogg Opus",
+    "reset-per-file with discarded source pre-roll",
+    "rolling encoded-packet Ogg window"
+  ],
+  "changes_not_deployed_to_distribox": true
+}

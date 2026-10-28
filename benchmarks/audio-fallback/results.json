@@ -1,0 +1,111 @@
+{
+  "schema": "gliss-audio-fallback-inventory-v1",
+  "base_commit": "639aa4b2",
+  "binary_sha256": "b3d15694a5315920146a9574acc8b1351965318ba772ea6edf8332c55f435c2b",
+  "registration": "registration.json",
+  "registration_sha256": "818c6c8d5089c9a5edd2fdb01f2ab0e46451f633c91f91883d7f1df890d2543f",
+  "runtime_source_pins": {
+    "crates/gliss-server/src/main.rs": "ce9df785cbe4ff722c82e707780e15c5c2d074c458db20a9b08d15db9093cb71",
+    "crates/gliss-server/src/audio.rs": "d5f9c489e89e71b3afd3d9b1274ec1ad6b0dc4ef4aa210f8847fde57cd14a264",
+    "crates/gliss-server/src/audio_adpcm.rs": "eb2b6984172ca9a809c29fc8aeb64ca4707b1d5aac6a4b1595ed565024198740",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b"
+  },
+  "components": [
+    {
+      "file": "component-v1.json.gz",
+      "original_bytes": 8937,
+      "original_sha256": "f32a18a85d8a8a553a26d1eea98fca21796b422a212837fcb8e25731377b46af",
+      "compressed_sha256": "9c76db02bc3d6ad47be62a2f988a01392bbb2fb2143e1d92b81f43459f149c43",
+      "phase": 1,
+      "arms": 9,
+      "native_input_sha256": "ba311b5f2233da00bd70022e4bcbc37b0bd4c0e5f3c487b6da04d627a9f06d00",
+      "plan": "component-v1-plan.json",
+      "source_archive": "component-v1-source.tar.gz",
+      "plan_sha256": "1ee51127340ab62ebf1448f23a7d4855709576f29c201ca461c7609741d73a7e",
+      "source_archive_sha256": "5d1601e1bf918eb4333ff7046a769ab4360067ac65d18b6901ff7b23f2c565f7",
+      "decoded_files": 225
+    },
+    {
+      "file": "component-v2.json.gz",
+      "original_bytes": 32897,
+      "original_sha256": "938e40132a52b971aa14525f2d46ddf7fd7d87724a78e30d207344b3fe1e11c6",
+      "compressed_sha256": "e8cdf8ed2a3e4c472b543075b8c1c159998e12bd8588d0c4baa21d7028de0325",
+      "phase": 2,
+      "arms": 27,
+      "native_input_sha256": "1f059839f5c3b5166e8ca163837fcc3cdef9f9f77c48c150f789c279968f1721",
+      "plan": "component-v2-plan.json",
+      "source_archive": "component-v2-source.tar.gz",
+      "plan_sha256": "d4551216e33ba62203eb9e4fc8ed3840209f0c0670271ec357090eae40b82a7e",
+      "source_archive_sha256": "55b1815da16de348fbf1cfc135511777f38289f7b76f908d342b4136ebb398fb",
+      "decoded_files": 900
+    },
+    {
+      "file": "component-v3.json.gz",
+      "original_bytes": 8975,
+      "original_sha256": "d8226e34f368b3a0e5cc24c681c8ed7c8cdfee05357ac499f9356ac8b3364be9",
+      "compressed_sha256": "5d6cede4a4e1caf6af97d22d7851f09681a606ff321ae8bc055708d4f9b00614",
+      "phase": 3,
+      "arms": 9,
+      "native_input_sha256": "a8288e77cdcfbeee187a63a1108a3d4ba6b1537b57dd3b814d3824d8ac2126ee",
+      "plan": "component-v3-plan.json",
+      "source_archive": "component-v3-source.tar.gz",
+      "plan_sha256": "bbe82948f1de37978a153325ca00844a319455053ca6d0980b00bca1938b0f2c",
+      "source_archive_sha256": "8442a32a052b8931649f5619460d141ab05f2e26f7ab56f7016efd3c9476a9eb",
+      "decoded_files": 225
+    },
+    {
+      "file": "component-v4.json.gz",
+      "original_bytes": 3192,
+      "original_sha256": "79a4c59c1a37013d9acb18dfc9285aeb1649da8c010da51303433c43f0ff5d82",
+      "compressed_sha256": "6f4e59673209b31b4e2fad75acec6f55f3fa47924c6c025c7a507945e23b5efc",
+      "phase": 4,
+      "arms": 3,
+      "native_input_sha256": "0da350cca497921ac44d7e834167a1c4d93c06ed7ec0b00afc247154d7f6d397",
+      "plan": "component-v4-plan.json",
+      "source_archive": "component-v4-source.tar.gz",
+      "plan_sha256": "5396e930b0ba7487d0e7983e496c2d3253274b4caf6ebde9602080839d1d55e7",
+      "source_archive_sha256": "1808a30354f9148b3e0b81f6e030cb28165d0bfe3df739a8828936999f3a3be7",
+      "decoded_files": 150,
+      "inherited_archive": "component-v3-source.tar.gz"
+    }
+  ],
+  "latency": {
+    "file": "latency.json.gz",
+    "original_bytes": 408652,
+    "original_sha256": "5ec151223bf9de4a40322aee1ff05ab6d12f58cf93c5071ce5ad3024bef73317",
+    "compressed_sha256": "09191685837170e714a88f5ddc6d36b96088b5fab8dc9e45915afe15a5e339ba",
+    "plan": "latency-plan.json",
+    "plan_sha256": "f65fac063705144bdffc3d0dcf4f514828cd54bb3d2941450f966d3cba4a193a"
+  },
+  "cost": {
+    "file": "cost.json.gz",
+    "original_bytes": 429228,
+    "original_sha256": "eef110a8900f08bc93c01019d2b99b24c0186fcfaca8b1f5a864c8541bce028b",
+    "compressed_sha256": "1bdacddc48ed8e37e815b667d69786b2d0a6cd54bbd02646298ac4c6d7ec8def",
+    "plan": "cost-plan.json",
+    "plan_sha256": "67b7e0211a75f1e34bba04bd39f5fb94452fb8cce0296aeccf8fe70467ad7d93"
+  },
+  "guest_component": {
+    "file": "guest-component.log.gz",
+    "original_bytes": 37546,
+    "original_sha256": "410337bfe27a7722f216313bd194a293f1027d4b0d7d7daee0b50ebd7637c693",
+    "compressed_sha256": "d35c0bffbd130934a77cfb89b9429f2c50d7e38245006ad85df4a6f5fb70729f"
+  },
+  "limits": {
+    "native_browser_cpu": 0,
+    "guest_cpu": 19,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "swap_max_bytes": 0,
+    "tasks_max": 256,
+    "physical_gpu": false
+  },
+  "qualifications": [
+    "Component reports retain observations and bind deterministic generator sources; the input hash includes native reference arrays and timing metadata, so replay does not reproduce that full JSON hash.",
+    "Source archive metadata is normalized; source file bytes are unchanged.",
+    "No perceptual listening, motion, long-session, Firefox runtime, or physical speaker claim."
+  ],
+  "runtime_source_commit": "9b4de093"
+}

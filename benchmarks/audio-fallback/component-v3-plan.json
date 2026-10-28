@@ -1,0 +1,52 @@
+{
+  "schema": "gliss-ogg-audio-component-plan-v3",
+  "status": "prospective",
+  "signals": [
+    "tones",
+    "modulated-multitone",
+    "seeded-noise"
+  ],
+  "source_frames": 48000,
+  "sample_rate": 48000,
+  "channels": 2,
+  "arms": [
+    "rolling-ogg-20ms",
+    "rolling-ogg-40ms",
+    "continuous-cbr-native-reference"
+  ],
+  "opus": {
+    "bitrate_bps": 96000,
+    "complexity": 4,
+    "independent_cbr": true,
+    "independent_dtx": false,
+    "continuous_vbr_default": false,
+    "rolling_cbr": true
+  },
+  "independent_padding_frames": 0,
+  "trim": "pre-skip only the up-to-80ms encoded packet history; retained output has ordinary continuous encoder delay",
+  "browser": "Chromium; WebCodecs disabled; native-equivalent CSP; sequential complete-file decodeAudioData",
+  "gates": [
+    "all independent files decode",
+    "exact sample rate, channels and source duration",
+    "finite samples",
+    "retain errors and native-reference differences"
+  ],
+  "limits": {
+    "cpu": 0,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "tasks_max": 256,
+    "watchdog_seconds": 180,
+    "no_physical_gpu": true
+  },
+  "quality_claims": "synthetic component distortion and boundary error only; no perceptual or end-to-end claim",
+  "sources": {
+    "crates/gliss-server/src/audio_ogg.rs": "cf5b0a2108ee9805a1afcb4950d918961c41a8ca7684f11d8114bd072c3fd752",
+    "crates/gliss-server/examples/ogg-audio-probe.rs": "35cec67abbfc536563692f6c9024b43c47d643e1d9c863bb207b23969ef07c12",
+    "test-support/ogg-audio/probe.mjs": "b0724852de3d5b3566324ec04aaf4aab1ff3a5a391eec704a3cb3dc6c7ff0fc5",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b"
+  },
+  "encoder_reset_per_file": false,
+  "prior": "v1/v2 reset boundary discontinuities retained; no live integration yet"
+}

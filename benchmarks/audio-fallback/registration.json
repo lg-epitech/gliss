@@ -1,0 +1,19 @@
+{
+  "schema": "gliss-audio-fallback-registration-v1",
+  "binary_sha256": "b3d15694a5315920146a9574acc8b1351965318ba772ea6edf8332c55f435c2b",
+  "sources": {
+    "scripts/bench-audio-fallback.mjs": "6f1e2003887165e4ff9f343fdddf4c30fe1e44802649df9402f5332b2c301e32",
+    "benchmarks/audio-fallback/latency-plan.json": "f65fac063705144bdffc3d0dcf4f514828cd54bb3d2941450f966d3cba4a193a",
+    "crates/gliss-server/src/main.rs": "ce9df785cbe4ff722c82e707780e15c5c2d074c458db20a9b08d15db9093cb71",
+    "crates/gliss-server/src/audio.rs": "d5f9c489e89e71b3afd3d9b1274ec1ad6b0dc4ef4aa210f8847fde57cd14a264",
+    "crates/gliss-server/src/audio_adpcm.rs": "eb2b6984172ca9a809c29fc8aeb64ca4707b1d5aac6a4b1595ed565024198740",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+    "scripts/test-qemu-audio-fallback.mjs": "f2dc56a0f28f74681e56af4e4d4385524733e909dad100ccd4838d0bdc1e9f20"
+  },
+  "native_tests": 166,
+  "clippy": "passed",
+  "guest_component_markers": 18,
+  "executed_positions": 0
+}
