@@ -66,8 +66,8 @@ fn advance(predictor: &mut i32, index: &mut usize, nibble: u8) {
     *index = (*index as i32 + INDEX[usize::from(nibble & 7)]).clamp(0, 88) as usize;
 }
 
-/// Reference decoder for cross-language fixtures; the browser has its own decoder.
-#[allow(dead_code)] // Used by the native/browser component, not the server's encode path.
+/// Reference decoder for tests; the browser has its own decoder.
+#[cfg(test)]
 pub fn decode(bytes: &[u8], frames: usize) -> Result<Vec<f32>> {
     ensure!(
         (1..=5760).contains(&frames) && bytes.len() == frames + 7,

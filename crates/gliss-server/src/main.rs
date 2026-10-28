@@ -278,7 +278,7 @@ const WEB_ASSETS: &[(&str, &str, &str)] = &[
     ),
     (
         "audio-adpcm.js",
-        "text/javascript; charset=utf-8",
+        "text/javascript",
         include_str!("../../../web/audio-adpcm.js"),
     ),
     (

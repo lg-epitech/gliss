@@ -42,6 +42,11 @@ GLH1/GLH2/GLH4 combine a lossless base with classified video regions. A region s
 
 The WebSocket path acknowledges frames and bytes, with a default window of one frame. Once media enters TCP, dropping a newer frame cannot remove older reliable data, and one oversized packet may progress alone, so the byte window is not a hard memory ceiling.
 
+Accepted HTTP/WebSocket sockets use `TCP_NODELAY=true` by default. The operator
+can restore coalescing with `--tcp-nodelay false`; the option is applied and
+verified before HTTP uses each socket. Pong callbacks bypass video decoding and
+painting, so a local decoder stall does not delay an already-received reply.
+
 The datagram path publishes the newest captured state and admits whole pictures into a bounded send queue. The browser keeps at most two incomplete assemblies and one replaceable waiting frame. Painting releases browser-local ownership without acknowledging anything to the server. Loss or expiry triggers a rate-limited request for a fresh current-state picture; old media is never replayed.
 
 WebTransport needs browser support for unreliable datagrams and direct UDP routing; an ordinary HTTP reverse proxy cannot carry it. By default the datagram listener is loopback-only. A public media host requires the managed-FD mode described in the [security guide](security.md).
@@ -61,11 +66,6 @@ client.dispose(); // disconnects and removes its listeners
 `gliss-server --export-web DIR` writes the modules embedded in that binary, so the browser code always matches the server. The relay logs in with the access key (`POST /api/session`), then forwards text and binary messages unchanged between the browser and the server's `/ws`, presenting the session cookie and the server's own Origin. `onEvent` receives `hello`, `frame`, `clipboard`, `cursor`, `error` and `close` events; input messages are `key`, `pointer`, `clipboard` and `resize`.
 
 ### Audio over WebSocket
-
-Accepted HTTP/WebSocket sockets use `TCP_NODELAY=true` by default. The operator
-can restore coalescing with `--tcp-nodelay false`; the option is applied and
-verified before HTTP uses each socket. Pong callbacks bypass video decoding and
-painting, so a local decoder stall does not delay an already-received reply.
 
 The viewer's sound button calls `client.setAudioEnabled(true)` directly from a user gesture. Audio starts off for each connection; `client.setAudioEnabled(false)` stops playback and capture. The `audio_state` event reports `available`, `enabled`, `blocked` and an optional `message`. Closing or disposing the client releases the audio decoder, context and scheduled sources.
 
