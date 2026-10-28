@@ -4,7 +4,7 @@
 `37962fd6` (as stated by the brief; no Git command was run here)
 
 **Status: root validated, unserved.** The formatted candidate passed all
-28 native tests and Clippy with warnings denied. The [validation record](validation.json)
+29 native tests and Clippy with warnings denied. The [validation record](validation.json)
 binds the checked source bytes and log identities. The original handoff was
 archived before formatting; legacy and parent source bytes stayed unchanged.
 Production source, runtime options and services remain unchanged. CPU, latency
@@ -17,7 +17,7 @@ and fidelity benefits remain unmeasured.
 | `audio.rs` | Candidate replacement for `crates/gliss-server/src/audio.rs`. Same module layout and `super::audio_adpcm` path, so root can later drop it in place. |
 | `legacy.rs` | Byte-identical copy of the current `crates/gliss-server/src/audio.rs` followed by one `#[cfg(test)]` bridge (`continuous_packets`). The original prefix is hash-bound; it was not edited. |
 | `wrapper.rs` | Module shim an example includes with `#[path]`; binds the real `audio_adpcm.rs`, the candidate and the frozen original, and holds the byte-comparison tests. |
-| `verify_binding.py` | Stdlib-only hash verifier for `source-bindings.json` (authored, not run). |
+| `verify_binding.py` | Stdlib-only hash verifier for `source-bindings.json`. |
 | `source-bindings.json` | Parent hashes, derivations and owned hashes. Carries no hash of itself. |
 | `README.md` | This note. |
 | `validation.json` | Root execution results; no production or performance claim. |
@@ -93,6 +93,7 @@ pub struct Counters { /* relaxed AtomicU64 fields, private */ }
 impl Counters {
     pub fn snapshot(&self) -> CountersSnapshot;
     pub fn record_writer_stale_packet(&self, wire_bytes: usize);
+    pub fn record_writer_lag(&self, skipped: u64);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,6 +105,7 @@ pub struct CountersSnapshot {
     pub encoder_init_errors: u64,    pub encoder_errors: u64,
     pub emitted_packets: u64,        pub emitted_frames: u64,  pub emitted_wire_bytes: u64,
     pub writer_stale_packets: u64,   pub writer_stale_bytes: u64,
+    pub writer_lag_events: u64,      pub writer_lag_messages: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -122,7 +124,7 @@ dropped byte count.
 
 All counters are cumulative for the lifetime of one `Counters` value (one
 `encode_with` task owns the packetizer fields; whoever calls
-`record_writer_stale_packet` owns the writer fields). Each field is an
+`record_writer_stale_packet` or `record_writer_lag` owns the writer fields). Each field is an
 independent relaxed atomic; `snapshot()` loads them one at a time, so a
 snapshot taken during activity can show, for example, an emitted packet count
 that is one ahead of its byte total. They count this process's discards and packets prepared for broadcast; a receiver
@@ -138,10 +140,18 @@ may already be absent. They do not measure guest-side age or delivery.
 | `encoder_errors` | `Encoder::packet` failed on a complete fresh packet | errors |
 | `emitted_packets` / `_frames` / `_wire_bytes` | packet produced for broadcast; receivers may be absent | packets / frames / GLA1 header+payload bytes |
 | `writer_stale_packets` / `_bytes` | only via `record_writer_stale_packet` | packets / GLA1 wire bytes |
+| `writer_lag_events` / `_messages` | encoded `RecvError::Lagged(n)`, via `record_writer_lag` | notifications / skipped messages |
 
-## Tests authored (28 passed under root execution)
+Raw data is ignored while no encoder is active, including mute and failed
+encoder initialization. Fresh and stale data in that state do not increment
+discard counters. Raw lag notifications are still counted. The ingress model
+combines a stale raw event and the partial it evicts into one discard total;
+these counters put the latter in `reset_pending`, alongside other reset causes.
+That model total cannot be reconstructed from the snapshot alone.
 
-Candidate `audio.rs` tests (17): the six original cases verbatim —
+## Tests authored (29 passed under root execution)
+
+Candidate `audio.rs` tests (18): the six original cases verbatim —
 `opus_roundtrip_preserves_stereo_at_bounded_bitrate`,
 `adpcm_is_advertised_and_framed_only_when_requested`,
 `fragmented_pcm_is_exact_and_audio_is_only_encoded_on_request`,
@@ -157,6 +167,7 @@ Candidate `audio.rs` tests (17): the six original cases verbatim —
 `first_fragment_age_is_bounded_by_the_fixed_100ms_budget_for_both_durations`,
 `pause_reset_mute_and_stale_sound_discard_partial_40ms_packets`,
 `raw_lag_clears_partial_sound_and_is_counted`,
+`disabled_raw_data_is_unencoded_and_excluded_from_discard_counters`,
 `counters_start_at_zero_and_the_writer_stale_path_is_separate`,
 `default_encode_matches_explicit_20ms_config_byte_for_byte`.
 
@@ -171,7 +182,7 @@ fragments through both public `encode` pipelines, plus status JSON and invalid
 control parity).
 
 The example also runs the six original tests inside `legacy` and the two
-`audio_adpcm` tests, for 28 in total. Three tests sleep about 120 ms (one of
+`audio_adpcm` tests, for 29 in total. Three tests sleep about 120 ms (one of
 them twice) to age a partial packet in real time, as the original does.
 
 ## Root-only serial commands (not executed here)
@@ -206,9 +217,10 @@ byte-identical prefix. The `mod legacy;` item in `wrapper.rs` carries
 
 - `main.rs`: build one `audio::EncodeConfig::new(duration)` next to
   `audio::channel()`, pass a clone to `audio::encode_with(..)` instead of
-  `audio::encode(..)`, and in the writer's age check call
-  `config.counters.record_writer_stale_packet(packet.bytes.len())` on the
-  `received.elapsed() > MAX_AGE` branch only.
+  `audio::encode(..)`. Split the writer's existing compound condition: first
+  exclude muted or stale-generation packets, then count only age rejections
+  through `record_writer_stale_packet(packet.bytes.len())`. Match encoded
+  `RecvError::Lagged(n)` separately and call `record_writer_lag(n)`.
 - CLI: an operator-only `--audio-packet-ms` parsed with
   `PacketDuration::from_str` (clap `value_parser!(PacketDuration)` works
   through `FromStr`), default 20, wired like `configured_video_qp`.
@@ -217,8 +229,9 @@ byte-identical prefix. The `mod legacy;` item in `wrapper.rs` carries
 
 ## Limits
 
-- Not compiled, formatted, linted or tested; hand-checked only. `rustfmt`
-  differences are likely in places and are formatting-only.
+- The original candidate was validated by root per `validation.json`; it was
+  not promoted. The review repair adds writer-lag coverage and a disabled-input
+  test; both passed in the recorded root execution.
 - Promoted into the binary crate, any new public item root leaves unwired
   (`millis`, `from_millis`, `snapshot`, `record_writer_stale_packet`,
   `EncodeConfig::new`) warns as dead code under `-D warnings`; the example

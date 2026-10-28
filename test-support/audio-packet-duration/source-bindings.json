@@ -4,7 +4,7 @@
   "branch": "research/audio-performance",
   "declared_head": "37962fd6",
   "declared_head_note": "Stated by the task brief; no Git command was run while authoring these files.",
-  "status": "source-only preparation; nothing compiled, formatted, linted, tested or executed",
+  "status": "root validated: 29 native tests and Clippy; unserved, not promoted",
   "parents": {
     "crates/gliss-server/src/audio.rs": {
       "sha256": "d5f9c489e89e71b3afd3d9b1274ec1ad6b0dc4ef4aa210f8847fde57cd14a264",
@@ -39,8 +39,8 @@
   },
   "owned": {
     "audio.rs": {
-      "sha256": "e7cc75a4786697eedef133a5262fc380d90d53877d6c0f377726accefb1cc817",
-      "bytes": 52816,
+      "sha256": "0aea4b24f01542d71b3a6800f5ec3ef1da53910ad1203ed135668293b5c99562",
+      "bytes": 54274,
       "derived_from": [
         "crates/gliss-server/src/audio.rs"
       ],
@@ -73,8 +73,8 @@
       "derivation": "new: #[path] module shim plus byte-comparison tests"
     },
     "README.md": {
-      "sha256": "2c19c9c80e5194cd932fa9ac2ca6ee4876ff9eaf659e9c76e1f47f3aa054b32a",
-      "bytes": 12852,
+      "sha256": "aab1b23ba655b8bc646d68f8631fc2e8bb5e9895e6574b31977c8c5287c272f0",
+      "bytes": 13817,
       "derived_from": [],
       "derivation": "new"
     },
@@ -82,11 +82,11 @@
       "sha256": "67272fb51e7c2590a11ac6512dcdab2b4c8fae11f8361a6ca2ee12cf11e4a5d3",
       "bytes": 6091,
       "derived_from": [],
-      "derivation": "new; stdlib only; authored, not executed"
+      "derivation": "new; stdlib only; executed by root"
     },
     "validation.json": {
-      "sha256": "1ad2333dd77db991548fb9cb5eaadb3e51259481333eda11e48cb3b6be9be4d2",
-      "bytes": 1344,
+      "sha256": "cd11e2ed0e50a3dbc74be12f8f10aa52cfad54717bac11f111649011890324cd",
+      "bytes": 1750,
       "derived_from": []
     }
   },
@@ -97,7 +97,7 @@
   },
   "limits": {
     "max_files": 7,
-    "files_present": 6
+    "files_present": 7
   },
   "root_formatting": {
     "original_handoff_binding_sha256": "517c5623efcef2924a82d49f8ee1145a78619a33e41abef9db55ab8e5b171a9a",
@@ -106,7 +106,7 @@
   },
   "root_validation": {
     "status": "root-validated-unserved",
-    "tests_passed": 28,
+    "tests_passed": 29,
     "validation_file": "validation.json",
     "runtime_or_benchmark_promotion": false
   }

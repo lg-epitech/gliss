@@ -213,7 +213,7 @@ pub async fn update_capture(
 }
 
 /// Cumulative native counters owned by one packetizer task plus a separate,
-/// writer-owned stale group. Each field is an independent relaxed atomic:
+/// writer-owned stale and lag group. Each field is an independent relaxed atomic:
 /// a [`Counters::snapshot`] reads the fields one at a time and offers no
 /// cross-field coherence. Values measure this process's own discards and
 /// emissions; they are neither guest-side age nor proof of delivery.
@@ -236,6 +236,8 @@ pub struct Counters {
     // Writer-owned; never touched by the packetizer.
     writer_stale_packets: AtomicU64,
     writer_stale_bytes: AtomicU64,
+    writer_lag_events: AtomicU64,
+    writer_lag_messages: AtomicU64,
 }
 
 /// Plain copy of [`Counters`] taken field by field (see the coherence note).
@@ -269,6 +271,9 @@ pub struct CountersSnapshot {
     /// Only ever incremented through [`Counters::record_writer_stale_packet`].
     pub writer_stale_packets: u64,
     pub writer_stale_bytes: u64,
+    /// Encoded broadcast lag notifications and messages the writer missed.
+    pub writer_lag_events: u64,
+    pub writer_lag_messages: u64,
 }
 
 impl Counters {
@@ -290,6 +295,8 @@ impl Counters {
             emitted_wire_bytes: load(&self.emitted_wire_bytes),
             writer_stale_packets: load(&self.writer_stale_packets),
             writer_stale_bytes: load(&self.writer_stale_bytes),
+            writer_lag_events: load(&self.writer_lag_events),
+            writer_lag_messages: load(&self.writer_lag_messages),
         }
     }
 
@@ -301,6 +308,14 @@ impl Counters {
         self.writer_stale_packets.fetch_add(1, Ordering::Relaxed);
         self.writer_stale_bytes
             .fetch_add(wire_bytes as u64, Ordering::Relaxed);
+    }
+
+    /// One encoded broadcast lag notification and its skipped message count.
+    /// This does not identify the skipped packets' generation, age or size.
+    pub fn record_writer_lag(&self, skipped: u64) {
+        self.writer_lag_events.fetch_add(1, Ordering::Relaxed);
+        self.writer_lag_messages
+            .fetch_add(skipped, Ordering::Relaxed);
     }
 
     fn stale_raw(&self, bytes: usize) {
@@ -1317,17 +1332,35 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_raw_data_is_unencoded_and_excluded_from_discard_counters() {
+        for duration in [PacketDuration::Ms20, PacketDuration::Ms40] {
+            let mut pipeline = Pipeline::new(duration, 8);
+            pipeline.send(
+                vec![17; 3840],
+                Instant::now() - MAX_AGE - Duration::from_millis(1),
+            );
+            pipeline.send(vec![34; 3840], Instant::now());
+            pipeline.none().await;
+            assert_eq!(pipeline.finish().await, CountersSnapshot::default());
+        }
+    }
+
     #[test]
     fn counters_start_at_zero_and_the_writer_stale_path_is_separate() {
         let counters = Counters::default();
         assert_eq!(counters.snapshot(), CountersSnapshot::default());
         counters.record_writer_stale_packet(1300);
         counters.record_writer_stale_packet(260);
+        counters.record_writer_lag(3);
+        counters.record_writer_lag(2);
         assert_eq!(
             counters.snapshot(),
             CountersSnapshot {
                 writer_stale_packets: 2,
                 writer_stale_bytes: 1560,
+                writer_lag_events: 2,
+                writer_lag_messages: 5,
                 ..CountersSnapshot::default()
             }
         );
