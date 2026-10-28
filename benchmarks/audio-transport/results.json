@@ -12,6 +12,15 @@
       "original_sha256": "db9404130d3d1ab24c7e20537ad89239c595317c17c212c11834a7abd518bbc9",
       "binary_sha256": "0ff16eaa42be2dd31ece1b4243830a6f037c38f5ef4d795f2b27d26716a80c11",
       "qualification": "The proxy delays/rate-limits application TCP payload; native TCP ACKs are still local. This is not a real 80 ms TCP feedback path."
+    },
+    {
+      "name": "kernel-tcp",
+      "file": "kernel-tcp.json.gz",
+      "plan": "kernel-plan.json",
+      "compressed_sha256": "03e4ae87597311d2c9c8e2931996e718dedd82247603ec729f47c779bee62de2",
+      "original_sha256": "739273adb5e7218bfa365cfa7ddb2f0b2b994dc1b7b856a1cb69e0457d1d691b",
+      "binary_sha256": "0ff16eaa42be2dd31ece1b4243830a6f037c38f5ef4d795f2b27d26716a80c11",
+      "qualification": "Kernel data and TCP ACK delay, nominal 80 ms RTT / 1 Mbit/s per direction; VNC port unshaped. Default loopback segmentation and packet queue accounting; not an Internet path."
     }
   ]
 }

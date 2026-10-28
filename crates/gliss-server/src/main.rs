@@ -62,7 +62,7 @@ struct Args {
     #[arg(long)]
     stage_trace: Option<std::path::PathBuf>,
     /// Fixed accepted HTTP/WebSocket TCP_NODELAY policy; verified before HTTP IO.
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     tcp_nodelay: bool,
     /// Authenticated QUIC DATAGRAM media. Default scope remains loopback.
     #[arg(long)]
@@ -1262,8 +1262,8 @@ mod datagram_option_tests {
     }
 
     #[test]
-    fn tcp_nodelay_is_explicit_boolean_and_defaults_false() {
-        assert!(!args(&[]).tcp_nodelay);
+    fn tcp_nodelay_is_explicit_boolean_and_defaults_true() {
+        assert!(args(&[]).tcp_nodelay);
         assert!(!args(&["--tcp-nodelay", "false"]).tcp_nodelay);
         assert!(args(&["--tcp-nodelay", "true"]).tcp_nodelay);
         let base = [

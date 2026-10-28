@@ -1,5 +1,49 @@
 # Audio and TCP scheduling
 
+The kernel-delayed follow-up supports enabling `TCP_NODELAY` for interactive
+streaming. The research branch now uses that default; `--tcp-nodelay false`
+remains an explicit opt-out. Public releases and Distribox were not changed.
+
+## Kernel TCP comparison
+
+Another 24 positions repeated the order, audio settings and six-second windows
+using kernel `netem`: 40 ms delay and 1 Mbit/s per direction. Filters selected
+only the owned native HTTP/WebSocket port. TCP data and acknowledgments were
+delayed; the guest's VNC port bypassed both queues. All positions completed,
+every measured queue reported zero packet drops, and every installed root queue
+was removed before the next position. A separate echo check measured 86.7 ms on
+the selected port and 0.5 ms on an unrelated port.
+
+With Opus, both policies returned 40/40 probes. Nagle enabled produced per-run
+control p95 of **226.9–228.8 ms**; `TCP_NODELAY` produced **83.4–83.9 ms**.
+Sampled playback-queue maxima fell from 178.7–184.0 ms to 76.0–84.0 ms. These
+are local playback queues, not source-to-speaker latency. Browser CPU increased
+from 7.29–7.59% to 9.12–9.44% of one core as delivery became less batched.
+This is a latency/CPU tradeoff, not an across-the-board performance win.
+
+PCM still exceeded link capacity: both policies returned only **20/40** probes.
+Reply maxima were 2.824–2.826 seconds with Nagle enabled and 2.788–3.097 seconds
+with `TCP_NODELAY`. PCM recorded 19–20 local drop-counter events per position
+despite zero recorded kernel packet drops. Socket scheduling cannot fix the
+fallback's bandwidth requirement.
+
+The [kernel plan](kernel-plan.json) fixes these positions separately from the
+proxy cohort. Kernel queue byte accounting, a 1,024-packet queue limit and
+default loopback MTU/segmentation make this a controlled TCP treatment, not an
+exact reproduction of a WAN. Counters include HTTP setup and warmup. The two
+network models' observations must not be pooled as equivalent repetitions.
+
+The default change passed all 163 native server tests, Clippy, all 151 portable
+tests, and the real-QEMU stereo smoke. The new default-policy browser regression
+failed on the old binary, then passed on the rebuilt server using actual socket
+readback. Both codecs scheduled 151/151 packets with no local drops in the smoke.
+The [validation record](default-validation.json) identifies that rebuilt binary
+separately from the explicit-policy performance cohorts. The
+[kernel component observation](kernel-component.json) retains the independent
+port-isolation and removal check.
+
+## Payload-proxy comparison
+
 The 28 October 2026 matched cohort tested the existing explicit
 `--tcp-nodelay false|true` option on the corrected audio binary. All 24 positions
 completed. Each native worker reported its actual accepted-socket option
@@ -30,7 +74,9 @@ The proxy limits application bytes to 1 Mbit/s per direction and adds a nominal
 delayed by 80 ms. The result demonstrates that the option does not fix this
 PCM queue overload; it is not a general test of Nagle over a real WAN.
 
-Verify without starting a VM:
+## Reproduction
+
+Verify both cohorts without starting a VM:
 
 ```sh
 python3 -B benchmarks/audio-transport/verify.py
@@ -40,3 +86,13 @@ Run `scripts/bench-audio-transport.mjs` with the same bounded, isolated launch
 as the [audio study](../../docs/development.md#audio-performance-study), using a
 fresh output/unit name. Its socket-policy helper is specific to this study and
 leaves the original benchmark sources unchanged.
+
+The kernel variant uses `scripts/bench-audio-kernel.mjs`. Capture
+`GLISS_AUDIO_HOST_NETNS=$(readlink /proc/self/ns/net)` **before** entering the
+fresh namespace, pass it with systemd's `--setenv`, and add
+`--cap-add CAP_NET_ADMIN` to the private `bwrap` invocation. The helper refuses
+the host namespace and any preexisting loopback queue. All queue changes occur
+inside that disposable namespace. The opt-in
+`scripts/test-audio-kernel-link.mjs` checks the two selected directions, an
+unshaped port and queue removal without a VM. It needs the same namespace and
+capability setup; it is intentionally outside the portable suite.

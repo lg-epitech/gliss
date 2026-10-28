@@ -85,6 +85,24 @@ def main():
             if metrics.get("proxy") is not None:
                 require(position["proxy_cleanup"]["pendingTimers"] == position["proxy_cleanup"]["overflows"] == 0,
                         "Proxy cleanup or overflow failure")
+            if profile == "kernel-limited":
+                link = metrics["kernel_link"]
+                require(position["kernel_cleanup"]["root_removed"] is True, "Kernel queues remain installed")
+                require(len(link["queues"]) == 2, "Kernel directions missing")
+                require({row["direction"] for row in link["queues"]} == {"server-to-browser", "browser-to-server"},
+                        "Kernel direction changed")
+                for queue in link["queues"]:
+                    require(queue["limit_packets"] == 1024 and queue["delay_seconds"] == 0.04
+                            and queue["rate_bytes_per_second"] == 125000, "Kernel treatment changed")
+                    require(queue["packets"] > 0 and queue["bytes"] > 0 and queue["drops"] == 0,
+                            "Kernel queue unused or lost packets")
+                filters = link["filters"]
+                port = link["target_port"]
+                require(filters.count("match 00060000/00ff0000 at 8") == 2
+                        and f"match {port:04x}0000/ffff0000 at 20" in filters
+                        and f"match 0000{port:04x}/0000ffff at 20" in filters
+                        and "flowid 1:1" in filters and "flowid 1:2" in filters,
+                        "Native TCP port filter readback changed")
         print(record["name"] + ": 24 original positions verified; " + record["qualification"])
         for profile in plan["profiles"]:
             for mode in ["off", "opus", "pcm"]:

@@ -1,0 +1,45 @@
+{
+  "schema": "gliss-audio-kernel-component-observation-v1",
+  "test": "scripts/test-audio-kernel-link.mjs",
+  "test_sha256": "875d8ff341f83f948c9540b614d518e9d608bb0b2f23aae445ca92f260c91940",
+  "result": {
+    "rtt_ms": {
+      "shaped": 86.692758,
+      "bypass": 0.5291270000000168
+    },
+    "measured": {
+      "scope": "Cumulative kernel queue counters including HTTP and warmup; native TCP data and ACKs are delayed.",
+      "target_port": 41119,
+      "queues": [
+        {
+          "handle": "10:",
+          "parent": "1:1",
+          "direction": "server-to-browser",
+          "limit_packets": 1024,
+          "delay_seconds": 0.04,
+          "rate_bytes_per_second": 125000,
+          "bytes": 462,
+          "packets": 3,
+          "drops": 0,
+          "backlog": 0,
+          "qlen": 0
+        },
+        {
+          "handle": "20:",
+          "parent": "1:2",
+          "direction": "browser-to-server",
+          "limit_packets": 1024,
+          "delay_seconds": 0.04,
+          "rate_bytes_per_second": 125000,
+          "bytes": 462,
+          "packets": 3,
+          "drops": 0,
+          "backlog": 132,
+          "qlen": 2
+        }
+      ],
+      "filters": "filter protocol ip pref 1 u32 chain 0 \nfilter protocol ip pref 1 u32 chain 0 fh 800: ht divisor 1 \nfilter protocol ip pref 1 u32 chain 0 fh 800::800 order 2048 key ht 800 bkt 0 flowid 1:1 not_in_hw \n  match 00060000/00ff0000 at 8\n  match a09f0000/ffff0000 at 20\nfilter protocol ip pref 2 u32 chain 0 \nfilter protocol ip pref 2 u32 chain 0 fh 801: ht divisor 1 \nfilter protocol ip pref 2 u32 chain 0 fh 801::800 order 2048 key ht 801 bkt 0 flowid 1:2 not_in_hw \n  match 00060000/00ff0000 at 8\n  match 0000a09f/0000ffff at 20\n"
+    },
+    "root_removed": true
+  }
+}

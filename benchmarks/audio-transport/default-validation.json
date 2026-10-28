@@ -1,0 +1,101 @@
+{
+  "schema": "gliss-audio-tcp-default-validation-v1",
+  "binary_sha256": "fb0eaf78b25b446bb831b86fb273cb73d26f0042637ad29f45bd44246640382f",
+  "binary_bytes": 17440600,
+  "main_sha256": "576700ab397268d860bb6c10b177582b4bc0611d6c6db672fbf6d927537bd0d6",
+  "audio_player_sha256": "8fdc8a692e5a1edcc3db4f9223f651ecf00bb69ba954720a018ee9c63a9dfd1a",
+  "cargo_lock_sha256": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+  "native_tests": {
+    "passed": 163,
+    "failed": 0,
+    "ignored": 0
+  },
+  "clippy": "passed",
+  "portable_tests": {
+    "passed": 151,
+    "failed": 0,
+    "skipped": 0
+  },
+  "default_socket_readback_test": "tests/tcp-policy.test.mjs",
+  "red_baseline_binary_sha256": "0ff16eaa42be2dd31ece1b4243830a6f037c38f5ef4d795f2b27d26716a80c11",
+  "baseline_default_test": "failed: false != true",
+  "corrected_default_test": "passed: actual HTTP/WebSocket socket readback true",
+  "stereo_observations": [
+    {
+      "codec": "opus",
+      "bitrate": 105036,
+      "wire": {
+        "bytes": 39651,
+        "frames": 144960,
+        "packets": 151,
+        "first": 277.69999998807907,
+        "last": 3285.699999988079
+      },
+      "player": {
+        "available": true,
+        "enabled": true,
+        "codec": "opus",
+        "contextState": "running",
+        "sources": 4,
+        "queuedSeconds": 0.06266666666666909,
+        "decodeQueue": 0,
+        "pendingDecodes": 0,
+        "received": 151,
+        "scheduled": 151,
+        "dropped": 0
+      },
+      "signal": [
+        {
+          "rms": 0.26179768785946117,
+          "hz": 445.3125
+        },
+        {
+          "rms": 0.17136298460029747,
+          "hz": 890.625
+        }
+      ],
+      "videoFrames": 9,
+      "videoErrors": 0
+    },
+    {
+      "codec": "pcm",
+      "bitrate": 1544000,
+      "wire": {
+        "bytes": 582860,
+        "frames": 144960,
+        "packets": 151,
+        "first": 161.4000000357628,
+        "last": 3176
+      },
+      "player": {
+        "available": true,
+        "enabled": true,
+        "codec": "pcm",
+        "contextState": "running",
+        "sources": 4,
+        "queuedSeconds": 0.06133333333333546,
+        "decodeQueue": 0,
+        "pendingDecodes": 0,
+        "received": 151,
+        "scheduled": 151,
+        "dropped": 0
+      },
+      "signal": [
+        {
+          "rms": 0.25889142701529533,
+          "hz": 433.59375
+        },
+        {
+          "rms": 0.17220590280311646,
+          "hz": 878.90625
+        }
+      ],
+      "videoFrames": 10,
+      "videoErrors": 0
+    }
+  ],
+  "qualifications": [
+    "The performance cohorts use explicit false/true policies on the prior binary. This new binary changes the default only; the default is checked through native parsing and real browser socket readback.",
+    "The stereo smoke observes Web Audio output, not physical speakers or source-to-speaker latency."
+  ]
+}
