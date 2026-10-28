@@ -7,7 +7,7 @@ use anyhow::{Context, Result, ensure};
 use gliss_core::Frame;
 use openh264::encoder::{
     BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile,
-    RateControlMode, SpsPpsStrategy, UsageType, VuiConfig,
+    QpRange, RateControlMode, SpsPpsStrategy, UsageType, VuiConfig,
 };
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 use openh264::{OpenH264API, Timestamp, nal_units};
@@ -94,6 +94,36 @@ impl VideoProfile {
     }
 }
 
+/// Requested positive QP bounds. Native validation and overflow handling can
+/// adjust coded QP; this is not a coded-bitstream attestation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QpBounds {
+    min: u8,
+    max: u8,
+}
+impl QpBounds {
+    pub fn new(min: u8, max: u8) -> Result<Self> {
+        ensure!(
+            (1..=51).contains(&min) && min <= max && max <= 51,
+            "QP bounds require 1 <= min <= max <= 51"
+        );
+        Ok(Self { min, max })
+    }
+    pub fn min(self) -> u8 {
+        self.min
+    }
+    pub fn max(self) -> u8 {
+        self.max
+    }
+}
+
+/// Opt-in native policies; default constructors preserve their original bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VideoOptions {
+    pub frame_skip: bool,
+    pub qp_bounds: Option<QpBounds>,
+}
+
 /// One-thread software encoder; run encode on a bounded blocking worker.
 pub struct VideoEncoder {
     encoder: Encoder,
@@ -103,7 +133,7 @@ pub struct VideoEncoder {
     timing: VideoTiming,
     bitrate: u32,
     profile: VideoProfile,
-    frame_skip: bool,
+    options: VideoOptions,
     encoded_frames: u64,
     force_keyframe: bool,
     sps: Vec<u8>,
@@ -130,9 +160,9 @@ fn native_encoder(
     timing: VideoTiming,
     bitrate: u32,
     profile: VideoProfile,
-    frame_skip: bool,
+    options: VideoOptions,
 ) -> Result<Encoder> {
-    let config = EncoderConfig::new()
+    let mut config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate))
         .max_frame_rate(FrameRate::from_hz(timing.fps as f32))
         .rate_control_mode(RateControlMode::Bitrate)
@@ -143,12 +173,15 @@ fn native_encoder(
         .adaptive_quantization(false)
         .background_detection(false)
         .num_threads(1)
-        .skip_frames(frame_skip)
+        .skip_frames(options.frame_skip)
         .long_term_reference(false)
         .intra_frame_period(IntraFramePeriod::from_num_frames(timing.intra_period))
         .sps_pps_strategy(SpsPpsStrategy::ConstantId)
         // The crate's RGB conversion uses BT.601 limited-range coefficients.
         .vui(VuiConfig::bt601());
+    if let Some(qp) = options.qp_bounds {
+        config = config.qp(QpRange::new(qp.min(), qp.max()));
+    }
     Encoder::with_api_config(OpenH264API::from_source(), config)
         .context("Create software OpenH264 encoder")
 }
@@ -205,20 +238,41 @@ impl VideoEncoder {
         timing: VideoTiming,
         frame_skip: bool,
     ) -> Result<Self> {
+        Self::with_options(
+            width,
+            height,
+            bitrate,
+            profile,
+            timing,
+            VideoOptions {
+                frame_skip,
+                ..VideoOptions::default()
+            },
+        )
+    }
+
+    pub fn with_options(
+        width: u16,
+        height: u16,
+        bitrate: u32,
+        profile: VideoProfile,
+        timing: VideoTiming,
+        options: VideoOptions,
+    ) -> Result<Self> {
         validate_dimensions(width, height)?;
         ensure!(
             (1_000..=50_000_000).contains(&bitrate),
             "H.264 bitrate outside 1 kbit/s..50 Mbit/s"
         );
         Ok(Self {
-            encoder: native_encoder(timing, bitrate, profile, frame_skip)?,
+            encoder: native_encoder(timing, bitrate, profile, options)?,
             yuv: YUVBuffer::new(usize::from(width), usize::from(height)),
             width,
             height,
             timing,
             bitrate,
             profile,
-            frame_skip,
+            options,
             encoded_frames: 0,
             force_keyframe: true,
             sps: Vec::new(),
@@ -235,7 +289,11 @@ impl VideoEncoder {
     }
 
     pub fn frame_skip_enabled(&self) -> bool {
-        self.frame_skip
+        self.options.frame_skip
+    }
+
+    pub fn qp_bounds(&self) -> Option<QpBounds> {
+        self.options.qp_bounds
     }
 
     /// Request an independently decodable IDR access unit on the next encode.
@@ -262,13 +320,13 @@ impl VideoEncoder {
         validate_dimensions(frame.width, frame.height)?;
         if (frame.width, frame.height) != (self.width, self.height) {
             // Construct first so a rejected resize leaves the old encoder intact.
-            *self = Self::with_timing_and_frame_skip(
+            *self = Self::with_options(
                 frame.width,
                 frame.height,
                 self.bitrate,
                 self.profile,
                 self.timing,
-                self.frame_skip,
+                self.options,
             )?;
         }
         self.yuv.read_rgba8(RgbaSliceU8::new(
@@ -288,7 +346,7 @@ impl VideoEncoder {
         let keyframe = encoded.frame_type() == FrameType::IDR;
         if encoded.frame_type() == FrameType::Skip {
             ensure!(
-                self.frame_skip && encoded.to_vec().is_empty(),
+                self.options.frame_skip && encoded.to_vec().is_empty(),
                 "Unexpected skipped encoder output"
             );
             // The synthetic source clock advances even when no AU is emitted.

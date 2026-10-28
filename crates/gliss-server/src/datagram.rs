@@ -984,7 +984,7 @@ async fn run_media(
     codec.decorate_video(&mut hello);
     write_control(outgoing, &with_stream_metadata(hello, app)).await?;
     let mut encoder = Some(StreamEncoder::Video {
-        frame_skip: false,
+        options: gliss_video::VideoOptions::default(),
         encoder: None,
         timing,
         bitrate: app.args.h264_bitrate,

@@ -407,3 +407,83 @@ fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
     );
     assert_eq!(encoder.timing(), timing);
 }
+
+#[test]
+fn positive_qp_bounds_validate_and_preserve_legacy_screen_defaults() {
+    for (min, max) in [(0, 51), (26, 0), (36, 35), (1, 52), (52, 52)] {
+        assert!(QpBounds::new(min, max).is_err());
+    }
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut legacy =
+        VideoEncoder::with_timing(96, 64, 500_000, VideoProfile::Screen, timing).unwrap();
+    let options = VideoOptions {
+        frame_skip: false,
+        qp_bounds: Some(QpBounds::new(26, 35).unwrap()),
+    };
+    let mut explicit =
+        VideoEncoder::with_options(96, 64, 500_000, VideoProfile::Screen, timing, options).unwrap();
+    assert_eq!(legacy.qp_bounds(), None);
+    for (sequence, width, height) in [(1, 96, 64), (2, 96, 64), (3, 98, 66)] {
+        let frame = scene(width, height, sequence as usize);
+        assert_eq!(
+            legacy.encode(&frame, sequence, 0).unwrap(),
+            explicit.encode(&frame, sequence, 0).unwrap()
+        );
+        assert_eq!(explicit.qp_bounds(), options.qp_bounds);
+    }
+    legacy.reset();
+    explicit.reset();
+    assert_eq!(
+        legacy.encode(&scene(98, 66, 0), 4, 0).unwrap(),
+        explicit.encode(&scene(98, 66, 0), 4, 0).unwrap()
+    );
+}
+
+#[test]
+fn wider_requested_qp_range_reduces_noise_bytes_without_skipping_or_breaking_decode() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut default =
+        VideoEncoder::with_timing(320, 192, 500_000, VideoProfile::Screen, timing).unwrap();
+    let mut wider = VideoEncoder::with_options(
+        320,
+        192,
+        500_000,
+        VideoProfile::Screen,
+        timing,
+        VideoOptions {
+            frame_skip: false,
+            qp_bounds: Some(QpBounds::new(26, 51).unwrap()),
+        },
+    )
+    .unwrap();
+    let mut decoder = Decoder::new().unwrap();
+    let mut sums = [0usize; 2];
+    let mut random = 0x1257_934bu32;
+    for sequence in 1..=30 {
+        let mut frame = Frame::new(320, 192).unwrap();
+        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
+        }
+        let a = default.encode(&frame, sequence, 0).unwrap();
+        let b = wider.encode(&frame, sequence, 0).unwrap();
+        sums[0] += a.len();
+        sums[1] += b.len();
+        let parsed = parse_packet(&b).unwrap();
+        assert_eq!(parsed.sequence, sequence);
+        assert_eq!(
+            decoder
+                .decode(parsed.payload)
+                .unwrap()
+                .unwrap()
+                .dimensions(),
+            (320, 192)
+        );
+    }
+    assert!(
+        sums[1] < sums[0],
+        "The bounded deterministic noise case must exercise the wider range"
+    );
+}

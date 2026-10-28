@@ -153,6 +153,12 @@ struct Args {
     /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     video_frame_skip: bool,
+    /// Requested minimum H.264 QP; positive bounds avoid native default substitution.
+    #[arg(long, requires = "video_qp_max", value_parser = clap::value_parser!(u8).range(1..=51))]
+    video_qp_min: Option<u8>,
+    /// Requested maximum H.264 QP; must accompany video-qp-min.
+    #[arg(long, requires = "video_qp_min", value_parser = clap::value_parser!(u8).range(1..=51))]
+    video_qp_max: Option<u8>,
     /// Explicit exact-base experiment for the Hybrid codecs.
     #[arg(long, default_value = "global", value_parser = ["global", "global-cached"])]
     hybrid_base: String,
@@ -1418,13 +1424,22 @@ mod datagram_option_tests {
     }
 }
 
+fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
+    match (args.video_qp_min, args.video_qp_max) {
+        (None, None) => Ok(None),
+        (Some(min), Some(max)) => Ok(Some(gliss_video::QpBounds::new(min, max)?)),
+        _ => bail!("Both video-qp-min and video-qp-max are required"),
+    }
+}
+
 fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
-    if args.video_frame_skip {
+    let qp = configured_video_qp(args)?;
+    if args.video_frame_skip || qp.is_some() {
         ensure!(
             args.codec == "h264"
                 && args.datagram_bind.is_none()
                 && args.benchmark_capture_dir.is_none(),
-            "video-frame-skip requires WebSocket h264 without native benchmark capture"
+            "video frame skipping and QP bounds require WebSocket h264 without native benchmark capture"
         );
     }
     if args.codec != "h264" {
@@ -1454,6 +1469,9 @@ fn with_video_metadata(
             "timestamp_fps": timing.timestamp_fps(),
             "intra_period": timing.intra_period(),
         });
+    }
+    if let (Some(min), Some(max)) = (args.video_qp_min, args.video_qp_max) {
+        value["video_qp_bounds"] = json!({"min":min,"max":max,"scope":"requested native bounds; not coded-QP attestation"});
     }
     if args.video_frame_skip {
         value["video_frame_skip"] = json!(true);
@@ -1895,7 +1913,7 @@ mod video_timing_option_tests {
             encoder: None,
             timing,
             bitrate: 3_000_000,
-            frame_skip: false,
+            options: gliss_video::VideoOptions::default(),
         };
         encoder.reset();
         for (sequence, width, height) in [(1, 64, 48), (2, 64, 48), (3, 66, 50)] {
@@ -2861,7 +2879,10 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             encoder: None,
             timing: app.video_timing.context("Missing admitted H.264 timing")?,
             bitrate: app.args.h264_bitrate,
-            frame_skip: app.args.video_frame_skip,
+            options: gliss_video::VideoOptions {
+                frame_skip: app.args.video_frame_skip,
+                qp_bounds: configured_video_qp(&app.args)?,
+            },
         },
     });
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
@@ -3012,7 +3033,7 @@ enum StreamEncoder {
         encoder: Option<Box<VideoEncoder>>,
         timing: VideoTiming,
         bitrate: u32,
-        frame_skip: bool,
+        options: gliss_video::VideoOptions,
     },
 }
 
@@ -3051,16 +3072,16 @@ impl StreamEncoder {
                 encoder,
                 timing,
                 bitrate,
-                frame_skip,
+                options,
             } => {
                 if encoder.is_none() {
-                    *encoder = Some(Box::new(VideoEncoder::with_timing_and_frame_skip(
+                    *encoder = Some(Box::new(VideoEncoder::with_options(
                         frame.width,
                         frame.height,
                         *bitrate,
                         VideoProfile::Screen,
                         *timing,
-                        *frame_skip,
+                        *options,
                     )?));
                 }
                 encoder
@@ -3100,6 +3121,106 @@ mod causal_clock_request_tests {
         assert!(
             serde_json::from_str::<StageClockRequest>(
                 r#"{"nonce":"abababababababababababababababab","ordinal":1,"extra":0}"#
+            )
+            .is_err()
+        );
+    }
+}
+
+#[cfg(test)]
+mod video_qp_option_tests {
+    use super::*;
+    fn parse(extra: &[&str]) -> Result<Args, clap::Error> {
+        Args::try_parse_from(
+            [
+                "gliss-server",
+                "--demo",
+                "--token",
+                "qp-test-token-0123456789abcdef",
+            ]
+            .into_iter()
+            .chain(extra.iter().copied()),
+        )
+    }
+    #[test]
+    fn qp_bounds_are_paired_opt_in_and_scoped_before_startup() {
+        let default = parse(&["--codec", "h264"]).unwrap();
+        assert_eq!(configured_video_qp(&default).unwrap(), None);
+        assert!(
+            with_video_metadata(
+                json!({}),
+                &default,
+                configured_video_timing(&default).unwrap()
+            )
+            .get("video_qp_bounds")
+            .is_none()
+        );
+        let selected = parse(&[
+            "--codec",
+            "h264",
+            "--video-qp-min",
+            "26",
+            "--video-qp-max",
+            "51",
+        ])
+        .unwrap();
+        assert!(configured_video_timing(&selected).is_ok());
+        let qp = configured_video_qp(&selected).unwrap().unwrap();
+        assert_eq!((qp.min(), qp.max()), (26, 51));
+        let hello = with_video_metadata(
+            json!({}),
+            &selected,
+            configured_video_timing(&selected).unwrap(),
+        );
+        assert_eq!(hello["video_qp_bounds"]["min"], 26);
+        assert_eq!(hello["video_qp_bounds"]["max"], 51);
+        for extra in [
+            vec!["--codec", "h264", "--video-qp-min", "26"],
+            vec!["--codec", "h264", "--video-qp-max", "51"],
+            vec![
+                "--codec",
+                "h264",
+                "--video-qp-min",
+                "0",
+                "--video-qp-max",
+                "51",
+            ],
+            vec![
+                "--codec",
+                "h264",
+                "--video-qp-min",
+                "26",
+                "--video-qp-max",
+                "52",
+            ],
+        ] {
+            assert!(parse(&extra).is_err());
+        }
+        for extra in [
+            vec!["--codec", "deflate"],
+            vec!["--codec", "h264", "--datagram-bind", "127.0.0.1:0"],
+            vec![
+                "--codec",
+                "h264",
+                "--benchmark-capture-dir",
+                "unused-test-directory",
+            ],
+        ] {
+            let mut args = extra;
+            args.extend(["--video-qp-min", "26", "--video-qp-max", "51"]);
+            assert!(configured_video_timing(&parse(&args).unwrap()).is_err());
+        }
+        assert!(
+            configured_video_timing(
+                &parse(&[
+                    "--codec",
+                    "h264",
+                    "--video-qp-min",
+                    "51",
+                    "--video-qp-max",
+                    "26"
+                ])
+                .unwrap()
             )
             .is_err()
         );
