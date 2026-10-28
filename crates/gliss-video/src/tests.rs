@@ -23,6 +23,88 @@ fn scene(width: u16, height: u16, step: usize) -> Frame {
 }
 
 #[test]
+fn native_rate_control_skips_are_not_packets_and_emitted_aus_remain_decodable() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
+        320,
+        192,
+        200_000,
+        VideoProfile::Screen,
+        timing,
+        true,
+    )
+    .unwrap();
+    let mut decoder = Decoder::new().unwrap();
+    let mut sequence = 1_u32;
+    let mut skips = 0;
+    let mut random = 0x1257_934b_u32;
+    for _ in 0..240 {
+        let mut frame = Frame::new(320, 192).unwrap();
+        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
+            random ^= random << 13;
+            random ^= random >> 17;
+            random ^= random << 5;
+            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
+        }
+        if let Some(bytes) = encoder.encode_optional(&frame, sequence, 0).unwrap() {
+            let packet = parse_packet(&bytes).unwrap();
+            assert_eq!(packet.sequence, sequence);
+            assert!(!packet.payload.is_empty());
+            assert_eq!(
+                decoder
+                    .decode(packet.payload)
+                    .unwrap()
+                    .unwrap()
+                    .dimensions(),
+                (320, 192)
+            );
+            sequence += 1;
+        } else {
+            skips += 1;
+        }
+    }
+    assert!(
+        skips > 0,
+        "The bounded noise workload must exercise real encoder skips"
+    );
+    assert!(sequence > 2, "Skipping must still permit new pictures");
+}
+
+#[test]
+fn opt_in_skip_policy_survives_reset_and_resize_while_legacy_default_stays_off() {
+    let timing = VideoTiming::new(30, 30, 60).unwrap();
+    assert!(
+        !VideoEncoder::with_timing(64, 48, 4_000_000, VideoProfile::Screen, timing)
+            .unwrap()
+            .frame_skip_enabled()
+    );
+    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
+        64,
+        48,
+        4_000_000,
+        VideoProfile::Screen,
+        timing,
+        true,
+    )
+    .unwrap();
+    for (id, width, height) in [(1, 64, 48), (2, 66, 50)] {
+        let bytes = encoder
+            .encode_optional(&scene(width, height, 0), id, 0)
+            .unwrap()
+            .unwrap();
+        assert!(parse_packet(&bytes).unwrap().keyframe);
+        assert!(encoder.frame_skip_enabled());
+    }
+    encoder.reset();
+    let bytes = encoder
+        .encode_optional(&scene(66, 50, 0), 3, 0)
+        .unwrap()
+        .unwrap();
+    assert!(parse_packet(&bytes).unwrap().keyframe);
+    assert!(encoder.frame_skip_enabled());
+}
+
+#[test]
 fn software_encode_decode_metadata_and_quality() {
     let mut encoder = VideoEncoder::new(96, 64, 30).unwrap();
     let mut decoder = Decoder::new().unwrap();

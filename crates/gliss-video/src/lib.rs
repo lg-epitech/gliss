@@ -103,6 +103,7 @@ pub struct VideoEncoder {
     timing: VideoTiming,
     bitrate: u32,
     profile: VideoProfile,
+    frame_skip: bool,
     encoded_frames: u64,
     force_keyframe: bool,
     sps: Vec<u8>,
@@ -125,7 +126,12 @@ fn validate_dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
-fn native_encoder(timing: VideoTiming, bitrate: u32, profile: VideoProfile) -> Result<Encoder> {
+fn native_encoder(
+    timing: VideoTiming,
+    bitrate: u32,
+    profile: VideoProfile,
+    frame_skip: bool,
+) -> Result<Encoder> {
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate))
         .max_frame_rate(FrameRate::from_hz(timing.fps as f32))
@@ -137,7 +143,7 @@ fn native_encoder(timing: VideoTiming, bitrate: u32, profile: VideoProfile) -> R
         .adaptive_quantization(false)
         .background_detection(false)
         .num_threads(1)
-        .skip_frames(false)
+        .skip_frames(frame_skip)
         .long_term_reference(false)
         .intra_frame_period(IntraFramePeriod::from_num_frames(timing.intra_period))
         .sps_pps_strategy(SpsPpsStrategy::ConstantId)
@@ -186,19 +192,33 @@ impl VideoEncoder {
         profile: VideoProfile,
         timing: VideoTiming,
     ) -> Result<Self> {
+        Self::with_timing_and_frame_skip(width, height, bitrate, profile, timing, false)
+    }
+
+    /// Opt-in native rate control may discard a current input picture. Use
+    /// `encode_optional` so a skip is not turned into an empty wire packet.
+    pub fn with_timing_and_frame_skip(
+        width: u16,
+        height: u16,
+        bitrate: u32,
+        profile: VideoProfile,
+        timing: VideoTiming,
+        frame_skip: bool,
+    ) -> Result<Self> {
         validate_dimensions(width, height)?;
         ensure!(
             (1_000..=50_000_000).contains(&bitrate),
             "H.264 bitrate outside 1 kbit/s..50 Mbit/s"
         );
         Ok(Self {
-            encoder: native_encoder(timing, bitrate, profile)?,
+            encoder: native_encoder(timing, bitrate, profile, frame_skip)?,
             yuv: YUVBuffer::new(usize::from(width), usize::from(height)),
             width,
             height,
             timing,
             bitrate,
             profile,
+            frame_skip,
             encoded_frames: 0,
             force_keyframe: true,
             sps: Vec::new(),
@@ -214,6 +234,10 @@ impl VideoEncoder {
         self.timing
     }
 
+    pub fn frame_skip_enabled(&self) -> bool {
+        self.frame_skip
+    }
+
     /// Request an independently decodable IDR access unit on the next encode.
     pub fn reset(&mut self) {
         self.force_keyframe = true;
@@ -221,16 +245,30 @@ impl VideoEncoder {
 
     /// Encode one complete RGBA frame; size changes rebuild native state.
     pub fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
+        self.encode_optional(frame, sequence, input_id)?.context(
+            "Encoder skipped the current picture; use encode_optional with frame skipping enabled",
+        )
+    }
+
+    /// None means the current picture was discarded for rate control. No old
+    /// picture is retained or retried; callers assign wire IDs only to output.
+    pub fn encode_optional(
+        &mut self,
+        frame: &Frame,
+        sequence: u32,
+        input_id: u32,
+    ) -> Result<Option<Vec<u8>>> {
         ensure!(frame.is_valid(), "Invalid RGBA frame length or dimensions");
         validate_dimensions(frame.width, frame.height)?;
         if (frame.width, frame.height) != (self.width, self.height) {
             // Construct first so a rejected resize leaves the old encoder intact.
-            *self = Self::with_timing(
+            *self = Self::with_timing_and_frame_skip(
                 frame.width,
                 frame.height,
                 self.bitrate,
                 self.profile,
                 self.timing,
+                self.frame_skip,
             )?;
         }
         self.yuv.read_rgba8(RgbaSliceU8::new(
@@ -248,6 +286,15 @@ impl VideoEncoder {
             .encode_at(&self.yuv, timestamp)
             .context("Encode H.264 frame")?;
         let keyframe = encoded.frame_type() == FrameType::IDR;
+        if encoded.frame_type() == FrameType::Skip {
+            ensure!(
+                self.frame_skip && encoded.to_vec().is_empty(),
+                "Unexpected skipped encoder output"
+            );
+            // The synthetic source clock advances even when no AU is emitted.
+            self.encoded_frames = self.encoded_frames.saturating_add(1);
+            return Ok(None);
+        }
         ensure!(
             !self.force_keyframe || keyframe,
             "Encoder did not provide the requested IDR frame"
@@ -296,7 +343,7 @@ impl VideoEncoder {
         packet.extend_from_slice(&payload);
         self.encoded_frames += 1;
         self.force_keyframe = false;
-        Ok(packet)
+        Ok(Some(packet))
     }
 }
 

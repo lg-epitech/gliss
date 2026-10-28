@@ -4,11 +4,14 @@ import hashlib
 import io
 import json
 import math
+import sys
 import tarfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "benchmarks"))
+from runtime_snapshot import runtime_source_bytes
 
 
 def require(value, reason):
@@ -31,7 +34,7 @@ def main():
     registration = json.loads(registration_raw)
     require(registration["executed_positions"] == 0 and registration["binary_sha256"] == manifest["binary_sha256"], "Registration/binary mismatch")
     for name, expected in registration["sources"].items():
-        require(digest((ROOT / name).read_bytes()) == expected, "Registered source changed")
+        require(digest(runtime_source_bytes(name)) == expected, "Registered source changed")
     record = manifest["latency"]
     packed = (HERE / record["file"]).read_bytes()
     require(digest(packed) == record["compressed_sha256"], "Compressed evidence changed")
@@ -45,7 +48,7 @@ def main():
     require(data["binary_sha256"] == manifest["binary_sha256"], "Binary binding changed")
     require(data["cleanup_complete"] is True, "Guest cleanup unconfirmed")
     for name, expected in {**data["source_pins"], **manifest["runtime_source_pins"]}.items():
-        require(digest((ROOT / name).read_bytes()) == expected, "Source changed: " + name)
+        require(digest(runtime_source_bytes(name)) == expected, "Source changed: " + name)
     expected = [(profile["name"], mode) for profile in plan["profiles"] for mode in plan["order"]]
     require(len(expected) == len(data["positions"]) == 12, "Positions missing")
     codes = []

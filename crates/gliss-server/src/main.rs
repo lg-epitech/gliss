@@ -150,6 +150,9 @@ struct Args {
     /// H.264 periodic IDR interval in encoded frames; defaults to twice capture FPS.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
     video_intra_period: Option<u32>,
+    /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    video_frame_skip: bool,
     /// Explicit exact-base experiment for the Hybrid codecs.
     #[arg(long, default_value = "global", value_parser = ["global", "global-cached"])]
     hybrid_base: String,
@@ -1416,6 +1419,14 @@ mod datagram_option_tests {
 }
 
 fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
+    if args.video_frame_skip {
+        ensure!(
+            args.codec == "h264"
+                && args.datagram_bind.is_none()
+                && args.benchmark_capture_dir.is_none(),
+            "video-frame-skip requires WebSocket h264 without native benchmark capture"
+        );
+    }
     if args.codec != "h264" {
         ensure!(
             !explicit_video_timing(args),
@@ -1443,6 +1454,9 @@ fn with_video_metadata(
             "timestamp_fps": timing.timestamp_fps(),
             "intra_period": timing.intra_period(),
         });
+    }
+    if args.video_frame_skip {
+        value["video_frame_skip"] = json!(true);
     }
     value
 }
@@ -1881,6 +1895,7 @@ mod video_timing_option_tests {
             encoder: None,
             timing,
             bitrate: 3_000_000,
+            frame_skip: false,
         };
         encoder.reset();
         for (sequence, width, height) in [(1, 64, 48), (2, 64, 48), (3, 66, 50)] {
@@ -1900,6 +1915,45 @@ mod video_timing_option_tests {
         encoder.reset();
         let bytes = encoder.encode(&Frame::new(66, 50).unwrap(), 4, 3).unwrap();
         assert!(gliss_video::parse_packet(&bytes).unwrap().keyframe);
+    }
+
+    #[test]
+    fn frame_skip_is_opt_in_and_rejects_unimplemented_transports_and_recorders() {
+        let default = args(&["--codec", "h264"]).unwrap();
+        assert!(!default.video_frame_skip);
+        let enabled = args(&["--codec", "h264", "--video-frame-skip", "true"]).unwrap();
+        assert!(configured_video_timing(&enabled).is_ok());
+        assert_eq!(
+            with_video_metadata(
+                json!({}),
+                &enabled,
+                configured_video_timing(&enabled).unwrap()
+            )["video_frame_skip"],
+            true
+        );
+        for extra in [
+            vec!["--codec", "deflate", "--video-frame-skip", "true"],
+            vec![
+                "--codec",
+                "h264",
+                "--video-frame-skip",
+                "true",
+                "--datagram-bind",
+                "127.0.0.1:0",
+            ],
+            vec![
+                "--codec",
+                "h264",
+                "--video-frame-skip",
+                "true",
+                "--benchmark-capture-dir",
+                "unused-test-directory",
+            ],
+        ] {
+            let rejected = args(&extra).unwrap();
+            assert!(configured_video_timing(&rejected).is_err());
+        }
+        assert!(args(&["--codec", "h264", "--video-frame-skip", "unknown"]).is_err());
     }
 }
 
@@ -2632,7 +2686,7 @@ struct Encoded {
     encoder: StreamEncoder,
     generation: u64,
     sequence: u32,
-    packet: Result<Vec<u8>>,
+    packet: Result<Option<Vec<u8>>>,
     work: Duration,
     worker_wait: Duration,
 }
@@ -2807,6 +2861,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             encoder: None,
             timing: app.video_timing.context("Missing admitted H.264 timing")?,
             bitrate: app.args.h264_bitrate,
+            frame_skip: app.args.video_frame_skip,
         },
     });
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
@@ -2816,6 +2871,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     )?;
     let mut sequence = 0u32;
     let mut writer_jobs = 0usize;
+    let mut native_skipped_frames = 0_u64;
     let mut waiting = None::<MediaPacket>;
     let mut latest = None::<Captured>;
     let mut pacing = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(app.args.fps)));
@@ -2885,8 +2941,14 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 if completed.generation != window.generation() {
                     window.discarded_encode();
                 } else {
-                    let packet = completed.packet?;
-                    waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: packet, blocked_since: None });
+                    if let Some(packet) = completed.packet? {
+                        if app.args.video_frame_skip { sequence = completed.sequence; }
+                        waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: packet, blocked_since: None });
+                    } else {
+                        ensure!(app.args.video_frame_skip, "Unexpected empty media output");
+                        native_skipped_frames = native_skipped_frames.saturating_add(1);
+                        window.discarded_encode();
+                    }
                 }
             }
             changed = source.frames.changed() => {
@@ -2902,8 +2964,10 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             _ = pacing.tick(), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
                 let captured = latest.take().unwrap();
                 let mut next_encoder = encoder.take().context("encoder is already busy")?;
-                sequence = sequence.wrapping_add(1);
-                let packet_sequence = sequence;
+                let packet_sequence = sequence.wrapping_add(1);
+                // A rate-control skip must not create a predictive packet gap.
+                // Preserve legacy allocation when the opt-in policy is disabled.
+                if !app.args.video_frame_skip { sequence = packet_sequence; }
                 let packet_generation = window.generation();
                 if let Some(recorder) = &app.benchmark {
                     recorder.associate(recorder.generation(&captured.frame)?, packet_generation, packet_sequence, "GLV1")?;
@@ -2919,7 +2983,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                         let _trace_actor = blocking_actor;
                         let _permit = permit;
                         let started = Instant::now();
-                        let packet = next_encoder.encode(&captured.frame, packet_sequence, captured.forwarded_input_id);
+                        let packet = next_encoder.encode_optional(&captured.frame, packet_sequence, captured.forwarded_input_id);
                         Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work: started.elapsed(), worker_wait: started.saturating_duration_since(queued) }
                     }).await.context("blocking encoder worker failed")
                 });
@@ -2929,6 +2993,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 stats["waiting_encoded_bytes"] = json!(waiting.as_ref().map_or(0, |packet| packet.bytes.len()));
                 stats["encoder_busy"] = json!(!encoder_jobs.is_empty());
                 stats["writer_jobs"] = json!(writer_jobs);
+                if app.args.video_frame_skip { stats["native_skipped_frames"] = json!(native_skipped_frames); }
                 // Diagnostics never block input/media and have no unbounded history.
                 let _ = control_tx.try_send(ControlPacket { message: Message::Text(stats.to_string().into()), flushed: None });
             }
@@ -2947,6 +3012,7 @@ enum StreamEncoder {
         encoder: Option<Box<VideoEncoder>>,
         timing: VideoTiming,
         bitrate: u32,
+        frame_skip: bool,
     },
 }
 
@@ -2966,26 +3032,41 @@ impl StreamEncoder {
     }
 
     fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
+        self.encode_optional(frame, sequence, input_id)?
+            .context("Unexpected skipped output in a strict media path")
+    }
+
+    fn encode_optional(
+        &mut self,
+        frame: &Frame,
+        sequence: u32,
+        input_id: u32,
+    ) -> Result<Option<Vec<u8>>> {
         match self {
-            Self::Desktop(encoder) => encoder.encode(frame, sequence, input_id),
-            Self::Hybrid(encoder) => encoder.encode(frame, sequence, input_id),
-            Self::HybridGrid(encoder) => encoder.encode(frame, sequence, input_id),
-            Self::HybridContinuity(encoder) => encoder.encode(frame, sequence, input_id),
+            Self::Desktop(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
+            Self::Hybrid(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
+            Self::HybridGrid(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
+            Self::HybridContinuity(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
             Self::Video {
                 encoder,
                 timing,
                 bitrate,
+                frame_skip,
             } => {
                 if encoder.is_none() {
-                    *encoder = Some(Box::new(VideoEncoder::with_timing(
+                    *encoder = Some(Box::new(VideoEncoder::with_timing_and_frame_skip(
                         frame.width,
                         frame.height,
                         *bitrate,
                         VideoProfile::Screen,
                         *timing,
+                        *frame_skip,
                     )?));
                 }
-                encoder.as_mut().unwrap().encode(frame, sequence, input_id)
+                encoder
+                    .as_mut()
+                    .unwrap()
+                    .encode_optional(frame, sequence, input_id)
             }
         }
     }
