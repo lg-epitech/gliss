@@ -428,15 +428,24 @@ mod tests {
     }
     #[test]
     fn constructor_is_exact_public_screen_chain_without_qp_override() {
+        let options = gliss_video::VideoOptions::default();
+        assert!(!options.frame_skip);
+        assert!(options.qp_bounds.is_none());
         let public = include_str!("../src/lib.rs");
-        let begin = public.find("let config = EncoderConfig::new()").unwrap();
-        let end = public[begin..].find("Encoder::with_api_config").unwrap() + begin;
+        let begin = public
+            .find("let mut config = EncoderConfig::new()")
+            .unwrap();
+        let end = public[begin..]
+            .find("if let Some(qp) = options.qp_bounds")
+            .unwrap()
+            + begin;
         let public = public[begin..end]
             .lines()
             .filter(|l| !l.trim().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
-            .replace("let config = ", "")
+            .replace("let mut config = ", "")
+            .replace("options.frame_skip", "false")
             .replace("timing.fps as f32", "30_f32")
             .replace("bitrate)", "2_000_000)")
             .replace("profile.usage()", "UsageType::ScreenContentRealTime")

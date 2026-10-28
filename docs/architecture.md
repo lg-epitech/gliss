@@ -42,6 +42,11 @@ GLH1/GLH2/GLH4 combine a lossless base with classified video regions. A region s
 
 The WebSocket path acknowledges frames and bytes, with a default window of one frame. Once media enters TCP, dropping a newer frame cannot remove older reliable data, and one oversized packet may progress alone, so the byte window is not a hard memory ceiling.
 
+Accepted HTTP/WebSocket sockets use `TCP_NODELAY=true` by default. The operator
+can restore coalescing with `--tcp-nodelay false`; the option is applied and
+verified before HTTP uses each socket. Pong callbacks bypass video decoding and
+painting, so a local decoder stall does not delay an already-received reply.
+
 The datagram path publishes the newest captured state and admits whole pictures into a bounded send queue. The browser keeps at most two incomplete assemblies and one replaceable waiting frame. Painting releases browser-local ownership without acknowledging anything to the server. Loss or expiry triggers a rate-limited request for a fresh current-state picture; old media is never replayed.
 
 WebTransport needs browser support for unreliable datagrams and direct UDP routing; an ordinary HTTP reverse proxy cannot carry it. By default the datagram listener is loopback-only. A public media host requires the managed-FD mode described in the [security guide](security.md).
@@ -66,9 +71,23 @@ The viewer's sound button calls `client.setAudioEnabled(true)` directly from a u
 
 QEMU advertises its VNC audio extension through pseudoencoding `-259` when its VNC display has an audio backend. Gliss requests 48 kHz stereo s16le only while sound is enabled. For a headless VM, map both the sound device and VNC graphics to the same `<audio id='1' type='none'/>` backend. No host audio daemon is needed. Unsupported VNC servers keep streaming the desktop with audio unavailable. Audio currently uses the WebSocket path.
 
-The browser chooses native WebCodecs Opus decoding when supported, otherwise Web Audio PCM playback. The server encodes Opus at a 96 kbit/s target in 20 ms packets with complexity 4. PCM preserves compatibility at roughly 1.54 Mbit/s before transport overhead. Raw and encoded audio queues are bounded; stale packets are dropped after 100 ms. Browser decoding runs outside the video paint queue, with a 60 ms startup buffer for packet jitter and a 200 ms playback cap. Video and audio still share TCP, so network congestion can delay both.
+The browser prefers native WebCodecs Opus decoding, then advertised IMA ADPCM,
+then PCM for older peers. Opus uses a 96 kbit/s target and complexity 4. At the
+default 20 ms packet duration, ADPCM uses 394.8 kbit/s and PCM uses about
+1.54 Mbit/s including Gliss headers, before transport overhead. ADPCM is lossy.
+Raw and encoded queues are bounded; packet age starts at the first raw fragment,
+and expired partial packets are discarded after 100 ms. The browser also bounds
+pending Opus outputs and rejects output more than 100 ms after local receipt.
+Decoding runs outside the video paint queue, with a 60 ms startup buffer and a
+200 ms playback cap. Audio and video share TCP, so congestion can delay both.
 
-The control message is `{"type":"audio","enabled":true,"codec":"opus"}` (or `"pcm"`); disabling uses `"enabled":false`. The server returns `audio_status` with `available`, `enabled`, the chosen `codec` and an optional `message`. Each binary audio message has a 20-byte little-endian header: `GLA1`, codec byte (`0` PCM or `1` Opus), channel count byte (`2`), zero reserved u16, sample rate u32 (`48000`), wrapping sequence u32, and frame count u32 (`960`). Its payload is one Opus packet or interleaved signed PCM16. Audio messages do not consume the video ACK window.
+The control message is `{"type":"audio","enabled":true,"codec":"opus"}` (or
+`"ima-adpcm"` or `"pcm"`); disabling uses `"enabled":false`. The server returns
+`audio_status` with `available`, `enabled`, supported `codecs`, the chosen `codec`
+and an optional `message`. Audio messages use [GLA1 framing](audio-wire.md) and
+do not consume the video ACK window. Packet duration is fixed by the operator
+at startup: `--audio-packet-ms 20|40`, default 20 ms. It does not change the
+freshness budget or browser queue limits.
 
 ## Authentication
 

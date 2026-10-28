@@ -132,6 +132,22 @@ test('audio: gesture enables real stereo PCM playback; mute releases audio and s
   assert.equal(await page.evaluate(() => window.client.audio.snapshot().scheduled), result.scheduled);
 });
 
+test('control: a real WebSocket pong is delivered while the browser video decoder is stalled', async t => {
+  const peer = await audioPeer(t), page = await openClient(t, peer);
+  await page.evaluate(() => {
+    window.releaseVideo = null;
+    window.client.decoder.decode = () => new Promise(resolve => {window.releaseVideo = () => resolve({width:1,height:1,
+      pixels:new Uint8ClampedArray([20,40,60,255]),sequence:1,inputId:0,bytes:4});});
+  });
+  peer.send(Buffer.from('video'));
+  await page.waitForFunction(() => window.releaseVideo !== null);
+  peer.send({type:'pong',id:17});
+  await page.waitForFunction(() => window.events.some(event => event.type === 'pong' && event.id === 17),null,{timeout:1000});
+  assert.equal(await page.evaluate(() => window.client.metrics.frames),0);
+  await page.evaluate(() => window.releaseVideo());
+  await page.waitForFunction(() => window.client.metrics.frames === 1);
+});
+
 test('audio: network bursts remain bounded and bypass a stalled video decode', async t => {
   const peer = await audioPeer(t), page = await openClient(t, peer);
   await page.click('#sound');await page.evaluate(() => window.soundRequest);
@@ -174,7 +190,7 @@ test('audio: malformed audio stops sound without requesting display recovery; re
   assert.equal(await page.evaluate(() => window.client.audio.context), null);
 });
 
-test('audio: native Opus decoding plays browser-encoded 48kHz stereo packets', async t => {
+for (const frames of [960, 1920]) test(`audio: native Opus decoding plays ${frames / 48} ms stereo packets`, async t => {
   const peer = await audioPeer(t), page = await openClient(t, peer, {pcm: false});
   const supported = await page.evaluate(async () => !!window.AudioEncoder && !!window.AudioDecoder &&
     (await AudioEncoder.isConfigSupported({codec: 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: 96000})).supported &&
@@ -182,28 +198,32 @@ test('audio: native Opus decoding plays browser-encoded 48kHz stereo packets', a
   assert.equal(supported, true, 'Test Chromium must provide native Opus encoding and decoding');
   await page.click('#sound');await page.evaluate(() => window.soundRequest);
   assert.equal(await page.evaluate(() => window.client.audio.codec), 'opus');
-  const chunks = await page.evaluate(async () => {
+  const chunks = await page.evaluate(async frames => {
     const chunks = [], encoder = new AudioEncoder({output: chunk => {
       const bytes = new Uint8Array(chunk.byteLength);chunk.copyTo(bytes);chunks.push(Array.from(bytes));
     }, error: error => {throw error;}});
-    encoder.configure({codec: 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: 96000});
+    encoder.configure({codec: 'opus', sampleRate: 48000, numberOfChannels: 2, bitrate: 96000,
+      opus: {frameDuration: frames / 48000 * 1000000}});
     for (let index = 0; index < 8; index++) {
-      const samples = new Float32Array(1920);
-      for (let frame = 0; frame < 960; frame++) {samples[frame] = Math.sin((frame + index * 960) * 2 * Math.PI * 440 / 48000) * 0.4;samples[960 + frame] = samples[frame] * 0.5;}
-      const audio = new AudioData({format: 'f32-planar', sampleRate: 48000, numberOfFrames: 960, numberOfChannels: 2, timestamp: index * 20000, data: samples});
+      const samples = new Float32Array(frames * 2);
+      for (let frame = 0; frame < frames; frame++) {samples[frame] = Math.sin((frame + index * frames) * 2 * Math.PI * 440 / 48000) * 0.4;samples[frames + frame] = samples[frame] * 0.5;}
+      const audio = new AudioData({format: 'f32-planar', sampleRate: 48000, numberOfFrames: frames, numberOfChannels: 2,
+        timestamp: Math.round(index * frames / 48000 * 1000000), data: samples});
       encoder.encode(audio);audio.close();
     }
     await encoder.flush();encoder.close();return chunks;
-  });
+  }, frames);
   let sequence = 0;
   for (const chunk of chunks) {
-    const header = pcmPacket(sequence++).subarray(0, 20);header[4] = 1;
+    const header = pcmPacket(sequence++, frames).subarray(0, 20);header[4] = 1;
     peer.send(Buffer.concat([header, Buffer.from(chunk)]));
-    await new Promise(resolve => setTimeout(resolve, 20));
+    await new Promise(resolve => setTimeout(resolve, frames / 48));
   }
-  await page.waitForFunction(() => window.client.audio.scheduled >= 8);
+  await page.waitForFunction(count => window.client.audio.scheduled === count &&
+    window.client.audio.pendingDecodes.size === 0, chunks.length);
   const result = await page.evaluate(() => window.client.audio.snapshot());
   assert.equal(result.codec, 'opus');assert.equal(result.enabled, true);assert.equal(result.decodeQueue, 0);
+  assert.ok(chunks.length >= 8);assert.equal(result.dropped, 0);
   assert.ok(result.queuedSeconds <= 0.2);assert.ok(result.sources <= 12);
 });
 

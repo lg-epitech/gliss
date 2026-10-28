@@ -1,5 +1,7 @@
 // Audio is independent of the video decode/paint queue. Keep at most 200 ms
 // scheduled so a network burst or a background tab cannot build up old sound.
+import {decodeAdpcm} from './audio-adpcm.js';
+
 const HEADER_BYTES = 20;
 const SAMPLE_RATE = 48000;
 const CHANNELS = 2;
@@ -8,6 +10,7 @@ const MAX_BUFFER_SECONDS = 0.2;
 // Leave room for ordinary packet jitter before the first playback deadline.
 const START_DELAY_SECONDS = 0.06;
 const MAX_DECODE_QUEUE = 8;
+const MAX_DECODE_AGE_MS = 100;
 
 export function isAudioPacket(data) {
   if (!(data instanceof ArrayBuffer) || data.byteLength < 4) return false;
@@ -22,11 +25,13 @@ export class AudioPlayer {
     this.enabled = false;
     this.blocked = false;
     this.codec = null;
+    this.codecs = ['opus', 'pcm']; // Old peers do not advertise the new fallback.
     this.context = null;
     this.decoder = null;
     this.sources = new Set();
     this.epoch = 0;
     this.decoderEpoch = 0;
+    this.pendingDecodes = new Map();
     this.nextTime = 0;
     this.timestamp = 0;
     this.sequence = null;
@@ -42,6 +47,9 @@ export class AudioPlayer {
 
   status(status) {
     this.available = status.available === true;
+    this.codecs = Array.isArray(status.codecs) && status.codecs.length <= 8 &&
+        status.codecs.every(codec => typeof codec === 'string') && status.codecs.includes('pcm')
+      ? status.codecs.filter(codec => ['opus', 'ima-adpcm', 'pcm'].includes(codec)) : ['opus', 'pcm'];
     // A delayed acknowledgement of an earlier mute must not cancel a new
     // user request. Explicit failure/unavailability still stops playback.
     if ((!this.available || (status.enabled === false && status.message)) && this.enabled) {
@@ -71,12 +79,12 @@ export class AudioPlayer {
         this.blocked = true;
         throw new Error('Click Sound again to allow audio playback.');
       }
-      let codec = 'pcm';
-      if (globalThis.AudioDecoder && globalThis.EncodedAudioChunk) {
+      let codec = this.codecs.includes('ima-adpcm') ? 'ima-adpcm' : 'pcm';
+      if (this.codecs.includes('opus') && globalThis.AudioDecoder && globalThis.EncodedAudioChunk) {
         try {
           const support = await AudioDecoder.isConfigSupported({codec: 'opus', sampleRate: SAMPLE_RATE, numberOfChannels: CHANNELS});
           if (support.supported) codec = 'opus';
-        } catch { /* PCM uses Web Audio in browsers without an Opus decoder. */ }
+        } catch { /* Keep the advertised Web Audio fallback. */ }
       }
       if (epoch !== this.epoch) return null;
       this.codec = codec;
@@ -105,6 +113,7 @@ export class AudioPlayer {
   closeResources() {
     this.clearScheduled();
     ++this.decoderEpoch;
+    this.pendingDecodes.clear();
     if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     this.decoder = null;
     const context = this.context;
@@ -143,6 +152,7 @@ export class AudioPlayer {
 
   createDecoder() {
     ++this.decoderEpoch;
+    this.pendingDecodes.clear();
     if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     const epoch = this.decoderEpoch;
     this.decoder = new AudioDecoder({
@@ -151,6 +161,19 @@ export class AudioPlayer {
           if (epoch !== this.decoderEpoch || !this.enabled) return;
           if (audio.sampleRate !== SAMPLE_RATE || audio.numberOfChannels !== CHANNELS || audio.numberOfFrames > MAX_FRAMES)
             throw new Error('Invalid decoded audio format.');
+          // Chromium's sample-clock conversion can truncate an integer PTS by
+          // one microsecond. Match that rounding without renewing packet age.
+          let timestamp = audio.timestamp;
+          if (!this.pendingDecodes.has(timestamp)) {
+            if (this.pendingDecodes.has(timestamp - 1)) timestamp--;
+            else if (this.pendingDecodes.has(timestamp + 1)) timestamp++;
+          }
+          const received = this.pendingDecodes.get(timestamp);
+          this.pendingDecodes.delete(timestamp);
+          if (received === undefined || performance.now() - received > MAX_DECODE_AGE_MS) {
+            this.dropped++;
+            return;
+          }
           this.schedule(audio.numberOfFrames, channel => {
             const samples = new Float32Array(audio.numberOfFrames);
             audio.copyTo(samples, {planeIndex: channel, format: 'f32-planar'});
@@ -171,15 +194,18 @@ export class AudioPlayer {
       const header = new DataView(data);
       const codec = header.getUint8(4), channels = header.getUint8(5);
       const rate = header.getUint32(8, true), sequence = header.getUint32(12, true), frames = header.getUint32(16, true);
+      const expectedCodec = this.codec === 'opus' ? 1 : this.codec === 'ima-adpcm' ? 2 : 0;
       if (header.getUint16(6, true) !== 0 || channels !== CHANNELS || rate !== SAMPLE_RATE ||
-          frames < 1 || frames > MAX_FRAMES || codec !== (this.codec === 'opus' ? 1 : 0))
+          frames < 1 || frames > MAX_FRAMES || codec !== expectedCodec)
         throw new Error('Invalid audio packet format.');
       const length = data.byteLength - HEADER_BYTES;
-      if ((codec === 0 && length !== frames * channels * 2) || (codec === 1 && (length < 1 || length > 4096)))
+      if ((codec === 0 && length !== frames * channels * 2) || (codec === 1 && (length < 1 || length > 4096)) ||
+          (codec === 2 && length !== frames + 7))
         throw new Error('Invalid audio payload length.');
       this.received++;
       if ((this.sequence !== null && sequence !== ((this.sequence + 1) >>> 0)) ||
-          (this.decoder?.decodeQueueSize ?? 0) >= MAX_DECODE_QUEUE) {
+          (this.decoder?.decodeQueueSize ?? 0) >= MAX_DECODE_QUEUE ||
+          this.pendingDecodes.size >= MAX_DECODE_QUEUE) {
         this.dropped++;
         this.clearScheduled();
         if (codec === 1) this.createDecoder();
@@ -191,8 +217,13 @@ export class AudioPlayer {
           for (let frame = 0; frame < frames; frame++) samples[frame] = header.getInt16(HEADER_BYTES + (frame * CHANNELS + channel) * 2, true) / 32768;
           return samples;
         });
+      } else if (codec === 2) {
+        const samples = decodeAdpcm(new Uint8Array(data, HEADER_BYTES), frames);
+        this.schedule(frames, channel => samples[channel]);
       } else {
-        this.decoder.decode(new EncodedAudioChunk({type: 'key', timestamp: Math.round(this.timestamp * 1000000 / SAMPLE_RATE),
+        const timestamp = Math.round(this.timestamp * 1000000 / SAMPLE_RATE);
+        this.pendingDecodes.set(timestamp, performance.now());
+        this.decoder.decode(new EncodedAudioChunk({type: 'key', timestamp,
           duration: Math.round(frames * 1000000 / SAMPLE_RATE), data: new Uint8Array(data, HEADER_BYTES)}));
         this.timestamp += frames;
       }
@@ -226,6 +257,7 @@ export class AudioPlayer {
       contextState: this.context?.state ?? 'closed', sources: this.sources.size,
       queuedSeconds: this.context ? Math.max(0, this.nextTime - this.context.currentTime) : 0,
       decodeQueue: this.decoder?.decodeQueueSize ?? 0,
+      pendingDecodes: this.pendingDecodes.size,
       received: this.received, scheduled: this.scheduled, dropped: this.dropped};
   }
 }

@@ -118,6 +118,39 @@ stubs authentication/database lookups and VM discovery to target only its own
 disposable QEMU guest; it does not validate deployed credentials, networks or VM
 provisioning. VM-id access is entered through client navigation after hydration.
 
+## Streaming controls
+
+The WebSocket audio player prefers Opus, with advertised IMA ADPCM and PCM
+fallbacks. The [audio wire format](audio-wire.md) describes codec negotiation,
+payload bounds and freshness limits.
+
+`--audio-packet-ms 20|40` selects a fixed packet duration before opening the
+source. Omission keeps 20 ms. Longer packets reduce packet/header overhead and
+increase assembly delay; they leave less time within the same 100 ms ingress-age
+budget. `hello.audio_packet_ms` and the authenticated HTTP `/stats` response
+report the selection.
+
+With `--stream-stats`, the existing diagnostics include `audio.packet_ms` and
+`audio.counters`. They count emitted packets/frames/bytes, stale raw or partial
+audio, pending resets, raw/writer broadcast lag, encoder errors and writer age
+rejections. Counts are cumulative per source, and each field is sampled
+independently. Raw data arriving while audio is disabled is uncounted. Pending
+resets combine stale-input, capture, subscription and lag resets. Emission is
+not proof of delivery; a pre-write age check cannot expire bytes already in TCP.
+
+Accepted HTTP/WebSocket sockets enable `TCP_NODELAY` by default.
+`--tcp-nodelay false` restores coalescing. The selected option is read back
+before HTTP uses each accepted socket; `hello.tcp_listener` reports verification
+counts. This setting does not remove congestion or retransmission delays.
+
+WebSocket H.264 also accepts `--video-qp-min MIN --video-qp-max MAX` and
+`--video-frame-skip true`. QP bounds must be supplied together with
+`1 <= MIN <= MAX <= 51`; omission preserves encoder defaults. More quantization
+trades image fidelity for smaller pictures. Frame skipping permits the encoder
+to omit pictures to meet its rate target, reducing update cadence. Neither is a
+hard bandwidth cap. Both options reject datagram mode and benchmark capture.
+See the [video crate](../crates/gliss-video/README.md) for API and metadata details.
+
 ## Releasing
 
 `pyproject.toml` packages `gliss-server` as a binary-only Python wheel with [maturin](https://www.maturin.rs/), so Python projects can depend on it without a Rust toolchain. Build one locally with:
