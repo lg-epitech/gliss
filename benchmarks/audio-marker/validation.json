@@ -1,0 +1,20 @@
+{
+  "schema": "gliss-audio-marker-validation-v1",
+  "binary_sha256": "fb0eaf78b25b446bb831b86fb273cb73d26f0042637ad29f45bd44246640382f",
+  "portable_tests": {
+    "passed": 157,
+    "failed": 0,
+    "skipped": 0
+  },
+  "detector_unit_tests": 2,
+  "receipt_unit_tests": 4,
+  "mixer_guests": 4,
+  "mixer_codec_sessions": 8,
+  "mixer_marker_responses": 48,
+  "latency_positions": 8,
+  "latency_marker_outcomes": 48,
+  "latency_timely": 36,
+  "latency_late": 3,
+  "latency_unobserved": 9,
+  "qualification": "Unobserved means not identified before a six-second cutoff. Benchmark execution success does not mean the PCM deadline passed."
+}

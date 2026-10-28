@@ -11,5 +11,13 @@
     "plan": "mixer-plan.json",
     "plan_sha256": "4f7bd34ef4eba7b43e3b1741dbb21e8f3cfb5b9762f49f98b3b418639467d145"
   },
-  "qualification": "Four fresh owned guests, two codecs per guest, six source markers per codec. Trigger-to-analyser observations and pure-tone amplitude, not physical speaker latency or music quality."
+  "qualification": "Four fresh owned guests, two codecs per guest, six source markers per codec. Trigger-to-analyser observations and pure-tone amplitude, not physical speaker latency or music quality.",
+  "latency": {
+    "file": "latency-48k.json.gz",
+    "compressed_sha256": "3e8a121fb2c009e5d4161f0a2f98bc739cd606bf5927b1943f990edc74b5f96c",
+    "original_sha256": "c492a14982e9b1f5a30637e7319646168eebcfe01e80d50e667b8fa17cde075f",
+    "plan": "latency-plan.json",
+    "plan_sha256": "96e268051e930f5a13d7fc091d95f567dc60880d70e0710a3fb477018656aa59",
+    "qualification": "Eight fixed six-second positions, 48 unique serial markers, 700 ms observer deadline. Late and unobserved markers retained; this is not physical speaker latency."
+  }
 }
