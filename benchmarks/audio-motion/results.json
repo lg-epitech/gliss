@@ -54,10 +54,28 @@
         "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
         "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08"
       }
+    },
+    {
+      "name": "window",
+      "results": "window.json.gz",
+      "results_sha256": "500cacb407840e12265a2d8532fa095cfa74c91391ef3337599c30d79ffccfde",
+      "original_bytes": 487519,
+      "original_sha256": "b8cedc6cc2df48e83fd65ffe827dfea7c60acc9acc92f16dcf59653dddcb67eb",
+      "plan": "window-plan.json",
+      "plan_sha256": "ab326c2e068cc5e8323b58d845f45039a5cbe100c4ad5efc4ae7bb9bc8ff25fa",
+      "registration": "window-registration.json",
+      "registration_sha256": "03e5ac8939d69d42ef0a99bd983c3c118e94c49f4898281fc39382151c8e6f97",
+      "source_archive": "window-source.tar.gz",
+      "source_archive_sha256": "8c12caa779e1e59cbb477b9636350bb625401a28b60f8ef3ac7f7e3624d36ef1",
+      "binary_sha256": "44c093b0f2cc2b276352bdb4f1025c5d32de50c4963aec270511dfd3b0768572",
+      "observed_unregistered_source_pins": {
+        "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+        "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08"
+      }
     }
   ],
   "validation": "validation.json",
-  "validation_sha256": "a8f286dd2c800754720dab82149a4fe6aa9ac2f34df70bcbc836c9cdc651ffe4",
+  "validation_sha256": "ee7d1d2ecb4dbf0b9c42c0cb2db0eb9800567415fee17ba2c0a7f2695d889cdf",
   "qualifications": [
     "Original result bytes are unchanged. Archives normalize tar metadata and omit directory entries; source bytes are unchanged.",
     "Baseline guest image digests were not retained. Budget and skip cohorts record kernel, initramfs and init binary hashes; runtime admission is root-recorded, not independently attested.",
@@ -67,5 +85,18 @@
     "App media rates exclude WebSocket/TCP/IP and control bytes. CPU windows are independent of browser observation windows. Kernel counters include HTTP and warmup.",
     "All missing and late audio/control outcomes are retained. Incomplete control sets support conditional p95 only. Two repeats per condition do not establish production capacity.",
     "The original marker init.c/build.py provenance parents were hashed at result collection but omitted from each prospective source list. Their observed hashes are verified separately; they were not the motion fixture files executed. No retrospective registration is claimed."
-  ]
+  ],
+  "rejected_window_setup": {
+    "measurement_positions_executed": 0,
+    "guest_browser_launches": 0,
+    "failure": "ERR_MODULE_NOT_FOUND: observer-window.mjs",
+    "registration": "window-import-rejected-registration.json",
+    "registration_sha256": "f86574b51aaf42f0cd82c43a73f52e8b151062d9d9b62c19cbe99b9e2ca95326",
+    "source_archive": "window-import-rejected-source.tar.gz",
+    "source_archive_sha256": "687a9101b4a921d19f1ef8ec43ffa1e5d0c684f634f37285a6cc3df11029dee0",
+    "sanitized_log": "window-import-rejected.log",
+    "sanitized_log_sha256": "624d28d433378dcd45aa1a343926d0acaf5d0a30a009efca5f2563b10196aa89",
+    "original_log_sha256": "4ead48f43808f97a98c5e3634cd60b819384fab359a30cfa4f0d1fc84f93d7cc",
+    "redaction": "Checkout path replaced with $CHECKOUT; other log bytes unchanged."
+  }
 }

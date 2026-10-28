@@ -19,14 +19,16 @@ The branch adds two changes:
   without native benchmark capture; it does not change datagram streaming.
 
 The skipping trial recovered timely audio but reduced video updates too far
-for a default desktop policy. Distribox and release defaults were not changed.
+for a default desktop policy. A smaller video window recovered 9/12 timely
+markers while delivering more video updates. Distribox and release defaults
+were not changed.
 
-## Three fixed comparisons
+## Four fixed comparisons
 
 Each comparison ran eight positions with 1.5 seconds of warmup and a six-second
 browser window. Every position submitted six unique stereo tone codes through
-an owned guest's serial input. The response deadline was 700 ms. All **24
-positions and 144 source commands** completed; late and unobserved responses
+an owned guest's serial input. The response deadline was 700 ms. All **32
+positions and 192 source commands** completed; late and unobserved responses
 remain in the original reports.
 
 The source draws document shapes, scrolling stripes and a 360×180 animated
@@ -86,6 +88,27 @@ zero decode errors and zero invalid painted markers. Enabled sessions reported
 sessions omit that field; absence is not a measured zero. All kernel queue
 snapshots recorded zero packet drops and every private shaper was removed.
 
+**Video-window comparison:** eight, one, one, eight in-flight frames; repeat on
+the constrained link. The 500 kbit/s target, new executable, stream stats and
+disabled native skipping stay fixed. The controller records and checks each
+native process's window argument before measurement.
+
+- **Loopback:** both windows identified all 12 markers, answered all 40 pongs
+  and painted 10.50–11.17 distinct source IDs/s. The one-frame positions received
+  2,718–2,726 kbit/s; the eight-frame positions received 2,694–2,806 kbit/s.
+- **Eight, constrained:** 0/12 timely markers, 32/40 pongs, conditional wire
+  p95 2.37–2.42 seconds, and 3.50–3.67 distinct painted source IDs/s.
+- **One, constrained:** **9/12 timely markers at 323–431 ms**, **40/40 pongs**,
+  complete per-position wire p95 **307–314 ms**, about **800 kbit/s**, and
+  **17 distinct painted source IDs per six-second position**. Three exact audio
+  codes were unobserved before cutoff; the smaller window is not a complete fix.
+
+All eight positions were valid with contiguous video sequences, zero decode
+errors, zero invalid paint markers and confirmed cleanup. The first controller
+revision failed module linking before any guest/browser launch. Its source,
+registration and sanitized log remain in the inventory; the measured revision
+was registered separately before execution.
+
 ## What this changes for Distribox
 
 Keep Opus preferred. Optimizing its roughly 104 kbit/s stream cannot solve a
@@ -97,8 +120,16 @@ from network congestion.
 Native skipping is an opt-in safeguard for an overloaded connection. At the
 selected 500 kbit/s target, its video cadence is unsuitable for scrolling or
 window movement. Retain the default until a comparison demonstrates a better
-motion tradeoff. The next candidates are a smaller video window, resolution or
-quality adaptation, picture-size control and separate audio/control transport.
+motion tradeoff. A one-frame window is already Gliss's default and is the better
+starting point for constrained links in this workload, although it still missed
+three audio codes. Raising it to eight was a Distribox backend default observed
+in source, not a requirement of Gliss. No deployed setting was changed.
+
+The retained choices expose a tradeoff: a smaller window improves audio/control
+delivery with moderate video cadence; aggressive skipping protects all tested
+audio markers at a much lower video cadence. Neither establishes whole-frame
+quality or freshness. Resolution or quality adaptation, picture-size control
+and separate audio/control transport remain candidates.
 The roughly 11 distinct marker IDs/s on uncongested loopback also warrants
 capture-cadence investigation. This trial does not establish its cause.
 
@@ -156,7 +187,8 @@ Important limits are retained in the inventory:
   omissions are qualified, not retrospectively attested.
 
 The opt-in controllers are `scripts/bench-audio-motion.mjs`,
-`scripts/bench-audio-budget.mjs` and `scripts/bench-audio-skip.mjs`. Use the
+`scripts/bench-audio-budget.mjs`, `scripts/bench-audio-skip.mjs` and
+`scripts/bench-audio-window.mjs`. Use the
 recorded executable/source revision for each, an absolute `GLISS_BINARY`, a
 fresh output, and the same resource and CPU restrictions. The constrained
 studies require a fresh user/network namespace, loopback up, private `/dev`

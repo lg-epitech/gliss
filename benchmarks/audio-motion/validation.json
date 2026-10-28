@@ -80,6 +80,11 @@
     "skip.log": {
       "original_sha256": "2c7aa0535b05bd0b604033630cd42b820763dfc29b8690d3a2fc31ee2d01df73",
       "original_bytes": 3578
+    },
+    "window-v2.log": {
+      "original_sha256": "714d63e0f6b94d1cedb2e749febba566ba2b03af80e1e757a4b557c2e420a3d2",
+      "original_bytes": 3530
     }
-  }
+  },
+  "additional_cohort": "Eight one/eight-frame positions: all valid, normal native exits, zero video errors/gaps, zero recorded kernel drops, owned guest and private shaper cleanup confirmed."
 }

@@ -134,7 +134,7 @@ def verify(record):
             require(position['kernel_cleanup']['root_removed'] is True, 'Private shaper cleanup unconfirmed')
             for q in position['kernel_link']['queues']:
                 require(q['packets'] > 0 and q['drops'] == 0 and q['rate_bytes_per_second'] == 125000 and q['delay_seconds'] == .04, 'Kernel treatment changed')
-        if record['name'] == 'skip':
+        if record['name'] in ['skip', 'window']:
             require(position['frame_skip'] == plan['frame_skip'][position['mode']], 'Skip treatment changed')
             gaps = sum(b['sequence'] != ((a['sequence'] + 1) & 0xffffffff) for a, b in zip(m['arrivals'], m['arrivals'][1:]))
             require(m['sequence_gaps'] == gaps == 0 and m['invalid_skip_stats'] == 0, 'Media continuity invalid')
@@ -145,6 +145,13 @@ def verify(record):
                 require(all(b['count'] >= a['count'] for a,b in zip(samples, samples[1:])), 'Skip counter regressed')
             else:
                 require(samples == [], 'Absent native counter inferred as zero')
+        if record['name'] == 'window':
+            require(position['in_flight_frames'] == plan['video_windows'][position['mode']], 'Video window treatment changed')
+            argv = position['native_argv']
+            for option, value in [('--in-flight-frames', str(position['in_flight_frames'])),
+                                  ('--h264-bitrate', '500000'), ('--video-frame-skip', 'false')]:
+                require(argv.count(option) == 1 and argv[argv.index(option) + 1] == value, 'Recorded native argv changed')
+            require(argv.count('--stream-stats') == 1, 'Stats not shared by both arms')
         require(position['measurement_valid'], 'Failed measurement cannot support summary')
         wire = (m['wire_bytes'] + m['video_wire_bytes']) * 8 / plan['window_ms']
         latencies = [p['trigger_to_observed_ms'] for p in position['pulses'] if p['status'] == 'observed']
@@ -162,9 +169,15 @@ def verify(record):
 def main():
     inventory = json.loads((HERE / 'results.json').read_text())
     require(digest((HERE / inventory['validation']).read_bytes()) == inventory['validation_sha256'], 'Validation record changed')
+    rejected = inventory['rejected_window_setup']
+    require(rejected['measurement_positions_executed'] == rejected['guest_browser_launches'] == 0,
+            'Setup failure relabeled as measured')
+    for key in ['registration', 'source_archive', 'sanitized_log']:
+        bound_file(rejected, key)
+    positions = 0
     for record in inventory['cohorts']:
-        verify(record)
-    print('Verified 24 fixed positions, 144 audio probe slots, original hashes, source declarations, CPU arithmetic and scoped delivery metrics.')
+        positions += len(verify(record)['positions'])
+    print(f'Verified {positions} fixed positions, {positions * 6} audio probe slots, original hashes, source declarations, CPU arithmetic and scoped delivery metrics.')
 
 
 if __name__ == '__main__':
