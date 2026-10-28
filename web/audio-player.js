@@ -8,6 +8,7 @@ const MAX_BUFFER_SECONDS = 0.2;
 // Leave room for ordinary packet jitter before the first playback deadline.
 const START_DELAY_SECONDS = 0.06;
 const MAX_DECODE_QUEUE = 8;
+const MAX_DECODE_AGE_MS = 100;
 
 export function isAudioPacket(data) {
   if (!(data instanceof ArrayBuffer) || data.byteLength < 4) return false;
@@ -27,6 +28,7 @@ export class AudioPlayer {
     this.sources = new Set();
     this.epoch = 0;
     this.decoderEpoch = 0;
+    this.pendingDecodes = new Map();
     this.nextTime = 0;
     this.timestamp = 0;
     this.sequence = null;
@@ -105,6 +107,7 @@ export class AudioPlayer {
   closeResources() {
     this.clearScheduled();
     ++this.decoderEpoch;
+    this.pendingDecodes.clear();
     if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     this.decoder = null;
     const context = this.context;
@@ -143,6 +146,7 @@ export class AudioPlayer {
 
   createDecoder() {
     ++this.decoderEpoch;
+    this.pendingDecodes.clear();
     if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     const epoch = this.decoderEpoch;
     this.decoder = new AudioDecoder({
@@ -151,6 +155,12 @@ export class AudioPlayer {
           if (epoch !== this.decoderEpoch || !this.enabled) return;
           if (audio.sampleRate !== SAMPLE_RATE || audio.numberOfChannels !== CHANNELS || audio.numberOfFrames > MAX_FRAMES)
             throw new Error('Invalid decoded audio format.');
+          const received = this.pendingDecodes.get(audio.timestamp);
+          this.pendingDecodes.delete(audio.timestamp);
+          if (received === undefined || performance.now() - received > MAX_DECODE_AGE_MS) {
+            this.dropped++;
+            return;
+          }
           this.schedule(audio.numberOfFrames, channel => {
             const samples = new Float32Array(audio.numberOfFrames);
             audio.copyTo(samples, {planeIndex: channel, format: 'f32-planar'});
@@ -179,7 +189,8 @@ export class AudioPlayer {
         throw new Error('Invalid audio payload length.');
       this.received++;
       if ((this.sequence !== null && sequence !== ((this.sequence + 1) >>> 0)) ||
-          (this.decoder?.decodeQueueSize ?? 0) >= MAX_DECODE_QUEUE) {
+          (this.decoder?.decodeQueueSize ?? 0) >= MAX_DECODE_QUEUE ||
+          this.pendingDecodes.size >= MAX_DECODE_QUEUE) {
         this.dropped++;
         this.clearScheduled();
         if (codec === 1) this.createDecoder();
@@ -192,7 +203,9 @@ export class AudioPlayer {
           return samples;
         });
       } else {
-        this.decoder.decode(new EncodedAudioChunk({type: 'key', timestamp: Math.round(this.timestamp * 1000000 / SAMPLE_RATE),
+        const timestamp = Math.round(this.timestamp * 1000000 / SAMPLE_RATE);
+        this.pendingDecodes.set(timestamp, performance.now());
+        this.decoder.decode(new EncodedAudioChunk({type: 'key', timestamp,
           duration: Math.round(frames * 1000000 / SAMPLE_RATE), data: new Uint8Array(data, HEADER_BYTES)}));
         this.timestamp += frames;
       }
@@ -226,6 +239,7 @@ export class AudioPlayer {
       contextState: this.context?.state ?? 'closed', sources: this.sources.size,
       queuedSeconds: this.context ? Math.max(0, this.nextTime - this.context.currentTime) : 0,
       decodeQueue: this.decoder?.decodeQueueSize ?? 0,
+      pendingDecodes: this.pendingDecodes.size,
       received: this.received, scheduled: this.scheduled, dropped: this.dropped};
   }
 }

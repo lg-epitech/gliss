@@ -141,6 +141,7 @@ struct Encoder {
     codec: Codec,
     opus: Option<opus::Encoder>,
     pending: Vec<u8>,
+    pending_received: Option<Instant>,
     sequence: u32,
 }
 
@@ -162,8 +163,14 @@ impl Encoder {
             codec,
             opus,
             pending: Vec::with_capacity(PCM_BYTES),
+            pending_received: None,
             sequence: 0,
         })
+    }
+
+    fn clear_pending(&mut self) {
+        self.pending.clear();
+        self.pending_received = None;
     }
 
     fn packet(&mut self, pcm: &[u8]) -> Result<Vec<u8>> {
@@ -218,18 +225,26 @@ pub async fn encode(
                 match event {
                     Ok(Event::Data { bytes, received }) => {
                         let Some(encoder) = &mut encoder else { continue; };
-                        if received.elapsed() > MAX_AGE { encoder.pending.clear(); continue; }
+                        if received.elapsed() > MAX_AGE { encoder.clear_pending(); continue; }
+                        // A fresh fragment must not renew the age of a partial packet.
+                        if encoder.pending_received.is_some_and(|first| first.elapsed() > MAX_AGE) {
+                            encoder.clear_pending();
+                        }
                         // Retain at most one partial packet even for a maximal RFB chunk.
                         let mut rest = bytes.as_ref();
                         while !rest.is_empty() {
+                            if encoder.pending.is_empty() { encoder.pending_received = Some(received); }
                             let count = rest.len().min(PCM_BYTES - encoder.pending.len());
                             encoder.pending.extend_from_slice(&rest[..count]);
                             rest = &rest[count..];
                             if encoder.pending.len() == PCM_BYTES {
+                                let received = encoder.pending_received.take().expect("partial audio ingress time");
                                 let pcm = std::mem::take(&mut encoder.pending);
-                                match encoder.packet(&pcm) {
-                                    Ok(bytes) => { let _ = packets.send(Packet { generation: current.generation, received, bytes: bytes.into() }); }
-                                    Err(error) => tracing::warn!("audio encoding failed: {error}"),
+                                if received.elapsed() <= MAX_AGE {
+                                    match encoder.packet(&pcm) {
+                                        Ok(bytes) => { let _ = packets.send(Packet { generation: current.generation, received, bytes: bytes.into() }); }
+                                        Err(error) => tracing::warn!("audio encoding failed: {error}"),
+                                    }
                                 }
                                 encoder.pending = pcm;
                                 encoder.pending.clear();
@@ -237,7 +252,7 @@ pub async fn encode(
                         }
                     }
                     Ok(Event::Begin | Event::End) | Err(broadcast::error::RecvError::Lagged(_)) => {
-                        if let Some(encoder) = &mut encoder { encoder.pending.clear(); }
+                        if let Some(encoder) = &mut encoder { encoder.clear_pending(); }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -393,6 +408,86 @@ mod tests {
             u32::from_le_bytes(packet.bytes[12..16].try_into().unwrap()),
             0
         );
+        drop(raw);
+        task.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fragmented_packet_retains_its_first_chunk_ingress_time() {
+        let (session, requests, _) = channel();
+        let (raw, receiver) = broadcast::channel(8);
+        let mut packets = session.packets.subscribe();
+        let task = tokio::spawn(encode(receiver, requests, session.packets.clone()));
+        request(&session.request, json!({"enabled":true, "codec":"pcm"})).unwrap();
+        tokio::task::yield_now().await;
+        let first = Instant::now();
+        raw.send(Event::Data {
+            bytes: vec![17; PCM_BYTES / 2].into(),
+            received: first,
+        })
+        .unwrap();
+        tokio::task::yield_now().await;
+        let second = Instant::now();
+        assert!(first < second);
+        raw.send(Event::Data {
+            bytes: vec![34; PCM_BYTES / 2].into(),
+            received: second,
+        })
+        .unwrap();
+        let packet = tokio::time::timeout(Duration::from_secs(1), packets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            packet.received, first,
+            "The final fragment must not make older samples appear newly received"
+        );
+        assert!(
+            packet.bytes[20..20 + PCM_BYTES / 2]
+                .iter()
+                .all(|b| *b == 17)
+        );
+        assert!(packet.bytes[20 + PCM_BYTES / 2..].iter().all(|b| *b == 34));
+        drop(raw);
+        task.await.unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_partial_packet_does_not_mix_with_fresh_sound_after_a_pause() {
+        let (session, requests, _) = channel();
+        let (raw, receiver) = broadcast::channel(8);
+        let mut packets = session.packets.subscribe();
+        let task = tokio::spawn(encode(receiver, requests, session.packets.clone()));
+        request(&session.request, json!({"enabled":true, "codec":"pcm"})).unwrap();
+        tokio::task::yield_now().await;
+        raw.send(Event::Data {
+            bytes: vec![17; PCM_BYTES / 2].into(),
+            received: Instant::now(),
+        })
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(
+            raw.len(),
+            0,
+            "The partial chunk must be consumed before the pause"
+        );
+        tokio::time::sleep(MAX_AGE + Duration::from_millis(20)).await;
+        let fresh = vec![34; PCM_BYTES];
+        let received = Instant::now();
+        raw.send(Event::Data {
+            bytes: fresh.clone().into(),
+            received,
+        })
+        .unwrap();
+        let packet = tokio::time::timeout(Duration::from_secs(1), packets.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            packet.bytes[20..] == fresh,
+            "Expired partial audio was mixed into the fresh packet"
+        );
+        assert_eq!(packet.received, received);
         drop(raw);
         task.await.unwrap();
     }
