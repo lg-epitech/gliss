@@ -1,0 +1,44 @@
+{
+  "schema": "gliss-video-qp-inventory-v1",
+  "cohort": {
+    "name": "qp",
+    "results": "cohort.json.gz",
+    "results_sha256": "5ff3245c59fdebd49b9c2fb9ff7567bca1e3239a3fa8fc091f6a543ffbf33b68",
+    "original_bytes": 519491,
+    "original_sha256": "27fa1253b26d8214f56d7e9e5e9c502e85477de4f9e0ad07b37fabcbb12c1dac",
+    "plan": "plan.json",
+    "plan_sha256": "49981b3917487aef0e6327038d8be31d3cb5013f6fb7c6e4799c738bf9743837",
+    "registration": "registration.json",
+    "registration_sha256": "793571e97889c3738c1ca5ba241ec04efa9648d5016b66ca462c1b412e23af32",
+    "source_archive": "source.tar.gz",
+    "source_archive_sha256": "d4babe53b121b9e6374aec1452d383572f99ef11f67c8f88a19c3621a2a64a42",
+    "binary_sha256": "ed2d21b9d54c7a9d16eb30755708746c61967dcf1cda717379a6b23593fb9041",
+    "observed_unregistered_source_pins": {}
+  },
+  "component": {
+    "file": "component.json.gz",
+    "compressed_sha256": "9a573508303e1e8ee2ce6af951cea7ffc560aa86c2c5079f0285f239f09d2aea",
+    "original_sha256": "9be4fa03f0f91881bdf0ad3a03b3701b37901ff3d82c0a1e16fe1912f4c935d9",
+    "original_bytes": 13315
+  },
+  "component_journal": {
+    "file": "component.progress.jsonl.gz",
+    "compressed_sha256": "1deeb1883760af82b2508349fc3e37ab17184a97126e63d7258bb824780ff1f2",
+    "original_sha256": "3685656b00c1cfc281eb356aeceb083f2197ec115a574aa587ecc2c8d4094e40",
+    "original_bytes": 16820
+  },
+  "component_plan_sha256": "0285c073de05836a465deb96ed8b6fb09c0ae7c97f8cd8c7a5c37a4d7f2270f5",
+  "component_registration_sha256": "8dd25ab609f22f435352e2594ecf7934f11e3e4437cb365cddb2ebe2f273acd7",
+  "component_source_archive_sha256": "ea834a386ff9ba267abad6f57591c4285acd4e9eaa4646e38e6c154d0f19662d",
+  "validation_sha256": "99941b1b21bbf9dfebb2647bc6486717759ae1d6c30077ef8b66439f0e56f0ed",
+  "shared_verifier": "benchmarks/audio-motion/verify.py",
+  "shared_verifier_sha256": "5bb0fe0f98cc58788f954e4ec80976d09fac8bb3a1196a6bb361291da140dcda",
+  "qualifications": [
+    "Requested QP bounds are not coded-QP attestation. Default bounds and all release defaults remain unchanged.",
+    "Live source phase progresses through the cohort. Image-quality values come from a separate fixed shared-input component, not matched live frames.",
+    "Quality and encode timing values are retained observations; replay the source component to remeasure them. Packet sizes, summaries and journaling/count invariants are independently checked.",
+    "Native frame skipping stays disabled. GLV1 sequence/framing and source/audio observation gates remain fixed.",
+    "Original failed test helper and example/fixture build logs are hashed in validation. They preceded any component/live measurements.",
+    "Source archive metadata is normalized; original JSON and source bytes are unchanged."
+  ]
+}

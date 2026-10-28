@@ -1,0 +1,43 @@
+{
+  "schema": "gliss-video-qp-validation-v1",
+  "native_server_tests": 168,
+  "native_video_tests": 15,
+  "portable_tests": 178,
+  "clippy": "All server/video targets, warnings denied",
+  "distribox_changes": false,
+  "release_defaults_changed": false,
+  "logs": {
+    "native-tests.log": {
+      "original_sha256": "724368126fc2ec1e8694718373382291699ac840f10dd0dc178535b0117a4112",
+      "original_bytes": 20084
+    },
+    "native-tests-r2.log": {
+      "original_sha256": "c9bd0d3490bf8c76b744a88d86a6b18ca8f52be2687ad0ec611e4ad70f4b2a05",
+      "original_bytes": 25415
+    },
+    "build.log": {
+      "original_sha256": "9b59cc9f0ab2cc7790b7690dc36eb37569b0043f2391283b119b0d49205da813",
+      "original_bytes": 1111
+    },
+    "build-r2.log": {
+      "original_sha256": "69a927c9355d138d95c2b9fbed404b06318846728c0a7f505714f36c1a7c0ee8",
+      "original_bytes": 5466
+    },
+    "fixture-build.log": {
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "original_bytes": 0
+    },
+    "component.log": {
+      "original_sha256": "e207ffef87e9bcbd01c62bd29d9ab2372044762214f8c325f533e08c745b8106",
+      "original_bytes": 720
+    },
+    "portable.log": {
+      "original_sha256": "ebaa4d540a1ea3949b238af377852e03cd8d6019b1e4263305b69e95c0a4a5db",
+      "original_bytes": 23770
+    },
+    "cohort.log": {
+      "original_sha256": "fe12a042a5e29702dab80093ca6df888b05bfec76032b2f8d61e769c98d86a21",
+      "original_bytes": 3531
+    }
+  }
+}
