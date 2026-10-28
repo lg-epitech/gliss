@@ -1,0 +1,56 @@
+{
+  "schema": "gliss-audio-isolation-inventory-v1",
+  "base_commit": "cee79fba",
+  "cohorts": [
+    {
+      "name": "eight",
+      "results": "eight.json.gz",
+      "results_sha256": "18753754b7f55691720bc9f0aebb1fdd1317e7ee24da691b95a79e2ebb41569f",
+      "original_bytes": 496320,
+      "original_sha256": "73f39ee5689990d6d1c221b3d4a3bd5b2f82186438656c2137dc32b526f73e31",
+      "plan": "plan.json",
+      "plan_sha256": "62c2319e295bc8d81e99c5332114dd4ca2f9cd024cd9bc41468548d390efc233",
+      "registration": "eight-registration.json",
+      "registration_sha256": "e5f7010357d6cf7268bc68a2693fb32899d3a759d30762e2114767291b3cf007",
+      "source_archive": "eight-source.tar.gz",
+      "source_archive_sha256": "2cca78d6e09359bdd15e7aa759e57579ed603dc1ef4feef3aeb52537c26bbe4a",
+      "binary_sha256": "44c093b0f2cc2b276352bdb4f1025c5d32de50c4963aec270511dfd3b0768572",
+      "observed_unregistered_source_pins": {}
+    },
+    {
+      "name": "one",
+      "results": "one.json.gz",
+      "results_sha256": "cf07ffa5f4ebb8f1a7d872c35c4df8fc742d1716f54c827e8be30a6fa3b5a2cf",
+      "original_bytes": 505850,
+      "original_sha256": "c030e8682526620f99dc8dc06315fb97fa169182b09ecc173b01a7503ab40967",
+      "plan": "window-plan.json",
+      "plan_sha256": "5a18ceaad236a69276761c7b49a1ecb011651d18e1bb049820865e027620485a",
+      "registration": "one-registration.json",
+      "registration_sha256": "6c50378a66af1d79728f4ba91c92860a589c83d895a9b1fb408b56ccfdc224e8",
+      "source_archive": "one-source.tar.gz",
+      "source_archive_sha256": "542a04a48ad62243f5e8d5c56fa55711c8cb53fcacb89afc2f2b62817be11e58",
+      "binary_sha256": "44c093b0f2cc2b276352bdb4f1025c5d32de50c4963aec270511dfd3b0768572",
+      "observed_unregistered_source_pins": {},
+      "inherited_source_archives": [
+        {
+          "file": "eight-source.tar.gz",
+          "sha256": "2cca78d6e09359bdd15e7aa759e57579ed603dc1ef4feef3aeb52537c26bbe4a"
+        }
+      ]
+    }
+  ],
+  "shared_verifier": "benchmarks/audio-motion/verify.py",
+  "shared_verifier_sha256": "5bb0fe0f98cc58788f954e4ec80976d09fac8bb3a1196a6bb361291da140dcda",
+  "validation": "validation.json",
+  "validation_sha256": "b8916519fdead2283b0e7507732a203d8bfe982b208ed194d7ef3a79c4c9492d",
+  "qualifications": [
+    "Research relay/facade only; no authenticated production companion endpoint is implemented. Both arms use the same relay and two browser sockets, with the companion idle in combined mode.",
+    "The relay forwards original native packets and browser ACKs; it never fabricates credit, retries media, or opens a second RFB/native session.",
+    "Both browser connections share the SAME aggregate 1 Mbit/s kernel queue per direction. The local relay/native hop is unshaped; cumulative native TCP_NODELAY readback describes that local hop. Relay sockets request NODELAY without retained OS readback.",
+    "First cohort fixes eight video frames in flight; the second fixes one. The audio routing comparison is within each cohort, not between unrelated direct/proxy records.",
+    "Original result bytes are unchanged. Source archives normalize tar metadata. The one-frame archive contains only two added files and inherits all 135 unchanged parent sources.",
+    "Controller CPU includes the relay, study scheduling, counters and IPC. Cumulative relay and kernel counters include warmup, outside the browser observation window.",
+    "Marker cadence covers its own region, not whole-frame coherence/fidelity, physical scanout or real window-manager behavior. Trigger-to-analyser/controller response is not physical speaker latency.",
+    "Source phase progresses; two repetitions per condition provide observations, not matched quality, statistical confidence or Internet-path guarantees. Late/unobserved outcomes and incomplete control sets are retained."
+  ]
+}

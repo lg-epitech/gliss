@@ -42,14 +42,19 @@ def verify(record):
     plan = json.loads(plan_raw)
     registration = json.loads(bound_file(record, 'registration'))
     require(registration['positions_executed'] == 0, 'Registration no longer prospective')
-    archive = gzip.decompress(bound_file(record, 'source_archive'))
-    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-        sources = {}
-        for item in tar:
-            require(item.isfile() and not item.name.startswith('/') and '..' not in Path(item.name).parts,
-                    'Invalid source archive member')
-            require(item.name not in sources, 'Duplicate archived source')
-            sources[item.name] = tar.extractfile(item).read()
+    packed_archives = [bound_file(record, 'source_archive')]
+    for inherited in record.get('inherited_source_archives', []):
+        packed = (HERE / inherited['file']).read_bytes()
+        require(digest(packed) == inherited['sha256'], 'Inherited source archive changed')
+        packed_archives.append(packed)
+    sources = {}
+    for packed in packed_archives:
+        with tarfile.open(fileobj=io.BytesIO(gzip.decompress(packed))) as tar:
+            for item in tar:
+                require(item.isfile() and not item.name.startswith('/') and '..' not in Path(item.name).parts,
+                        'Invalid source archive member')
+                require(item.name not in sources, 'Duplicate archived source')
+                sources[item.name] = tar.extractfile(item).read()
     for name, expected in registration['sources'].items():
         source = sources.get(name)
         if source is None:

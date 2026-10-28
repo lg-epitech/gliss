@@ -130,12 +130,17 @@ delivery with moderate video cadence; aggressive skipping protects all tested
 audio markers at a much lower video cadence. Neither establishes whole-frame
 quality or freshness. Resolution or quality adaptation, picture-size control
 and separate audio/control transport remain candidates.
+The subsequent [same-budget audio-isolation prototype](../audio-isolation/README.md)
+found that a second TCP connection alone was insufficient: 2/12 timely audio
+markers with eight video frames, then 10/12 with one frame. Its corresponding
+combined-routing controls recorded 0/12 and 7/12. The prototype was retained
+for measurement rather than added to the production protocol.
 The roughly 11 distinct marker IDs/s on uncongested loopback also warrants
 capture-cadence investigation. This trial does not establish its cause.
 
 ## Evidence and qualifications
 
-[Inventory](results.json) binds the three unchanged result reports, declarations,
+[Inventory](results.json) binds the four unchanged result reports, declarations,
 source archives and executable hashes. [Validation](validation.json) records
 167 server tests, 13 video tests, 173 portable tests and Clippy for all server
 and video targets. It also retains hashes of original readiness failures and

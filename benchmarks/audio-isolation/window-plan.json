@@ -1,0 +1,88 @@
+{
+  "schema": "gliss-audio-isolation-window-plan-v1",
+  "profiles": [
+    {
+      "name": "loopback",
+      "rttMs": 0,
+      "mbps": null
+    },
+    {
+      "name": "kernel-limited",
+      "rttMs": 80,
+      "mbps": 1
+    }
+  ],
+  "order": [
+    "combined",
+    "split",
+    "split",
+    "combined"
+  ],
+  "positions": 8,
+  "markers_per_position": 6,
+  "codes": "1 through 48, each used once across the complete cohort in position order",
+  "source_mix_frequency": 48000,
+  "sample_rate": 48000,
+  "marker_duration_ms": 160,
+  "source_alsa_buffer_us": 40000,
+  "window_ms": 6000,
+  "warmup_ms": 1500,
+  "pulse_offsets_ms": [
+    100,
+    900,
+    1700,
+    2500,
+    3300,
+    4100
+  ],
+  "pulse_deadline_ms": 700,
+  "max_submission_lateness_ms": 100,
+  "observation_cap_per_position": 128,
+  "sample_interval_ms": 50,
+  "tcp_nodelay": true,
+  "codec": "h264",
+  "fps_cap": 30,
+  "video_bitrate_target": 500000,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": 19,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "tasks_max": 256,
+  "outer_limit_seconds": 180,
+  "physical_speaker_latency": false,
+  "qualification": "Research relay prototype, not a production endpoint. Both arms use the same relay, unchanged native runtime, one RFB/native session and two browser sockets (one idle in the combined arm). Audio routes on its companion socket only in split mode. Both browser flows share the SAME gateway port and aggregate 1 Mbit/s kernel queue per direction; the local native/relay hop is unshaped. No claim of extra link capacity, matched pixels/quality, deployed authentication support or physical speaker latency. This separate prospective cohort fixes the video window at one frame in both arms; the original eight-frame prototype remains unchanged.",
+  "audio_codec": "opus",
+  "control_probes_per_position": 20,
+  "ping_interval_ms": 300,
+  "paint_cap_per_position": 512,
+  "rfb_surface": [
+    1280,
+    800
+  ],
+  "guest_rendering_area": [
+    1024,
+    768
+  ],
+  "nominal_source_fps": 30,
+  "animated_texture": [
+    600,
+    540,
+    360,
+    180
+  ],
+  "audio_latency_eligibility": "No observer/video failure or overflow; all source commands confirmed; each serial submission <=100ms late; preexisting or ambiguous output excluded. Missing/late responses remain failures.",
+  "video_marker_eligibility": "All counted paint markers must validate. Distinct source-marker counters per exact six-second browser window describe marker cadence, not scanout or whole-frame fidelity.",
+  "control_summary": "Twenty fixed probe slots; raw wire receipt and client dispatch cutoffs are independent. Missing submissions/replies retained; only complete sets support an overall p95.",
+  "cpu_eligibility": "Stable native/guest identities and complete browser endpoint set; independent midpoint acquisition windows. Controller process includes relay, experiment scheduling and IPC; no isolated relay-only CPU claim.",
+  "stream_stats": true,
+  "frame_skip": {
+    "combined": false,
+    "split": false
+  },
+  "sequence_eligibility": "All received GLV1 IDs within each window are contiguous modulo u32, with zero decode errors and valid source-counter paint markers. Skips emit no wire packet and consume no ACK credit.",
+  "skip_counter_scope": "Frame skipping is disabled in every position; native_skipped_frames must remain absent, not inferred as a measured zero.",
+  "video_in_flight_frames": 1,
+  "relay_max_buffered_bytes_per_socket": 4194304,
+  "relay_counter_scope": "Cumulative session counters and queued bytes, including HTTP/warmup; separate from exact browser measurement window."
+}

@@ -1,0 +1,29 @@
+{
+  "schema": "gliss-audio-isolation-validation-v1",
+  "routing_and_cleanup_tests": 4,
+  "cohorts": 2,
+  "positions": 16,
+  "audio_probe_slots": 96,
+  "native_runtime_unchanged": true,
+  "production_endpoint_added": false,
+  "distribox_changes": false,
+  "logs": {
+    "relay-final-checks.log": {
+      "original_bytes": 522,
+      "original_sha256": "dcb38f7d7f5f8ca43a46f90b4b5ccd35875663604e86db65646140e5c2b14de4"
+    },
+    "cohort.log": {
+      "original_bytes": 3519,
+      "original_sha256": "3f3e15b482a2f8e2352309230be34e88bef4fe11cf505c786d05309321b05db8"
+    },
+    "window.log": {
+      "original_bytes": 3656,
+      "original_sha256": "bda2c6062b98aa91ecb2ccf1b3c3af555043daf828feab66cc98fe4c70d809b8"
+    },
+    "portable.log": {
+      "original_sha256": "0734e3f20d8fc4b0e94e4b55c7d3527028e51a1f12feec0c5bd3290d4baeccd8",
+      "original_bytes": 23632
+    }
+  },
+  "portable_tests": 177
+}
