@@ -1,0 +1,46 @@
+{
+  "schema": "gliss-audio-ingress-reference-inventory-v1",
+  "records": {
+    "cohort.json": {
+      "file": "cohort.json.gz",
+      "compressed_sha256": "aed5d8d401fea7dee3554d6e4f28adc18d43c4fd527edfb43193b1587d3ef999",
+      "original_sha256": "76fd3f1985471c776563cf98bac3fa03ed82926aea443eed3726f3a9a772994c",
+      "original_bytes": 4097
+    },
+    "native-1.json": {
+      "file": "native-1.json.gz",
+      "compressed_sha256": "fa964f9e12688b4bda3e14193694982b7fc6852634964f9058c5226622c7580a",
+      "original_sha256": "db6bc4a7805f8c3a92f745f260424d94efc33bc47f4c6b0b3cb547f3a9a65b7f",
+      "original_bytes": 100968
+    },
+    "native-2.json": {
+      "file": "native-2.json.gz",
+      "compressed_sha256": "0526203bdf710e88397765fc721ca5f2b73bff8bbe5fd83ea2f3d05d3e762380",
+      "original_sha256": "490861c6123c3a2fff3565955d25f0b09d5bbe2de001e18f5a76f251bb3b919d",
+      "original_bytes": 99495
+    },
+    "native-3.json": {
+      "file": "native-3.json.gz",
+      "compressed_sha256": "c52c7bb8f94e24fa0047a8125ac31b0c63535df129212bf962a51669d6d00992",
+      "original_sha256": "d17bdee6dac82d2eae05790ea99e3f2f848bd19e6b07c4b7cf7712f53ce68e31",
+      "original_bytes": 99514
+    },
+    "native-4.json": {
+      "file": "native-4.json.gz",
+      "compressed_sha256": "be689667a666aee020fa77b824b0182aab59e52c54dd88cbad1f6deeeb3c13c2",
+      "original_sha256": "6fb596968a2872201a9cab6cd589b3ecdd890a155da7d6086de35e99dbea56d1",
+      "original_bytes": 101098
+    }
+  },
+  "files": {
+    "plan.json": "ece60925e7a28a63f088413b0a54775aba8680dfc9819b68cedd3f7e110f60bf",
+    "registration.json": "a0d7bfd7ca74740e344b44419851a75a4af45953b4c9cf3906904475b59d4aec",
+    "source.tar.gz": "08c5d9626ba098c8233dc7ba19fcb9e2537d083b32472285892631c1a7784e15",
+    "validation.json": "888d205292fb2a1123119e2142034aaf9831656db0d218626ed70dd521d61a7c"
+  },
+  "qualifications": [
+    "RFB stamps after each whole audio chunk is received. Assembly age starts at that local ingress, not guest sample generation.",
+    "Models use actual raw-event sizes/timestamps, exclude codec/writer cost, and do not represent an implemented40ms packetizer.",
+    "All four fixedoff/on/on/off positions and original reports retained. Model tails at the cutoff remain pending, not invented drops."
+  ]
+}

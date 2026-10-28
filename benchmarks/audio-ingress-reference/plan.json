@@ -1,0 +1,31 @@
+{
+  "schema": "gliss-audio-ingress-reference-plan-v1",
+  "positions_executed": 0,
+  "motion_order": [
+    false,
+    true,
+    true,
+    false
+  ],
+  "window_ms": 6000,
+  "warmup_ms": 1500,
+  "sample_rate": 48000,
+  "channels": 2,
+  "guest_cpu": 19,
+  "native_controller_cpu": 0,
+  "nice": 19,
+  "raw_event_cap": 2048,
+  "raw_byte_cap": 2097152,
+  "packet_model_frames": [
+    960,
+    1920
+  ],
+  "model_age_limit_ms": 100,
+  "model_packet_cap": 1024,
+  "guest_memory_mib": 256,
+  "memory_max_bytes": 3221225472,
+  "tasks_max": 256,
+  "swap_max_bytes": 0,
+  "outer_limit_seconds": 90,
+  "qualification": "Actual QEMU RFB audio ingress and consumption timestamps, with20/40ms assembly models excluding encoding/writer cost. Fresh owned guest with motion off/on/on/off; one initial framebuffer request pernative connection, no sustainedvideo streaming, no CPU/quality/speaker latency comparison. Native models keep original100ms oldest-ingress age semantics."
+}

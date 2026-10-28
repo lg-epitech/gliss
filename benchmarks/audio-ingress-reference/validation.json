@@ -1,0 +1,24 @@
+{
+  "schema": "gliss-audio-ingress-reference-validation-v1",
+  "native_model_tests": {
+    "passed": 2,
+    "failed": 0
+  },
+  "clippy_warnings_denied": true,
+  "locked_offline_serial_release_build": true,
+  "controller_exit_status": 0,
+  "logs": {
+    "build.log": {
+      "sha256": "7208b9e0b9606de66aa92b0055122d9b4ccb596d04ec0a36b4fdf9c4e985c889",
+      "bytes": 876
+    },
+    "cohort.log": {
+      "sha256": "b5bc1103736f39fb0a8f5f0336e45fc4c3d3b43d99b28f61a18d401a2af9d459",
+      "bytes": 1013
+    }
+  },
+  "existing_vms_or_services_changed": false,
+  "production_source_changed": false,
+  "source_or_speaker_age_measured": false,
+  "scope": "Root-owned fresh diskless QEMU guest. Actual RFB event timestamps and model-only assembly ages; no encoder, outgoing media path or timedvideo streaming."
+}

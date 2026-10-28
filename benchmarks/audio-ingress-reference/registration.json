@@ -1,0 +1,27 @@
+{
+  "schema": "gliss-audio-ingress-reference-registration-v1",
+  "status": "prospective",
+  "positions_executed": 0,
+  "base_commit": "37962fd6",
+  "plan_sha256": "ece60925e7a28a63f088413b0a54775aba8680dfc9819b68cedd3f7e110f60bf",
+  "binary_sha256": "60c9210981f7925f1a9f3e07a83560fcb97cb19ede80463a1c90306416dcc880",
+  "sources": {
+    "scripts/probe-audio-ingress.mjs": "fabaf0bce0d80900d11c96c103926becccd490d5fc566b9db6bf380839f2a576",
+    "benchmarks/audio-ingress-reference/plan.json": "ece60925e7a28a63f088413b0a54775aba8680dfc9819b68cedd3f7e110f60bf",
+    "crates/gliss-server/examples/audio-ingress-probe.rs": "e5fcca84f6953ff95a4d505d0e3197d298fccb8295088fc4605ab6a8b6b105c9",
+    "crates/gliss-rfb/src/audio.rs": "1008da7fab60733ad91780a55dddc764d3226ff6c39b47e6539314bf708c1ee6",
+    "crates/gliss-rfb/src/lib.rs": "5b01c88edd69147c9ff24843c04cd94a695e8415e3bb3293415e78075d385af6",
+    "crates/gliss-server/src/audio.rs": "d5f9c489e89e71b3afd3d9b1274ec1ad6b0dc4ef4aa210f8847fde57cd14a264",
+    "test-support/qemu-audio-motion/fixture-budget.mjs": "345760be029f41730df70c08c80ed4b6723e2e3ebc2110257e94cd8cb7b9632a",
+    "test-support/qemu-audio-motion/build.py": "8839639c5ea2a6d88f279c8acec1678cee9b1ef8db588dddea105c82d9d2e79e",
+    "test-support/qemu-audio-motion/init.c": "207c75493293b027b143e0cfee3f8ecb9a5e45fde626c3bb4c6014fcabc5ae6c",
+    "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08",
+    "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+    "Cargo.toml": "340e665cbbcdd6049fe32dd8d891592e690b78251054d9e338a5adf245f5ee01",
+    "crates/gliss-server/Cargo.toml": "5e4beb66be12ca4749da21e2d23e0e3ec30a33e43e1ecdc499eaf54e94cdaa55",
+    "rust-toolchain.toml": "e879701472a698533f43f54989bbf5f3101eb0503472159d32633f3bb8a13fdf"
+  },
+  "qualification": "Two model correctness tests, Clippy and locked/offline release build passed; no registered owned-guest ingress position has executed."
+}
