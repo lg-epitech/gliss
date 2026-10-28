@@ -1,0 +1,53 @@
+{
+  "schema": "gliss-video-qp-pair-inventory-v1",
+  "cohort": {
+    "name": "floor",
+    "results": "cohort.json.gz",
+    "results_sha256": "12bc33a55837299be9e015b559ee1d770a124bc329c9741118d28311e058d125",
+    "original_bytes": 551267,
+    "original_sha256": "6d41522a35b15f01d8c94f2eea5e8802c8b4ad387e6539b51968003e240faffa",
+    "plan": "plan.json",
+    "plan_sha256": "628aadfdab0089d6ee54303b94d0867920b2f2ab6641bbe16ae086e9d60b3646",
+    "registration": "registration.json",
+    "registration_sha256": "8e594bcce4efba0e2b6c6980b1a9329babdbb97443301e33a11998dbf85eda33",
+    "source_archive": "source-additions.tar.gz",
+    "source_archive_sha256": "012a5bca3690566db634548dd1a9b38b7d77dde6ae72a75fb6507ce8c4ebae85",
+    "inherited_source_archives": [
+      {
+        "file": "../video-qp/source.tar.gz",
+        "sha256": "d4babe53b121b9e6374aec1452d383572f99ef11f67c8f88a19c3621a2a64a42"
+      }
+    ],
+    "binary_sha256": "ed2d21b9d54c7a9d16eb30755708746c61967dcf1cda717379a6b23593fb9041",
+    "observed_unregistered_source_pins": {}
+  },
+  "component": {
+    "file": "component.json.gz",
+    "compressed_sha256": "6876ee7ea807cd14f2fc85f2f8f917d38a2b535990b02fe94853f5b9a7969e77",
+    "original_sha256": "3a468bb79a2117cbf68574b77a084035564d8b8d5344cd31f10f2c114facd62f",
+    "original_bytes": 13407
+  },
+  "component_journal": {
+    "file": "component.progress.jsonl.gz",
+    "compressed_sha256": "9559b2a464db2b4c323768533c1b103fa2c26c55fb3d9ad4a96f223bcbda3b46",
+    "original_sha256": "6abe75ce1b30b98781b20af5bade6e7464c5ca9c943e452b0aa8c1d89b5310f5",
+    "original_bytes": 16810
+  },
+  "component_plan_sha256": "d0ae43aebbd308b8241699ce3a689ee29b5c5a73894c71386fbaaa8494ece8dd",
+  "component_registration_sha256": "039951c4c3e0bdb7d10ddeb1c252c5dfbe1493e49e4a3c7dcf650fad3aab6b36",
+  "component_source_archive_sha256": "a7a66cda0ea0ef875757913b5ba0961346f5080b3dab214eb505ff80d6e9d0f1",
+  "component_control_reference": {
+    "file": "../video-qp/component.json.gz",
+    "compressed_sha256": "9a573508303e1e8ee2ce6af951cea7ffc560aa86c2c5079f0285f239f09d2aea",
+    "arm_index": 1
+  },
+  "validation_sha256": "1f70bb2a2c2d5f369e64d455165e61ad65321bde9002f2dd3e53e265f45c7143",
+  "shared_verifier": "benchmarks/audio-motion/verify.py",
+  "shared_verifier_sha256": "5bb0fe0f98cc58788f954e4ec80976d09fac8bb3a1196a6bb361291da140dcda",
+  "qualifications": [
+    "The only live policy change is the requested minimum QP. Maximum51, GOP/refresh interval, frame skipping, source, windows, deadlines and buffers remain fixed.",
+    "Requested bounds are not coded-QP attestation. Source phase progresses in live positions; shared-input quality is a separate component.",
+    "Image-error and encode-time values are retained observations; replay the fixed shared-input component to remeasure them.",
+    "Original result bytes remain unchanged. Source archives normalize metadata and inherit byte-identical parent sources without overriding them."
+  ]
+}

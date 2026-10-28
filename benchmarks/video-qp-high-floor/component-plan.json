@@ -1,0 +1,96 @@
+{
+  "schema": "gliss-video-qp-high-floor-component-plan-v1",
+  "positions_executed": 0,
+  "order": [
+    "floor36",
+    "floor42",
+    "floor42",
+    "floor36"
+  ],
+  "frames_per_arm": 12,
+  "geometry": [
+    1280,
+    800
+  ],
+  "source_frames": [
+    0,
+    3,
+    6,
+    9,
+    12,
+    15,
+    18,
+    21,
+    24,
+    27,
+    30,
+    33
+  ],
+  "input_bytes": 49152000,
+  "profile": "screen",
+  "bitrate_target": 500000,
+  "timing": {
+    "fps": 30,
+    "timestamp_fps": 30,
+    "intra_period": 60
+  },
+  "frame_skip": false,
+  "qp_bounds": {
+    "floor36": {
+      "min": 36,
+      "max": 51
+    },
+    "floor42": {
+      "min": 42,
+      "max": 51
+    }
+  },
+  "regions": {
+    "full": [
+      0,
+      0,
+      1280,
+      800
+    ],
+    "document": [
+      40,
+      40,
+      950,
+      460
+    ],
+    "texture": [
+      600,
+      540,
+      360,
+      180
+    ]
+  },
+  "quality_metrics": [
+    "RGB mean absolute error",
+    "RGB mean squared error"
+  ],
+  "limits": {
+    "cpu": 0,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "tasks_max": 256,
+    "source_bytes_max": 67108864,
+    "native_deadline_seconds": 45,
+    "outer_limit_seconds": 60,
+    "journal_records_max": 110,
+    "journal_bytes_max": 131072
+  },
+  "source_pins": {
+    "test-support/video-qp/fixture.c": "2c9258818d1e56b9a324d3217c393ce6420514dd53e1fde0578307c2cf16387d",
+    "test-support/qemu-audio-motion/init.c": "207c75493293b027b143e0cfee3f8ecb9a5e45fde626c3bb4c6014fcabc5ae6c",
+    "crates/gliss-video/src/lib.rs": "35a5c7158e2772fac2d8b9c4e0507c8396e252d84ce1df6d3ab2295f0e235fc1",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+    "crates/gliss-video/examples/video-qp-range.rs": "2f3b95eb1498b401eb14c55e35a3e76f1fb2ef674287369a366d628ae0530469"
+  },
+  "qualification": "Fixed clean renders reuse the unchanged guest pixel function, including black padding outside1024x768. Shared RGBA input across all four arms. No timed streaming, bitrate, real-font readability or live-frame fidelity claim. Encode wall timing excludes journal and decode/error work; first encode includes native initialization. Requested QP bounds are not coded-QP attestation.",
+  "range_arguments": [
+    36,
+    42,
+    51
+  ]
+}

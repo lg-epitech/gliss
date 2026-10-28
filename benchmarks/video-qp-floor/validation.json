@@ -1,0 +1,29 @@
+{
+  "schema": "gliss-video-qp-pair-validation-v1",
+  "production_runtime_unchanged": true,
+  "distribox_changes": false,
+  "release_defaults_changed": false,
+  "portable_tests": {
+    "passed": 180,
+    "failed": 0,
+    "skipped": 0
+  },
+  "logs": {
+    "build.log": {
+      "original_sha256": "6670064e47a97cb6364cec65fdeec7bd3998a3365a6d4d75ee7e9b4b77f642d2",
+      "original_bytes": 493
+    },
+    "component.log": {
+      "original_sha256": "4ef8f3a51d99556590828baecd325fddcdc129d200707062e2b7865f47566974",
+      "original_bytes": 720
+    },
+    "cohort.log": {
+      "original_sha256": "136a169afc831055548de2797b0c6822dec8f4e4fd08134d54b7aec17198170f",
+      "original_bytes": 3672
+    },
+    "portable.log": {
+      "original_sha256": "8d6e85562136370fc72fbc49ff6b26bff23325c2987c3cacb12a8f833b1a3ba3",
+      "original_bytes": 23999
+    }
+  }
+}

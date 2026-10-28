@@ -1,0 +1,33 @@
+{
+  "schema": "gliss-video-qp-pair-validation-v1",
+  "production_runtime_unchanged": true,
+  "distribox_changes": false,
+  "release_defaults_changed": false,
+  "portable_tests": {
+    "passed": 180,
+    "failed": 0,
+    "skipped": 0
+  },
+  "logs": {
+    "policy-red.log": {
+      "original_sha256": "3bd40e08187d130d9bb82df23e1bdfeaccd11611a8cf0c13273b5368a977454a",
+      "original_bytes": 1199
+    },
+    "policy-green.log": {
+      "original_sha256": "b3addcfa962548aa28b9c8d0c2c39917d06e52183385016d60ab67072a1152af",
+      "original_bytes": 309
+    },
+    "component.log": {
+      "original_sha256": "3750a368368f5150f826f69721afa34709c515f7bf12e7ad682dc615d6893231",
+      "original_bytes": 720
+    },
+    "cohort.log": {
+      "original_sha256": "e25c2577fd932c344b78c986cf7ce2fe5046cbf1864bb3ffb3db4d4c6752162e",
+      "original_bytes": 3710
+    },
+    "portable.log": {
+      "original_sha256": "8d6e85562136370fc72fbc49ff6b26bff23325c2987c3cacb12a8f833b1a3ba3",
+      "original_bytes": 23999
+    }
+  }
+}
