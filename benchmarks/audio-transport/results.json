@@ -1,0 +1,17 @@
+{
+  "schema": "gliss-audio-transport-public-v1",
+  "date": "2026-10-28",
+  "binary_source_commit": "44d78048b1bd7c4fd5d3256fe829ec948cf5bc18",
+  "environment_reference": "../audio/results.json",
+  "runs": [
+    {
+      "name": "payload-proxy",
+      "file": "payload-proxy.json.gz",
+      "plan": "plan.json",
+      "compressed_sha256": "d95322ce06b6d9237104cbd236a6d748ba40189d8e8d53c3aa9526eebbfa06cf",
+      "original_sha256": "db9404130d3d1ab24c7e20537ad89239c595317c17c212c11834a7abd518bbc9",
+      "binary_sha256": "0ff16eaa42be2dd31ece1b4243830a6f037c38f5ef4d795f2b27d26716a80c11",
+      "qualification": "The proxy delays/rate-limits application TCP payload; native TCP ACKs are still local. This is not a real 80 ms TCP feedback path."
+    }
+  ]
+}

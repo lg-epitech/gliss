@@ -58,4 +58,6 @@ Validation passed five native audio tests, Clippy for all server targets, and al
 
 ## Next performance work
 
+The subsequent [matched TCP-policy study](../../benchmarks/audio-transport/README.md) completed another 24 positions. Toggling the existing `TCP_NODELAY` option did not fix PCM overload and provided no repeatable loopback advantage in that cohort. The proxy's TCP ACK path is local, so a kernel-delayed path is needed before drawing a WAN socket-policy conclusion.
+
 Prioritize a bandwidth-safe fallback and isolation of audio from congested video/control traffic. Then measure a source-timestamped audible impulse alongside motion and input, under constrained bandwidth and stalls. Total browser CPU with Opus enabled was roughly 8–9% of one core here; a persistent audio worklet is a candidate to compare with the current per-packet buffer sources, with its benefit still unmeasured. Keep the present jitter buffer until a controlled comparison demonstrates a better tradeoff.

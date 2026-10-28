@@ -1,0 +1,87 @@
+{
+  "schema": "gliss-audio-transport-plan-v1",
+  "source": "Owned diskless QEMU HDA fixture; 440/880 Hz stereo tones; static VGA desktop.",
+  "codec": "h264",
+  "video_fps_cap": 30,
+  "video_bitrate_target": 2000000,
+  "video_in_flight_frames": 4,
+  "profiles": [
+    {
+      "name": "loopback",
+      "rttMs": 0,
+      "mbps": null
+    },
+    {
+      "name": "limited",
+      "rttMs": 80,
+      "mbps": 1
+    }
+  ],
+  "order": [
+    {
+      "mode": "off",
+      "tcp_nodelay": false
+    },
+    {
+      "mode": "off",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "opus",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "opus",
+      "tcp_nodelay": false
+    },
+    {
+      "mode": "pcm",
+      "tcp_nodelay": false
+    },
+    {
+      "mode": "pcm",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "pcm",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "pcm",
+      "tcp_nodelay": false
+    },
+    {
+      "mode": "opus",
+      "tcp_nodelay": false
+    },
+    {
+      "mode": "opus",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "off",
+      "tcp_nodelay": true
+    },
+    {
+      "mode": "off",
+      "tcp_nodelay": false
+    }
+  ],
+  "measurement_ms": 6000,
+  "warmup_ms": 1500,
+  "ping_interval_ms": 300,
+  "sample_interval_ms": 50,
+  "proxy_max_queued_bytes_per_direction": 1048576,
+  "positions": 24,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": "Explicit distinct allowed CPU selected by root.",
+  "physical_gpu": false,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "outer_limit_seconds": 300,
+  "whole_frame_fps": false,
+  "source_to_speaker_latency": false,
+  "qualification": "One matched 24-position cohort on an owned static-tone guest. Tests application-control RTT and CPU with the native TCP policy as the sole treatment variable. Local TCP model, not an Internet path or a motion workload.",
+  "comparison": "Explicit false versus true TCP_NODELAY, with native accepted-socket readback from the WebSocket hello."
+}
