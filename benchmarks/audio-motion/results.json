@@ -1,0 +1,71 @@
+{
+  "schema": "gliss-audio-motion-inventory-v1",
+  "cohorts": [
+    {
+      "name": "baseline",
+      "results": "baseline.json.gz",
+      "results_sha256": "ffc0179ade623512ac5dffe6d642bf6cca0c68d199711cad048dcd24bd3fbc1d",
+      "original_bytes": 424935,
+      "original_sha256": "6e43d6c3054a689658553e220dce8e1a4f81e96628a012ec059878f56ec42d10",
+      "plan": "baseline-plan.json",
+      "plan_sha256": "80999d81b76124e858812c48af936cf59fa92a0f510021f3ef2aa38a5991a37e",
+      "registration": "baseline-registration.json",
+      "registration_sha256": "1214f2d6d64cb523021a1707045bf3764a22c601cbe4a05305ec2af045e3e243",
+      "source_archive": "baseline-source.tar.gz",
+      "source_archive_sha256": "2f10fb70f5c67d12674fe51ece145efc89798ad57a71cddb35f156816e876c2e",
+      "binary_sha256": "b3d15694a5315920146a9574acc8b1351965318ba772ea6edf8332c55f435c2b",
+      "observed_unregistered_source_pins": {
+        "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+        "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08"
+      }
+    },
+    {
+      "name": "budget",
+      "results": "budget.json.gz",
+      "results_sha256": "b95f3d63b81c2461c94b58bb7e274117345a96b208c1c0deb3c674baf81397d7",
+      "original_bytes": 487142,
+      "original_sha256": "35821269faacd35c2e9890903b6ff4f66f2dee42ea441d96e88785512ca232c2",
+      "plan": "budget-plan.json",
+      "plan_sha256": "513cfb729c238f4106966f9a4bf845e89a00c9b7bf58a6eac8ff32f1760021d5",
+      "registration": "budget-registration.json",
+      "registration_sha256": "384b6bea42d319ddf50c208e629a9ecbb1a09494c6d1c7e4ed64926734a05611",
+      "source_archive": "budget-source.tar.gz",
+      "source_archive_sha256": "1e813e6087ecd85ae34878c6c7519a4162489c4004b60b73d2b6da6a62746f7f",
+      "binary_sha256": "b3d15694a5315920146a9574acc8b1351965318ba772ea6edf8332c55f435c2b",
+      "observed_unregistered_source_pins": {
+        "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+        "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08"
+      }
+    },
+    {
+      "name": "skip",
+      "results": "skip.json.gz",
+      "results_sha256": "232fb25dbf4174ebad821a5e1e437342faf559df432e3ad1f54c8ee1d444915b",
+      "original_bytes": 454842,
+      "original_sha256": "33e455fa806c0440d7534f32d63655007e63be358e838a54140952921ea41af8",
+      "plan": "skip-plan.json",
+      "plan_sha256": "13340a26109765968a6e99288f7903eb6efab9d07b457d9e6a0e21d31133fc75",
+      "registration": "skip-registration.json",
+      "registration_sha256": "edee193a1b410364ed2adf093a910f0939c084de77f9f02c577fba39e34e6887",
+      "source_archive": "skip-source.tar.gz",
+      "source_archive_sha256": "e253ce8494a29488cf4c0382fb44645a34e97690aff4903bd880f9faf7654118",
+      "binary_sha256": "44c093b0f2cc2b276352bdb4f1025c5d32de50c4963aec270511dfd3b0768572",
+      "observed_unregistered_source_pins": {
+        "test-support/qemu-audio-marker/init.c": "536d633b444df08b4164b82b8f6c078619a7489dc9b88e1c9488f411d3beee93",
+        "test-support/qemu-audio-marker/build.py": "c4464e6849cef509d5c768e38ea71a1d364fb1a2e9faf7ad9657fb0c5a9bdb08"
+      }
+    }
+  ],
+  "validation": "validation.json",
+  "validation_sha256": "a8f286dd2c800754720dab82149a4fe6aa9ac2f34df70bcbc836c9cdc651ffe4",
+  "qualifications": [
+    "Original result bytes are unchanged. Archives normalize tar metadata and omit directory entries; source bytes are unchanged.",
+    "Baseline guest image digests were not retained. Budget and skip cohorts record kernel, initramfs and init binary hashes; runtime admission is root-recorded, not independently attested.",
+    "Baseline listener capture flags did not prove first-listener order. Small negative dispatch-minus-wire intervals are retained. Budget/skip use the constructor-first hook.",
+    "Bitrate-only cohort uses the pre-pong-fix runtime. Only the frame-skip cohort pairs both policies on the new runtime. Cross-cohort differences are not attributed solely to skipping.",
+    "The source is procedural, not a real WM. Valid marker IDs prove only their region; cadence is not whole-frame fidelity or physical scanout.",
+    "App media rates exclude WebSocket/TCP/IP and control bytes. CPU windows are independent of browser observation windows. Kernel counters include HTTP and warmup.",
+    "All missing and late audio/control outcomes are retained. Incomplete control sets support conditional p95 only. Two repeats per condition do not establish production capacity.",
+    "The original marker init.c/build.py provenance parents were hashed at result collection but omitted from each prospective source list. Their observed hashes are verified separately; they were not the motion fixture files executed. No retrospective registration is claimed."
+  ]
+}

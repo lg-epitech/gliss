@@ -1,0 +1,85 @@
+{
+  "schema": "gliss-audio-motion-validation-v1",
+  "frame_skip_runtime_source_commit": "5a6fc848",
+  "binary_sha256": "44c093b0f2cc2b276352bdb4f1025c5d32de50c4963aec270511dfd3b0768572",
+  "server_tests": 167,
+  "video_tests": 13,
+  "portable_tests": 173,
+  "clippy": "passed for all server/video targets with warnings denied",
+  "distribox_changes": false,
+  "new_release": false,
+  "logs": {
+    "video-tests.log": {
+      "original_sha256": "06f34f1eaf4e3c44e0391ada3b25aab35005f2c6deab4595dd890c1edade35b5",
+      "original_bytes": 6636
+    },
+    "server-tests.log": {
+      "original_sha256": "7064d46dfa9a702f7611bd865692c6d6c2d369c71d787d9dc172de8c41998d27",
+      "original_bytes": 1455
+    },
+    "server-tests-r2.log": {
+      "original_sha256": "b6fc85e61262fb2dbefef047b483cc6ad3ae9a1df5d5c04dba6fe606c9dd1c46",
+      "original_bytes": 17971
+    },
+    "skip-clippy.log": {
+      "original_sha256": "840965aee615d9f201c598dd223492be28355b183201dfaad7bc37cec2014ae3",
+      "original_bytes": 562
+    },
+    "skip-build.log": {
+      "original_sha256": "6bc51aaea29038f841f1353c99c8554078ccde8d1f47b1562718bf4696fab74f",
+      "original_bytes": 553
+    },
+    "skip-portable.log": {
+      "original_sha256": "38434f543eff87a253d95b794535a99ffe4783783b727ad7e3a0ff0baad6d320",
+      "original_bytes": 23191
+    },
+    "control-queue-red.log": {
+      "original_sha256": "f2f1317f224066085df804a06934b13f61e10e98bb1463943a3d72bafd20b16a",
+      "original_bytes": 839
+    },
+    "control-queue-green.log": {
+      "original_sha256": "2e4173025d5b3c2521c8f5fcbad69ac749194f014116118a03d08314efe70f40",
+      "original_bytes": 200
+    },
+    "control-browser-green.log": {
+      "original_sha256": "828884c6cef772f6fb9b84b4e4401819f8a31be5289870ef69d763911bc2b753",
+      "original_bytes": 842
+    },
+    "readiness-v1.log": {
+      "original_sha256": "57cbc225c61704ce37e21bd8ed7186790d8f8243f6027e6e069916bd5068a267",
+      "original_bytes": 897
+    },
+    "readiness-diagnostic.log": {
+      "original_sha256": "e8dd1987235252363e2af229ed53b5b67b30a4881e235500218d14adcf84806d",
+      "original_bytes": 1070
+    },
+    "readiness-current-frame.log": {
+      "original_sha256": "f759715d125b04f4dfec87a4f266fa4a1a0f20f13a345d1cb0968d6662658d73",
+      "original_bytes": 1169
+    },
+    "readiness-raw.log": {
+      "original_sha256": "3406d5909c7316cdc2898ccd821f673a6f98d07d5021cc58fa9db9b5313f3bf7",
+      "original_bytes": 1114
+    },
+    "readiness-raw-v2.log": {
+      "original_sha256": "99d492861a84acf75e859a0906d0e44ee69f919687a2fa9306d4d940c499e144",
+      "original_bytes": 1397
+    },
+    "readiness-surface.log": {
+      "original_sha256": "b84c9cb220e88d794d2170fa49a6d726f5e7780a263d1d6c9a89084e651f892b",
+      "original_bytes": 4829
+    },
+    "baseline.log": {
+      "original_sha256": "3f8f84962b7eb931954ff92dff474e5a43ad32342abec6c4c124b3f669055337",
+      "original_bytes": 3261
+    },
+    "budget.log": {
+      "original_sha256": "1e53ce2bf0dadee6c7463d25457ec8f3652f4a9637098010f00f758914b2b22c",
+      "original_bytes": 3159
+    },
+    "skip.log": {
+      "original_sha256": "2c7aa0535b05bd0b604033630cd42b820763dfc29b8690d3a2fc31ee2d01df73",
+      "original_bytes": 3578
+    }
+  }
+}

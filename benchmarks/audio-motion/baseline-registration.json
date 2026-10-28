@@ -1,0 +1,28 @@
+{
+  "schema": "gliss-audio-motion-registration-v1",
+  "status": "prospective",
+  "positions_executed": 0,
+  "binary_sha256": "b3d15694a5315920146a9574acc8b1351965318ba772ea6edf8332c55f435c2b",
+  "runtime_source_commit": "9b4de093",
+  "base_commit": "d10b0687",
+  "sources": {
+    "scripts/bench-audio-motion.mjs": "c5590577df0e6ca4669373e8842875a879fcd9e65464a22310d889faf4cfa9e6",
+    "benchmarks/audio-motion/baseline-plan.json": "80999d81b76124e858812c48af936cf59fa92a0f510021f3ef2aa38a5991a37e",
+    "test-support/qemu-audio-motion/build.py": "8839639c5ea2a6d88f279c8acec1678cee9b1ef8db588dddea105c82d9d2e79e",
+    "test-support/qemu-audio-motion/cpu.mjs": "c8ab59505cec3ba65fa11397b19a8675c486626fff29280511697cb2293df029",
+    "test-support/qemu-audio-motion/fixture.mjs": "84605798f01f44bb7e6c7d9a971101c781a767efc22b7849a832f060ffca29b5",
+    "test-support/qemu-audio-motion/init.c": "207c75493293b027b143e0cfee3f8ecb9a5e45fde626c3bb4c6014fcabc5ae6c",
+    "test-support/qemu-audio-motion/observer.mjs": "16506148c2e62bbbed5383bbb0fdc57a63b87dc99b2c9f6f45b53f5e82ab1d51",
+    "test-support/qemu-audio-motion/raw-stamp.mjs": "b00feda4872f94d7ff13a4349eb984a41419880b8f67516ff24b6df20162e5c3",
+    "test-support/qemu-audio-motion/server.mjs": "7a194e3a7e117d618476a0342fbe24312b6ffbaf16a760f834ce1273a8fe5da5",
+    "test-support/qemu-audio-motion/stamp.js": "2f42b61a47fc9c334274208e4dfe2b3c141eb3bf75d928f6858dd2cbc1fbde14",
+    "test-support/qemu-audio-marker/browser.mjs": "e8fd20ee982bff8f675dba00ccc405ee4e77f8647cfde1eb66404243c3cfff8b",
+    "test-support/qemu-audio-marker/detector.js": "ea15ce3966add08d9caf39727fc587c2982f271e465f21cb56357271d3a9e02e",
+    "test-support/qemu-audio-marker/receipt.mjs": "988472e912541c5e572b2371b6ac6ac641617f522fd307d960babaa9c40ae756",
+    "test-support/browser/audio-kernel-link.mjs": "b3e9f427effda7cac1afe80b1d51cc515ddd94b5bce384f4cce4ed2b1d11477d",
+    "test-support/browser/audio-policy-server.mjs": "5851fdbc7d2e084ecc501452f8c3141310765a8a9268709beaf87a0fa00739bd",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c"
+  },
+  "readiness": "6 exact audio markers and advancing/frozen frame counter checks passed; first-frame/geometry failures retained",
+  "physical_gpu": false
+}

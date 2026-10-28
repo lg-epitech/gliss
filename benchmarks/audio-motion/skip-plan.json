@@ -1,0 +1,86 @@
+{
+  "schema": "gliss-audio-frame-skip-plan-v1",
+  "profiles": [
+    {
+      "name": "loopback",
+      "rttMs": 0,
+      "mbps": null
+    },
+    {
+      "name": "kernel-limited",
+      "rttMs": 80,
+      "mbps": 1
+    }
+  ],
+  "order": [
+    "disabled",
+    "enabled",
+    "enabled",
+    "disabled"
+  ],
+  "positions": 8,
+  "markers_per_position": 6,
+  "codes": "1 through 48, each used once across the complete cohort in position order",
+  "source_mix_frequency": 48000,
+  "sample_rate": 48000,
+  "marker_duration_ms": 160,
+  "source_alsa_buffer_us": 40000,
+  "window_ms": 6000,
+  "warmup_ms": 1500,
+  "pulse_offsets_ms": [
+    100,
+    900,
+    1700,
+    2500,
+    3300,
+    4100
+  ],
+  "pulse_deadline_ms": 700,
+  "max_submission_lateness_ms": 100,
+  "observation_cap_per_position": 128,
+  "sample_interval_ms": 50,
+  "tcp_nodelay": true,
+  "codec": "h264",
+  "fps_cap": 30,
+  "video_bitrate_target": 500000,
+  "video_in_flight_frames": 8,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": 19,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "tasks_max": 256,
+  "outer_limit_seconds": 180,
+  "physical_speaker_latency": false,
+  "qualification": "Only native frame skipping changes between paired cases on the same new binary. Both arms use a 500 kbit/s target, stream stats and direct pong dispatch. Source counter/texture phase progresses across the cohort; no identical-pixel or matched-quality claim. Marker cadence is not whole-frame fidelity or scanout. The independent ordered wire hook precedes production dispatch.",
+  "audio_codec": "opus",
+  "control_probes_per_position": 20,
+  "ping_interval_ms": 300,
+  "paint_cap_per_position": 512,
+  "rfb_surface": [
+    1280,
+    800
+  ],
+  "guest_rendering_area": [
+    1024,
+    768
+  ],
+  "nominal_source_fps": 30,
+  "animated_texture": [
+    600,
+    540,
+    360,
+    180
+  ],
+  "audio_latency_eligibility": "No observer/video failure or overflow; all source commands confirmed; each serial submission <=100ms late; preexisting or ambiguous output excluded. Missing/late responses remain failures.",
+  "video_marker_eligibility": "All counted paint markers must validate. Distinct source-marker counters per exact six-second browser window describe marker cadence, not scanout or whole-frame fidelity.",
+  "control_summary": "Twenty fixed probe slots; raw wire receipt and client dispatch cutoffs are independent. Missing submissions/replies retained; only complete sets support an overall p95.",
+  "cpu_eligibility": "Stable native/guest identities and complete browser endpoint set; independent midpoint acquisition windows.",
+  "stream_stats": true,
+  "frame_skip": {
+    "disabled": false,
+    "enabled": true
+  },
+  "sequence_eligibility": "All received GLV1 IDs within each window are contiguous modulo u32, with zero decode errors and valid source-counter paint markers. Skips emit no wire packet and consume no ACK credit.",
+  "skip_counter_scope": "Cumulative per-session native_skipped_frames samples during the exact browser window; absent in disabled arms, never inferred as zero. Counter changes within the window are a lower bound because sampling is once per second."
+}

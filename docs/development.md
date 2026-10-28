@@ -124,6 +124,11 @@ The [audio review](performance/audio.md) records the baseline, rejected candidat
 and corrected candidate. `python3 -B benchmarks/audio/verify.py` verifies their
 retained bytes and recomputes rates, CPU arithmetic, queues and control RTTs.
 
+The later [motion/audio comparison](../benchmarks/audio-motion/README.md) retains
+24 more positions and tests native frame skipping at a fixed bitrate. It includes
+source archives, original failures, measurement limits and opt-in controller
+requirements. Verify it with `python3 -B benchmarks/audio-motion/verify.py`.
+
 The opt-in controller uses the same disposable guest as the audio smoke. It runs
 twelve fixed positions, with muted, Opus and forced PCM playback on loopback and
 a nominal 80 ms RTT / 1 Mbit/s TCP model. It needs the smoke dependencies plus
