@@ -1,51 +1,99 @@
 # Full-pipeline audio packet duration
 
-Prospective, unexecuted. This compares native Opus packets of20 and40ms while
-holding video at requested QP42..51,500kbit/s,30fps, eight in-flight frames and
-no native skipping. Release/default20ms and the production browser are retained.
+**Completed: eight positions, all 48 sound probes timely, default stays 20 ms.**
+The registered further-testing gate failed. All four constrained-link positions
+recorded browser drop/reset counter events and were ineligible for the complete
+CPU comparison. Those observations remain in the [original cohort](cohort.json.gz);
+the [decision](decision.json) contains no comparison aggregates for them.
 
-There are eight ordered positions:20/40/40/20ms on loopback, then the same order
-on a private aggregate1Mbit/s,80msRTT kernel path without configured loss. Each
-profile starts a fresh owned diskless guest, using the unchanged fixture. A
-20-second window improves CPU tick resolution; it does not replace or relabel
-any prior six-second result. Six sound codes have the original700ms deadline;
-twenty controls have independent receipt/dispatch times. All48 codes are unique.
+The 40 ms option remains experimental. Its smaller packet count does not justify
+changing the default or the browser jitter buffer.
 
-The observer checks exact GLA1Opus frame counts, wrap-safe packet continuity,
-scheduled-output counts and received sample duration. Optional native snapshots
-retain all seventeen counters. Those receiver-timestamped cumulative samples
-cover only their first/last span, not necessarily the entire window. Raw input
-while muted, native input age before RFB ingress, in-progress socket writes,
-and unobserved diagnostic tails remain outside that loss accounting.
+## Observations
 
-CPU boundaries include PID/start identities, raw process ticks and CDP endpoint
-values. Browser CPU covers the full matched process set. Independent counter
-windows must be20..22seconds;10ms tick quantization remains, and two repetitions
-on a shared core provide no statistical confidence. Sources, tools and current
-native binary are registered before launch. Completed positions are checkpointed;
-blocked and partial slots cannot support performance aggregates.
+- Loopback: 20 ms sound responses were **185–214 ms**, versus **220–247 ms**
+  for 40 ms. On the constrained link the ranges were **247–288 ms** and
+  **259–323 ms**. All six codes per position met the unchanged 700 ms deadline.
+- Every position answered all twenty controls. Constrained-link control p95
+  was **98–109 ms**; source-marker cadence was **9.9–10.7 distinct IDs/s**.
+- Audio traffic was **104.0–104.4 kbit/s** at 20 ms and **99.8 kbit/s** at
+  40 ms, including Gliss headers. Loopback received exactly **1,000 versus
+  500 packets** per window. No received audio sequence gaps were recorded.
+- The two healthy loopback 20 ms positions used **9.6–9.8% native CPU** and
+  **15.5–15.8% browser CPU** of one core. The 40 ms positions used
+  **9.6–10.0% native** and **14.4–14.7% browser CPU**. These are descriptive
+  observations; the full eight-position comparison failed eligibility.
+- On the constrained link, the browser counter rose **3 and 4 events** at
+  20 ms, and **4 and 4 events** at 40 ms. That counter includes queue resets
+  and discards; it is not a count of lost packets or proof of audible glitches.
+  Its branch of origin was not retained. Sampled pending decodes reached at
+  most two, and queued playback reached 178–188 ms. Intervening peaks remain
+  unknown.
+- Native stale, partial-reset, lag and encoder-error counters showed no
+  increments between the first and last retained diagnostics. Those spans
+  were about 19 seconds, rather than the entire 20-second window. Their zero
+  deltas cannot prove delivery or cover an unobserved tail.
 
-The fixed [selection gate](criteria.json) requires all eight positions eligible,
-all candidate sound probes and controls, control p95≤150ms, at least8distinct
-painted IDs/s, and at least5% lower mean native-plus-browser CPU with separate
-two-position ranges in both profiles. This is only a further-testing decision,
-not a significance test or permission to promote40ms. Music quality and physical
-speaker latency are not established by the tone-code observer. Marker IDs/s do
-not establish whole-frame FPS or scanout.
+The aggregate browser counter prevents accepting a CPU reduction earned by
+clearing scheduled sound. A false `measurement_valid` here means **ineligible
+for the registered CPU comparison**; it does not erase the measured responses
+or reset events. The [selection criteria](criteria.json) and selector were
+unchanged after execution. There is no statistical regression or speedup claim.
 
-Root runs pure source checks first, then one registered cohort under a fresh
-private user/network/device namespace: CPU0 for native/browser/controller,
-CPU19 for the guest, nice19,3GiB/no swap,256tasks,300s outer unit limit and
-control-group cleanup. The300s limit includes the270s controller deadline.
-No existing VM, Distribox service, GPU device or external endpoint is used.
+## Limited waveform check
+
+A separate, retrospective analysis decoded the previously retained 320 ms
+440/880 Hz stereo Opus fixtures using libopus 1.6.1. Reconstruction matched the
+original input hash exactly. Each arm used a fresh decoder, the recorded
+312-frame lookahead, and exactly 15,360 scored frames after alignment. The
+aligned float samples and input PCM are retained alongside [quality.json](quality.json).
+
+Channel SNR was **26.36/27.38 dB** for 20 ms and **25.93/27.01 dB** for 40 ms;
+same-duration repetitions were byte-identical. This short two-tone result does
+not establish music, voice or subjective quality, browser output fidelity, or
+physical speaker latency. It performed no new encoding and is separate from
+the prospective live comparison.
+
+## Method and verification
+
+The order was 20/40/40/20 ms on loopback, then the same order on a private
+1 Mbit/s, 80 ms RTT kernel path, without configured loss. Each profile used a
+fresh owned diskless guest. Video stayed at requested QP 42..51, a 500 kbit/s
+target, 30 fps cap, eight in-flight frames and no native skipping. Real video
+traffic was lower than that target. The 20-second windows improve CPU tick
+resolution and do not relabel any earlier six-second result.
+
+Six unique sound codes and twenty controls per position retain their original
+deadlines. Every received audio packet has bounded header/arrival records.
+CPU boundaries retain PID/start identities, process ticks and CDP endpoint
+values. All endpoint sets were complete. The independent counter windows and
+10 ms quantization remain explicit; two repetitions on a shared core provide
+no confidence interval. Source-marker IDs/s are not whole-frame FPS or scanout.
+
+Native, browser and controller shared CPU 0 at nice 19; guests used CPU 19.
+The owner enforced 3 GiB, no swap, 256 tasks and a 300-second outer deadline in
+private user, network and device namespaces. Both guests and all eight native
+processes exited, and the owner finished successfully. No existing VM,
+Distribox service or physical GPU device was used.
+
+The [prospective registration](registration.json) binds 132 source files and
+the immutable native executable. Their bytes remain in [sources.tar.gz](sources.tar.gz).
+After execution, the offline verifier was repaired to validate ineligible rows
+without accepting them or inventing aggregates. The three analysis-file changes
+are separately bound in [results.json](results.json); the original verifier,
+runtime, observer, criteria and selector remain available in the registered
+archive. The waveform analysis has its own declaration and file identities.
+
+Root validation passed 182 native server tests, 30 packetizer tests, Clippy,
+eight observer/assessment tests, seven selector/verifier tests and three pure
+waveform-analysis tests. Recompute the published arithmetic without starting
+a VM, browser or media decoder:
 
 ```sh
-node --test --test-concurrency=1 test-support/audio-packet-duration-study/*.test.mjs
-python3 -I -B benchmarks/audio-packet-duration/test_evaluate.py
-node scripts/bench-audio-packet-duration.mjs \
-  --plan benchmarks/audio-packet-duration/plan.json --output /ABS/FRESH/cohort.json
+python3 -I -B benchmarks/audio-packet-duration/verify.py
+python3 -I -B benchmarks/audio-packet-duration/quality_verify.py
 ```
 
-The final command requires the root-owned isolation and immutable executable
-specified by the registration; it is not an unconfined launch recipe. No result
-or improvement is claimed before the cohort, cleanup and offline verifier pass.
+The live controller is opt-in and requires the private isolation, resource
+limits and immutable executable specified above. It is not an unconfined
+launch recipe. The release default remains 20 ms.

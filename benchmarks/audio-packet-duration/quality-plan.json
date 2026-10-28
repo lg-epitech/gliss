@@ -1,0 +1,19 @@
+{
+  "schema": "gliss-audio-duration-quality-plan-v1",
+  "status": "retrospective analysis of existing prerequisite packets; declared before decoding them here",
+  "source_frames": 15360,
+  "sample_rate": 48000,
+  "channels": 2,
+  "signal_hz": [
+    440,
+    880
+  ],
+  "padding": "one explicit packet per arm; align by the recorded312-frame encoder lookahead and score exactly the original15360frames",
+  "native_file": "benchmarks/audio-duration-prerequisite/native.json.gz",
+  "native_compressed_sha256": "b7a0d1502e2bf42a151efd282aa62cf39072d5f4ab91a49539a43445f7adec1f",
+  "decoder_library_name": "libopus.so.0.11.1",
+  "decoder_library_sha256": "ce07b3578b14e1d25ed603670f2336cd2b32b7f24c2c5b9aab8bbeb0f410b8d6",
+  "script_sha256": "7dc3401ea23e3faef5cb93080f48adafeca4ac60b7ded927e26f5ecea2a65f76",
+  "no_default_quality_gate": true,
+  "limits": "320ms two-tone fixture, no music/voice/noise, no physical/browser/guest/writer distortion or subjective acceptability claim"
+}

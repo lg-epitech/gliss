@@ -78,6 +78,9 @@ def main():
     for name in ['criteria','decision','validation']:
         require(digest((HERE/(name+'.json')).read_bytes())==inventory[name+'_sha256'],name+' changed')
     require(registration['criteria_sha256']==inventory['criteria_sha256'],'prospective criteria changed')
+    for name,change in inventory.get('post_execution_verifier_repairs',{}).items():
+        require(registration['sources'][name]==change['registered_sha256'] and digest((ROOT/name).read_bytes())==change['final_sha256'],'verifier repair binding changed')
+    require(digest((HERE/'evaluate.py').read_bytes())==registration['sources']['benchmarks/audio-packet-duration/evaluate.py'],'prospective selector changed')
     for key in ['results','plan','registration','source_archive']:
         require(digest((HERE/record[key]).read_bytes())==record[key+'_sha256'],key+' binding changed')
     require(registration['plan_sha256']==digest((HERE/'plan.json').read_bytes()),'prospective plan changed')
@@ -90,9 +93,9 @@ def main():
     require(all(digest(archived[n])==h for n,h in registration['sources'].items()),'archived source bytes changed')
     shared=load('audio_duration_shared',HERE/'verify_shared.py');shared.HERE=HERE
     raw=gzip.decompress((HERE/record['results']).read_bytes());data=json.loads(raw)
-    if data['cleanup_complete'] and all(p['status']=='measured' and p['measurement_valid'] for p in data['positions']):
+    if data['cleanup_complete'] and all(p['status']=='measured' for p in data['positions']):
         require(len(data['guest_builds'])==2 and [r['profile'] for r in data['guest_builds']]==['loopback','kernel-limited'],'guest inventory changed')
-        data=shared.verify(record)
+        data=shared.verify(record,allow_ineligible=True)
     else:
         # No aggregate performance claim on failed or partial evidence.
         require(digest((HERE/record['results']).read_bytes())==record['results_sha256'] and digest(raw)==record['original_sha256'] and len(raw)==record['original_bytes'],'failed evidence changed')

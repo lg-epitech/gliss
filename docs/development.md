@@ -124,13 +124,14 @@ The research branch accepts an operator-only `--audio-packet-ms 20|40`;
 omission retains 20 ms. The setting is parsed before opening the source and
 applies to PCM, Opus and ADPCM. The GLA1 frame count carries the duration, so no
 browser option or wire-format change is needed. `hello.audio_packet_ms` reports
-the selection. With `--stream-stats`, `audio.packet_ms` and cumulative
+the selection, as does the authenticated HTTP `/stats` response. With `--stream-stats`, `audio.packet_ms` and cumulative
 `audio.counters` appear in the existing 1 Hz diagnostics. Counters are per
 source and independently sampled; they do not prove delivery or bound a write
 already in progress. The 100 ms ingress-age budget and browser queues remain
 unchanged. The [component record](../test-support/audio-packet-duration/README.md)
-documents default-byte parity and counter scope. Full 20/40 ms CPU, latency
-and fidelity comparisons remain pending; this is not a default recommendation.
+documents default-byte parity and counter scope. The [full comparison](../benchmarks/audio-packet-duration/README.md) retained all
+eight positions and 48 sound probes, but failed its eligibility gate. It also
+includes a limited two-tone waveform check. The default remains 20 ms.
 
 The [audio review](performance/audio.md) records the baseline, rejected candidate
 and corrected candidate. `python3 -B benchmarks/audio/verify.py` verifies their

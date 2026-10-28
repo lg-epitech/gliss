@@ -16,6 +16,11 @@ def position():
  return {'mode':'ms40','audio_packet_ms':40,'metrics':m,'cpu_boundaries':{'before':before,'after':after},'cpu':cpu,'audio_assessment':{'valid':True,'reasons':[],'counter_deltas':zero,'native_sample_span_ms':19000},'native_argv':['--audio-packet-ms','40','--h264-bitrate','500000','--in-flight-frames','8','--video-frame-skip','false','--video-qp-min','42','--video-qp-max','51','--stream-stats'],'frame_skip':False,'qp_bounds':{'min':42,'max':51,'scope':'requested native bounds; not coded-QP attestation'},'observation_overflow':False,'page_errors':[],'pulses':[{'source_valid':True,'submission_lateness_ms':0,'status':'observed'} for _ in range(6)],'measurement_valid':True}
 class VerifierTests(unittest.TestCase):
  def test_positive_raw_recomputation(self):v.check_position(position(),{'audio_packet_ms':{'ms40':40}})
+ def test_browser_drop_is_retained_as_ineligible_without_changing_the_gate(self):
+  p=position();p['metrics']['audio_after']['dropped']=1;p['audio_assessment'].update(valid=False,reasons=['browser-drops']);p['measurement_valid']=False
+  v.check_position(p,{'audio_packet_ms':{'ms40':40}})
+  p['measurement_valid']=True
+  with self.assertRaises(ValueError):v.check_position(p,{'audio_packet_ms':{'ms40':40}})
  def test_packet_frames_totals_sequence_and_counters_cannot_be_relabelled(self):
   for mutate in [lambda p:p['metrics']['audio_arrivals'][0].update(frames=960),lambda p:p['metrics'].update(wire_bytes=1),lambda p:p['metrics']['audio_arrivals'][2].update(sequence=99),lambda p:p['metrics']['native_audio_samples'][-1]['counters'].update(writer_stale_packets=1),lambda p:p['audio_assessment'].update(native_sample_span_ms=20000),lambda p:p['native_argv'].__setitem__(1,'20')]:
    p=position();mutate(p)

@@ -1,0 +1,25 @@
+{
+  "schema": "gliss-audio-packet-duration-decision-v1",
+  "all_eight_eligible": false,
+  "profiles": [
+    {
+      "profile": "loopback",
+      "eligible": false,
+      "cpu": null,
+      "candidate_positions_pass": false,
+      "cpu_gate_pass": false
+    },
+    {
+      "profile": "kernel-limited",
+      "eligible": false,
+      "cpu": null,
+      "candidate_positions_pass": false,
+      "cpu_gate_pass": false
+    }
+  ],
+  "further_testing_candidate": false,
+  "default_packet_ms": 20,
+  "default_promotion_proved": false,
+  "fidelity_acceptance_proved": false,
+  "physical_speaker_latency_proved": false
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "gliss-audio-packet-duration-inventory-v1",
+  "cohort": {
+    "name": "duration",
+    "plan": "plan.json",
+    "plan_sha256": "5d5f41314687b0f09c84ebb800d9a7a2db43b4864648f467bc66eb85060b7ac0",
+    "registration": "registration.json",
+    "registration_sha256": "eca734653f23648ad550ab1386b1b0e1a7aea08cd0fb555589c66b727482180d",
+    "source_archive": "sources.tar.gz",
+    "source_archive_sha256": "1a5303f51354d4efd6d4950785175c11fb300978d1af28a142cee4c6487d0177",
+    "results": "cohort.json.gz",
+    "results_sha256": "de043c3ac014bf65cc38a198f8a8c6d74cf9627c7933194127a3ef422f58f3ba",
+    "original_bytes": 2103020,
+    "original_sha256": "d68d3a24ed9d98b716d0ffd41864376d9e4626c1be8e5af7d9d7b45676211440",
+    "binary_sha256": "edb6a3a3e951e63309509a74aadbe938094d59042fed2b57b034df2880ad8f9c",
+    "observed_unregistered_source_pins": {}
+  },
+  "post_execution_verifier_repairs": {
+    "benchmarks/audio-packet-duration/test_verify.py": {
+      "registered_sha256": "79b6510deacb382bbd823077a2ecaf77f0df481b44c2e229ec4e016c0a5ea1cd",
+      "final_sha256": "8d58980fc8d736d8dd5f4d262af276f935cdea7392527ba46a27cc1ed2c6de9d",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    },
+    "benchmarks/audio-packet-duration/verify.py": {
+      "registered_sha256": "3a49e6bc2bee99bde6acf6af5a85640df1fe93ca8537a0c787f51b15deba3ad3",
+      "final_sha256": "175e7d1b84debf96a63f644b72ec157eba41345791482f156bf1c641a243b39e",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    },
+    "benchmarks/audio-packet-duration/verify_shared.py": {
+      "registered_sha256": "fb188fb51a2d744fb8d65b9ed888768bafc7ba147b65daa2c684696d29076766",
+      "final_sha256": "f6cf2e4e218af900776cce5c44e0968140f4956eb1fed85852ca3ebe9613fbb4",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    }
+  },
+  "criteria_sha256": "4933f2de7ab6306a32e269f2833b6e2040c717e20df3042a876b2ba57c98a0e3",
+  "decision_sha256": "e043adcd2dc4c0feb7d3ec350b5014af51138813175542c8a99edda94544970b",
+  "validation_sha256": "37d07dadef035430e8edcfb6aa06d494c2abbd3ef018e8556140edbb625d57fb",
+  "retrospective_quality": {
+    "files": {
+      "quality.json": "12960f69b5647365b48bc0cf2e5eee61c96407b485ee3ad02169bb670f3b87b7",
+      "quality-plan.json": "f8e5b602ee364adf4f50cea6d3cbd158946657077d17d0eb42e53da1460c7a6d",
+      "quality.py": "7dc3401ea23e3faef5cb93080f48adafeca4ac60b7ded927e26f5ecea2a65f76",
+      "quality_verify.py": "1a1f8687867aafbe9311fee5d2a7ac7e31a921c6e1558e565fff9939f204e553",
+      "test_quality.py": "0e210e5a467a3effb57e51855dbc341ec5d90b9145a71d189afc6974654661c2",
+      "input.s16le.gz": "e1819c2b6aba1a49f5a279869b03b7c4eb6b8a4c6e04e8cf1623505ae7d73b1d",
+      "arm-0.f32le.gz": "609ffa3fe417e5c455c6ed90587e6f5c87aa5f0c4971cdd99ea843deda6276ed",
+      "arm-1.f32le.gz": "c3cf091374752ac1ee5e9101c6061044bfec30c0b68be048ea7d94cc8bb14a1e",
+      "arm-2.f32le.gz": "c3cf091374752ac1ee5e9101c6061044bfec30c0b68be048ea7d94cc8bb14a1e",
+      "arm-3.f32le.gz": "609ffa3fe417e5c455c6ed90587e6f5c87aa5f0c4971cdd99ea843deda6276ed"
+    },
+    "qualification": "Post hoc320ms two-tone analysis of previously retained native prerequisite packets. Fresh libopus1.6.1 decoding, recorded312-frame alignment. No new encoding, music-quality, live-pipeline, browser, speaker or default-acceptance claim."
+  }
+}

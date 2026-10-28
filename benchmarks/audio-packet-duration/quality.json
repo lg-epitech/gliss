@@ -1,0 +1,113 @@
+{
+  "schema": "gliss-audio-duration-retrospective-quality-v1",
+  "scope": "Retrospective waveform check of the already-retained320ms stereo Opus fixtures.\nNo encoding, browser, device, network or physical playback. Not a music-quality gate.",
+  "source_pcm_sha256": "ea42dc26151e07ca645bcc8c958291760aac06823707e232bbe4e2c025b6fbfb",
+  "native_original_sha256": "0ddfeb015d1edd78418df77e8dafa288f419ece534a8147033de8586b961e09b",
+  "script_sha256": "7dc3401ea23e3faef5cb93080f48adafeca4ac60b7ded927e26f5ecea2a65f76",
+  "plan_sha256": "f8e5b602ee364adf4f50cea6d3cbd158946657077d17d0eb42e53da1460c7a6d",
+  "decoder_library_sha256": "ce07b3578b14e1d25ed603670f2336cd2b32b7f24c2c5b9aab8bbeb0f410b8d6",
+  "decoder_version": "libopus 1.6.1",
+  "arms": [
+    {
+      "arm": 0,
+      "packet_frames": 960,
+      "status": "decoded",
+      "lookahead_frames": 312,
+      "frames": 15360,
+      "decoded_sha256": "aa1e54a819e04da94e321086856ab9fa5a30754e4d7889dcf70630001d13a3d4",
+      "decoded_file": "arm-0.f32le.gz",
+      "channels": [
+        {
+          "samples": 15360,
+          "mae_s16_units": 300.13663889368377,
+          "rmse_s16_units": 408.1361155710471,
+          "snr_db": 26.35841624710471,
+          "exact": false
+        },
+        {
+          "samples": 15360,
+          "mae_s16_units": 287.50549940665564,
+          "rmse_s16_units": 362.86064143224735,
+          "snr_db": 27.377272187874702,
+          "exact": false
+        }
+      ]
+    },
+    {
+      "arm": 1,
+      "packet_frames": 1920,
+      "status": "decoded",
+      "lookahead_frames": 312,
+      "frames": 15360,
+      "decoded_sha256": "49b8e526fa304e65313d64003fc33c19a14c62fe4f3280d42ce9a43b078058d4",
+      "decoded_file": "arm-1.f32le.gz",
+      "channels": [
+        {
+          "samples": 15360,
+          "mae_s16_units": 312.42690370877585,
+          "rmse_s16_units": 428.62005110532573,
+          "snr_db": 25.933067107778257,
+          "exact": false
+        },
+        {
+          "samples": 15360,
+          "mae_s16_units": 299.1125630239646,
+          "rmse_s16_units": 378.60856716700977,
+          "snr_db": 27.008260727321716,
+          "exact": false
+        }
+      ]
+    },
+    {
+      "arm": 2,
+      "packet_frames": 1920,
+      "status": "decoded",
+      "lookahead_frames": 312,
+      "frames": 15360,
+      "decoded_sha256": "49b8e526fa304e65313d64003fc33c19a14c62fe4f3280d42ce9a43b078058d4",
+      "decoded_file": "arm-2.f32le.gz",
+      "channels": [
+        {
+          "samples": 15360,
+          "mae_s16_units": 312.42690370877585,
+          "rmse_s16_units": 428.62005110532573,
+          "snr_db": 25.933067107778257,
+          "exact": false
+        },
+        {
+          "samples": 15360,
+          "mae_s16_units": 299.1125630239646,
+          "rmse_s16_units": 378.60856716700977,
+          "snr_db": 27.008260727321716,
+          "exact": false
+        }
+      ]
+    },
+    {
+      "arm": 3,
+      "packet_frames": 960,
+      "status": "decoded",
+      "lookahead_frames": 312,
+      "frames": 15360,
+      "decoded_sha256": "aa1e54a819e04da94e321086856ab9fa5a30754e4d7889dcf70630001d13a3d4",
+      "decoded_file": "arm-3.f32le.gz",
+      "channels": [
+        {
+          "samples": 15360,
+          "mae_s16_units": 300.13663889368377,
+          "rmse_s16_units": 408.1361155710471,
+          "snr_db": 26.35841624710471,
+          "exact": false
+        },
+        {
+          "samples": 15360,
+          "mae_s16_units": 287.50549940665564,
+          "rmse_s16_units": 362.86064143224735,
+          "snr_db": 27.377272187874702,
+          "exact": false
+        }
+      ]
+    }
+  ],
+  "quality_acceptability_proved": false
+}

@@ -37,7 +37,7 @@ def percentile(rows, fraction):
     return sorted(rows)[max(0, math.ceil(len(rows) * fraction) - 1)] if rows else None
 
 
-def verify(record):
+def verify(record, allow_ineligible=False):
     plan_raw = bound_file(record, 'plan')
     plan = json.loads(plan_raw)
     registration = json.loads(bound_file(record, 'registration'))
@@ -157,7 +157,10 @@ def verify(record):
                                   ('--h264-bitrate', '500000'), ('--video-frame-skip', 'false')]:
                 require(argv.count(option) == 1 and argv[argv.index(option) + 1] == value, 'Recorded native argv changed')
             require(argv.count('--stream-stats') == 1, 'Stats not shared by both arms')
-        require(position['measurement_valid'], 'Failed measurement cannot support summary')
+        if not allow_ineligible:
+            require(position['measurement_valid'], 'Failed measurement cannot support summary')
+        if not position['measurement_valid']:
+            print(f"{record['name']} slot {slot}: ineligible for CPU comparison; validating retained raw observations")
         wire = (m['wire_bytes'] + m['video_wire_bytes']) * 8 / plan['window_ms']
         latencies = [p['trigger_to_observed_ms'] for p in position['pulses'] if p['status'] == 'observed']
         replies = [p['wire_received_ms'] - p['sent_ms'] for p in m['pings'] if p['wire_received_ms'] is not None]

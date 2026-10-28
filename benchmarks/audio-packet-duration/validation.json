@@ -1,0 +1,105 @@
+{
+  "schema": "gliss-audio-packet-duration-validation-v1",
+  "native_component": {
+    "file": "test-support/audio-packet-duration/validation.json",
+    "sha256": "dbfc43b2bd39804ffd97e3117bf3cc43d939839a067cee1ea60c3d0c11df2f7f",
+    "server_tests_passed": 182,
+    "component_tests_passed": 30,
+    "clippy_warnings_denied": true
+  },
+  "study_node_tests": {
+    "passed": 8,
+    "failed": 0
+  },
+  "study_python_tests": {
+    "passed": 7,
+    "failed": 0
+  },
+  "owner_terminal": {
+    "unit": "gliss-audio-duration-cohort-20261028.service",
+    "active_state": "inactive",
+    "main_pid": 0,
+    "result": "success",
+    "exit_status": 0
+  },
+  "resource_limits": {
+    "native_browser_controller_cpu": 0,
+    "guest_cpu": 19,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "swap_max_bytes": 0,
+    "tasks_max": 256,
+    "outer_limit_seconds": 300
+  },
+  "positions_completed": 8,
+  "positions_cpu_eligible": 4,
+  "audio_probe_slots_retained": 48,
+  "timely_audio_probes": 48,
+  "private_net_and_device_namespaces": true,
+  "no_existing_vm_or_distribox_service": true,
+  "logs": {
+    "sealed-check.log": {
+      "sha256": "839fbf0e71309dc84d0e5a7ae96b9a6a60da48692ce45669324a4cdd2a55500b",
+      "bytes": 1107
+    },
+    "post-verifier-check.log": {
+      "sha256": "df609846de77cf08132c5a5e6374126b256c793a9df1414d3bbfa9e829e7cb82",
+      "bytes": 1112
+    },
+    "cohort.log": {
+      "sha256": "7a2d6b25475f31367ce9b5b3b3909e1c16b5ae6f56aa4561182b655f9f2e068b",
+      "bytes": 3738
+    },
+    "quality-tests.log": {
+      "sha256": "33060fd73862c5e1af97335504d5b45211fce6d229657f556d8deceeadc52ce4",
+      "bytes": 101
+    },
+    "quality.log": {
+      "sha256": "16a34e51ea6d8083a099587d0eeccaedeac2528bbdfb26483bdcc62dacff2c39",
+      "bytes": 277
+    },
+    "final-public-check.log": {
+      "sha256": "f49bd344ac16de81b31f8ba5a80317a826a0b8244f99bb5379bf904355c4dd7b",
+      "bytes": 4607
+    },
+    "all-verifiers.log": {
+      "sha256": "332a8050db904c1ae9abe12317c8699380741a870a06d26e50587730d04e9bea",
+      "bytes": 25667
+    }
+  },
+  "post_execution_verifier_repairs": {
+    "benchmarks/audio-packet-duration/test_verify.py": {
+      "registered_sha256": "79b6510deacb382bbd823077a2ecaf77f0df481b44c2e229ec4e016c0a5ea1cd",
+      "final_sha256": "8d58980fc8d736d8dd5f4d262af276f935cdea7392527ba46a27cc1ed2c6de9d",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    },
+    "benchmarks/audio-packet-duration/verify.py": {
+      "registered_sha256": "3a49e6bc2bee99bde6acf6af5a85640df1fe93ca8537a0c787f51b15deba3ad3",
+      "final_sha256": "175e7d1b84debf96a63f644b72ec157eba41345791482f156bf1c641a243b39e",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    },
+    "benchmarks/audio-packet-duration/verify_shared.py": {
+      "registered_sha256": "fb188fb51a2d744fb8d65b9ed888768bafc7ba147b65daa2c684696d29076766",
+      "final_sha256": "f6cf2e4e218af900776cce5c44e0968140f4956eb1fed85852ca3ebe9613fbb4",
+      "scope": "Offline validation of ineligible rows; criteria, selector, runtime and observation sources unchanged. Original verifier bytes retained in sources.tar.gz."
+    }
+  },
+  "retrospective_quality": {
+    "arms_decoded": 4,
+    "pure_tests_passed": 3,
+    "pure_tests_failed": 0,
+    "decoder_version": "libopus 1.6.1",
+    "owner_terminal": {
+      "active_state": "inactive",
+      "main_pid": 0,
+      "result": "success",
+      "exit_status": 0
+    },
+    "cpu": 0,
+    "nice": 19,
+    "memory_max_bytes": 536870912,
+    "tasks_max": 64,
+    "outer_limit_seconds": 30
+  },
+  "offline_evidence_verifiers_passed": 15
+}
