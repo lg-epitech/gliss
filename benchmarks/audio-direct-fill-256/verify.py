@@ -44,6 +44,12 @@ def verify_data(data, plan, registration):
     require(data['schema'] == 'gliss-audio-direct-fill-results-v1' and data['cleanup_complete'] is True
             and 'failure' not in data and data['page_errors'] == [], 'Incomplete component')
     require(data['source_pins'] == registration['sources'], 'Observed source pins changed')
+    require(data['phase'] == 'cost-opus-baseline-enable', 'Last setup label changed')
+    require(set(data['pools']) == {'pcm', 'opus'} and data['pools']['pcm']['packets'] == 64
+            and data['pools']['pcm']['payload_bytes'] == 64 * 3840
+            and data['pools']['opus']['packets'] == 65
+            and all(len(p['payload_sha256']) == 64 and p['payload_bytes'] > 0 for p in data['pools'].values()),
+            'Input/output pool accounting changed')
     require(plan['codecs'] == ['pcm', 'opus'] and plan['order'] == ['baseline', 'direct', 'direct', 'baseline']
             and plan['window_ms'] == 6000 and plan['warmup_ms'] == 1500 and plan['packet_frames'] == 960
             and plan['packets_per_window'] == 300 and plan['max_submission_lateness_ms'] == 100
@@ -88,7 +94,7 @@ def verify_data(data, plan, registration):
         cpu = p['cpu']
         require(cpu['complete_endpoint_set'] is True and cpu['matched_processes'] ==
                 cpu['before_processes'] == cpu['after_processes'] and cpu['matched_processes'] > 0
-                and cpu['elapsed_ms'] > 0 and cpu['cpu_seconds'] >= 0
+                and 6000 <= cpu['elapsed_ms'] <= 7000 and cpu['cpu_seconds'] >= 0
                 and math.isclose(cpu['cpu_seconds'] * 100000 / cpu['elapsed_ms'],
                                  cpu['percent_of_one_core'], abs_tol=1e-9), 'CPU counter window invalid')
     comparisons = []

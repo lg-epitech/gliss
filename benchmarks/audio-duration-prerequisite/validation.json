@@ -1,0 +1,29 @@
+{
+  "schema": "gliss-audio-duration-prerequisite-validation-v1",
+  "native_tests": {
+    "passed": 2,
+    "failed": 0
+  },
+  "clippy_warnings_denied": true,
+  "locked_offline_release_build": true,
+  "native_controller_exit_status": 0,
+  "browser_controller_exit_status": 0,
+  "logs": {
+    "build.log": {
+      "sha256": "d271024011c782863de9e9130d9e2a3c9d66fb709b3685a0edd1baea92a26fa3",
+      "bytes": 7893
+    },
+    "native.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "browser.log": {
+      "sha256": "55c1fffdb63e21c9a476aebca28310e2746446c92bd37958dd395550e71208c3",
+      "bytes": 502
+    }
+  },
+  "production_audio_source_unchanged": true,
+  "production_player_unchanged": true,
+  "release_defaults_changed": false,
+  "distribox_changes": false
+}

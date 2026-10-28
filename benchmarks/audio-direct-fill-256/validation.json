@@ -19,8 +19,19 @@
   "distribox_changes": false,
   "scope": "Seven source tests predated registration. CPU/media evidence is the separately registered256task component; earlier128task runs measured no costs.",
   "verifier_tests": {
-    "passed": 2,
+    "passed": 3,
     "failed": 0,
-    "mutation_denials": 7
+    "mutation_denials": 10
+  },
+  "audit_disclosures": {
+    "recorded_cpu_delta_step_seconds": 0.01,
+    "cpu_counter_window_ms": [
+      6025.711317499998,
+      6052.260728500001
+    ],
+    "pool_input_batches": 64,
+    "opus_output_payloads": 65,
+    "per_position_payload_trace_retained": false,
+    "phase_scope": "last setup label only; not completion or activity"
   }
 }

@@ -35,6 +35,17 @@ class EvidenceTests(unittest.TestCase):
                 altered = copy.deepcopy(self.data);change(altered['positions'][0])
                 with self.assertRaises(ValueError):module.verify_data(altered, self.plan, self.reg)
 
+    def test_counter_span_pool_tail_and_stale_setup_label_are_explicit(self):
+        for field in ['counter', 'pool', 'phase']:
+            changed = copy.deepcopy(self.data)
+            if field == 'counter':
+                cpu = changed['positions'][0]['cpu'];cpu['elapsed_ms'] = 8000
+                cpu['percent_of_one_core'] = cpu['cpu_seconds'] * 100000 / cpu['elapsed_ms']
+            elif field == 'pool': changed['pools']['opus']['packets'] = 64
+            else: changed['phase'] = 'still-running'
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                module.verify_data(changed, self.plan, self.reg)
+
 
 if __name__ == '__main__':
     unittest.main()

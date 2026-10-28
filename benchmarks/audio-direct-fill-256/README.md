@@ -17,6 +17,12 @@ The same prepared payload pool was reused across both policies. Opus encoding
 ran before measurement. No VM, video, network-media path or native server was
 part of this component.
 
+The pool generator submitted 64 input batches. PCM retained 64 payloads; Opus
+returned **65 encoded payloads**, including its flush tail. Every Opus position
+replayed that same 65-payload pool. The report records the pool hashes; it does
+not retain a separate per-position payload trace. Pool selection is bound by the
+archived controller source, not independently reconstructed from received bytes.
+
 The candidate retained the 60 ms startup buffer, 200 ms scheduled cap, twelve
 source limit, eight pending decode limit, 100 ms decode-age limit, sequence
 resets and mute handling. Seven source regressions passed, including exact PCM
@@ -37,13 +43,13 @@ All eight positions were valid. They retained **2,400 timed packets and schedule
 callbacks**, with no new drop-counter events, pending outputs at the cutoff or
 page errors. Browser process sets were complete at both CPU-counter endpoints.
 
-- **PCM baseline:** **2.97–3.81%** of one core; schedule wall-time totals
+- **PCM baseline:** about **3.0–3.8%** of one core; schedule wall-time totals
   **27.93–31.55 ms** per 300 packets.
-- **PCM direct:** **3.32–4.14%**; schedule totals **28.40–28.86 ms**.
-- **Opus baseline:** **4.63–5.80%**; schedule totals **34.46–40.41 ms**.
-- **Opus direct:** **5.14–6.46%**; schedule totals **33.96–39.19 ms**.
+- **PCM direct:** about **3.3–4.1%**; schedule totals **28.40–28.86 ms**.
+- **Opus baseline:** about **4.6–5.8%**; schedule totals **34.46–40.41 ms**.
+- **Opus direct:** about **5.1–6.5%**; schedule totals **33.96–39.19 ms**.
 
-Candidate mean CPU was 9.94% higher for PCM and 11.35% higher for Opus. The
+Candidate mean CPU was roughly 10% higher for PCM and 11% higher for Opus. The
 ranges overlap. Two repetitions on a shared host do not prove a regression or
 identify its cause; they clearly fail to demonstrate the required reduction.
 The small differences in secondary schedule totals also overlap and do not
@@ -52,6 +58,10 @@ values and exact failed checks.
 
 CPU covers the browser processes, including audio service, renderer and other
 reported endpoints. It uses its own counter-acquisition window and denominator.
+Those windows spanned **6.026–6.052 seconds**. Recorded CPU deltas were in
+**10 ms steps**, about 0.17 percentage points of one core per step here. Exact
+JSON percentages and mean differences preserve arithmetic, not finer measurement
+precision. The two-tick difference in PCM means does not establish a regression.
 Schedule wall time wraps the same method in both policies; it includes buffer
 creation, fill, node setup and any descheduling during the call. Neither metric
 is a source-to-speaker latency measurement.
@@ -60,6 +70,11 @@ The last packet is planned at 5,980 ms. Its send and decode/schedule callback
 must still finish before 6,000 ms. Thus the fixed cutoff is stricter than the
 general 100 ms submission ceiling near the edge. All 300 callbacks in every
 position met that intersection of gates; no post-window drain was credited.
+
+The verifier also checks a broad 6–7 second CPU-counter span, the pool counts,
+and the final `phase` label. That label is the last setup step, not a completion
+or live-work indicator; eight valid positions and terminal cleanup establish
+completion. These audit checks do not reselect data or change the frozen gate.
 
 ## Setup failures retained
 
@@ -95,7 +110,7 @@ python3 -B benchmarks/audio-direct-fill-256/verify.py
 validation, the rejection decision and resource probes. The verifier recomputes
 CPU arithmetic and the decision, checks every timed send/callback and the
 sample-observation identities, and preserves both setup failures as unmeasured.
-Two verifier tests include seven mutation denials. Sample hashes are retained
+Three verifier tests include ten mutation denials. Sample hashes are retained
 observations; replay is needed to remeasure exact buffer contents.
 
 To repeat, use the registered source archive, the pinned dependency lock and a

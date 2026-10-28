@@ -1,0 +1,36 @@
+{
+  "schema": "gliss-audio-duration-prerequisite-plan-v1",
+  "positions_executed": 0,
+  "order_frames": [
+    960,
+    1920,
+    1920,
+    960
+  ],
+  "sample_rate": 48000,
+  "channels": 2,
+  "source_frames": 15360,
+  "padding_packets_per_arm": 1,
+  "native_opus": {
+    "application": "audio",
+    "bitrate_bps": 96000,
+    "complexity": 4,
+    "max_payload_bytes": 1275
+  },
+  "browser_output_required": "One output and one schedule per packet; declared frame count and sample clock match within existing1microsecond rounding tolerance; zero drops and pending outputs.",
+  "capture_or_network_streaming_proved": false,
+  "source_aging_proved": false,
+  "cpu_performance_measured": false,
+  "browser_frame_limit": 5760,
+  "browser_buffer_cap_ms": 200,
+  "browser_startup_ms": 60,
+  "browser_decode_age_ms": 100,
+  "trace_cap": 32,
+  "nice": 19,
+  "cpu": 0,
+  "native_limit_seconds": 30,
+  "browser_limit_seconds": 60,
+  "browser_memory_max_bytes": 2147483648,
+  "browser_tasks_max": 256,
+  "qualification": "Native codec/wire/browser accounting prerequisite only. No VM, app audio packetizer, queueing, network, quality acceptance or physical speaker test. Identical320ms stereo tone source; one padding packet perarm flushes native lookahead and is explicitly counted."
+}

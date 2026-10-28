@@ -1,0 +1,25 @@
+{
+  "schema": "gliss-audio-duration-prerequisite-registration-v1",
+  "status": "prospective",
+  "positions_executed": 0,
+  "base_commit": "092102d0",
+  "binary_sha256": "39d8f2d089b676b4d69ef14bbdcc505b9bfca9290e78568a110cbcd3f8dea8d5",
+  "plan_sha256": "b5ced3697efae8a3e024714aa0b4cb9a23c3c4854e01f7c0a7b80a620ac3783c",
+  "sources": {
+    "benchmarks/audio-duration-prerequisite/plan.json": "b5ced3697efae8a3e024714aa0b4cb9a23c3c4854e01f7c0a7b80a620ac3783c",
+    "crates/gliss-server/examples/audio-duration-probe.rs": "9a63b8e4d5bd84e569e4af19f32157075329affc3f24c53c56dbf5236360bb87",
+    "crates/gliss-server/src/audio.rs": "d5f9c489e89e71b3afd3d9b1274ec1ad6b0dc4ef4aa210f8847fde57cd14a264",
+    "crates/gliss-server/Cargo.toml": "5e4beb66be12ca4749da21e2d23e0e3ec30a33e43e1ecdc499eaf54e94cdaa55",
+    "Cargo.toml": "340e665cbbcdd6049fe32dd8d891592e690b78251054d9e338a5adf245f5ee01",
+    "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+    "rust-toolchain.toml": "e879701472a698533f43f54989bbf5f3101eb0503472159d32633f3bb8a13fdf",
+    "scripts/probe-audio-duration.mjs": "dbc9dc5615dce7abdbb4dc88a6e3ed7f8346ecb232ddcd3f3c202f04606a0725",
+    "test-support/audio-duration/page.mjs": "05eabcb6544ce53901adc3cda8af491d1db713836cef3ee9b0ec6d53a7f170ef",
+    "web/audio-player.js": "32d1d7825fb35c22fe0d2e138032f2fba6e06bdd14f816c435bd4f43042dae67",
+    "web/audio-adpcm.js": "0819bd7040c7d75d8808c36afd9e5551f68d7ef7792c455f3bf31f7d00e81551",
+    "tests/helpers.mjs": "71ec3b2c422dde19df0021198f9d594747eb0693600e0460c3f55876cb5b495c",
+    "test-support/audio-direct-fill/resources.mjs": "8ff1f2eb4e033b710fc142d8de4c6a04af3de9ad7856784357eb477d9be67b4a",
+    "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+  },
+  "qualification": "Two native correctness tests and Clippy passed before registration; no registered four-arm native or browser position has executed."
+}
