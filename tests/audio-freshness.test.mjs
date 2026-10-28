@@ -84,3 +84,29 @@ test('audio: mute discards decoder work and late output without creating a new s
   assert.equal(audio.closed, true);assert.equal(audio.copied, 0);
   assert.equal(h.player.snapshot().sources, 0);assert.equal(h.starts.length, 0);
 });
+
+for (const rounding of [-1, 1]) test(`audio: a ${rounding} microsecond output rounding keeps the exact packet receipt`, t => {
+  const h = harness(t);h.player.push(packet(0));h.output();h.advance(20);
+  h.player.push(packet(1));
+  const decoder = h.decoders.at(-1), expected = decoder.chunks.at(-1);
+  const audio = h.output(decoder, {...expected, timestamp: expected.timestamp + rounding});
+  assert.equal(audio.closed, true);assert.equal(audio.copied, 2);
+  assert.equal(h.player.scheduled, 2);assert.equal(h.player.pendingDecodes.size, 0);
+  assert.equal(h.player.dropped, 0);
+});
+
+for (const rounding of [-2, 2]) test(`audio: an unknown ${rounding} microsecond timestamp is not attributed to a packet`, t => {
+  const h = harness(t);h.player.push(packet(0));
+  const decoder = h.decoders[0], chunk = decoder.chunks[0];
+  const audio = h.output(decoder, {...chunk, timestamp: chunk.timestamp + rounding});
+  assert.equal(audio.closed, true);assert.equal(audio.copied, 0);
+  assert.equal(h.player.scheduled, 0);assert.equal(h.player.dropped, 1);
+});
+
+for (const rounding of [-1, 1]) test(`audio: ${rounding} microsecond rounding cannot renew an expired decode`, t => {
+  const h = harness(t);h.player.push(packet(0));h.advance(250);
+  const decoder = h.decoders[0], chunk = decoder.chunks[0];
+  const audio = h.output(decoder, {...chunk, timestamp: chunk.timestamp + rounding});
+  assert.equal(audio.closed, true);assert.equal(audio.copied, 0);
+  assert.equal(h.player.scheduled, 0);assert.equal(h.player.pendingDecodes.size, 0);
+});

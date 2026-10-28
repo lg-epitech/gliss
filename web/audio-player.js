@@ -155,8 +155,15 @@ export class AudioPlayer {
           if (epoch !== this.decoderEpoch || !this.enabled) return;
           if (audio.sampleRate !== SAMPLE_RATE || audio.numberOfChannels !== CHANNELS || audio.numberOfFrames > MAX_FRAMES)
             throw new Error('Invalid decoded audio format.');
-          const received = this.pendingDecodes.get(audio.timestamp);
-          this.pendingDecodes.delete(audio.timestamp);
+          // Chromium's sample-clock conversion can truncate an integer PTS by
+          // one microsecond. Match that rounding without renewing packet age.
+          let timestamp = audio.timestamp;
+          if (!this.pendingDecodes.has(timestamp)) {
+            if (this.pendingDecodes.has(timestamp - 1)) timestamp--;
+            else if (this.pendingDecodes.has(timestamp + 1)) timestamp++;
+          }
+          const received = this.pendingDecodes.get(timestamp);
+          this.pendingDecodes.delete(timestamp);
           if (received === undefined || performance.now() - received > MAX_DECODE_AGE_MS) {
             this.dropped++;
             return;
