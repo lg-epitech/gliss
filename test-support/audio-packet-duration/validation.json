@@ -1,8 +1,8 @@
 {
   "schema": "gliss-audio-packet-duration-validation-v1",
-  "status": "root-validated-unserved",
+  "status": "root-validated-native-branch-option",
   "native_tests": {
-    "passed": 29,
+    "passed": 30,
     "failed": 0
   },
   "clippy_warnings_denied": true,
@@ -15,9 +15,9 @@
   "tasks_max": 128,
   "timeout_seconds": 180,
   "code_hashes": {
-    "audio.rs": "0aea4b24f01542d71b3a6800f5ec3ef1da53910ad1203ed135668293b5c99562",
+    "audio.rs": "e598e4f8581258192988731657ede5a7507c73288960253eb5e3e358774c43d6",
     "legacy.rs": "482360fecae4a2129a8d8360e01cf4de57c86263bc240587e6d2e3f7ea9f62c4",
-    "wrapper.rs": "b2a1f90c46072f8f03e15c0b173e5e850c681e9bfe933dba68d093f5f21672b9"
+    "wrapper.rs": "2114465c2004876f46fda065a456420fd0585364af51aa90273c195d1ed3957c"
   },
   "example": "crates/gliss-server/examples/audio-packet-duration.rs",
   "example_sha256": "83fa7b93de68eef5106a839081615953ac9be65f6fee4b10057f571a8ee3940b",
@@ -33,16 +33,53 @@
     "r1-repair-check.log": {
       "sha256": "3d958ebc8108108d2c2c6a09bd20c42dcbd06d8430a7042e31b739f9d45e5fb2",
       "bytes": 3285
+    },
+    "native-integration-check.log": {
+      "sha256": "6fc89d9f51c05e3b3f33f5e8c9c5e8a16cb1ee9f9cfce245cc24ef4ea6ab766d",
+      "bytes": 22722
+    },
+    "native-integration-build.log": {
+      "sha256": "dd05b4844dce91859253022d17b87e868d26c0f89130b2c81ffed1f54115cc91",
+      "bytes": 155
+    },
+    "native-integration-binding-mutations.log": {
+      "sha256": "507ee6466612c20b64e20459181587dbcef8da407316e0160e7a27f59731823d",
+      "bytes": 7257
+    },
+    "native-integration-retained-evidence.log": {
+      "sha256": "b38c5a7e6b747e3d04ae47f716cdc56c7f43d7d907edf59ef060d952eea79d39",
+      "bytes": 24071
+    },
+    "native-integration-cli-check.json": {
+      "sha256": "bc88ab3f872dcb478d0c43610f266486db564510fa04c68bac7acb316d6f1835",
+      "bytes": 125
     }
   },
   "original_handoff_tar_sha256": "967b94099179026c654bd0cdc1ca3dc9fa447eda04848faccc16c7de29dea843",
-  "production_audio_source_changed": false,
-  "runtime_option_wired": false,
+  "production_audio_source_changed": true,
+  "runtime_option_wired": true,
   "performance_or_latency_improvement_proved": false,
   "review_repair": {
     "before_tar_sha256": "1cd564fa8c2cf96f74f909269e2d71387cbf73aab0e4a126c54130137a9ddf7f",
     "writer_lag_coverage": true,
     "disabled_data_scope_test": true,
     "review": "gliss-audio-packet-duration-candidate-review-t3-r1-20261028"
+  },
+  "native_integration": {
+    "server_tests_passed": 182,
+    "server_tests_failed": 0,
+    "default_packet_ms": 20,
+    "opt_in_packet_ms": 40,
+    "before_tar_sha256": "98e4e768f815ac6f6cd8f18cd204f02cdac04e71743b336f157274e48e68139b",
+    "source_hashes": {
+      "crates/gliss-server/src/main.rs": "dba7a39a02bfe9eb2c1fa7af0dd8af4cf876a90967f5409c6f58704f36bba6c1",
+      "crates/gliss-server/src/audio.rs": "e598e4f8581258192988731657ede5a7507c73288960253eb5e3e358774c43d6"
+    },
+    "release_or_service_changed": false,
+    "release_build_passed": true,
+    "locked_offline_release_binary_sha256": "edb6a3a3e951e63309509a74aadbe938094d59042fed2b57b034df2880ad8f9c",
+    "retained_evidence_verifiers_passed": 13,
+    "binding_mutation_cases_passed": 4,
+    "cli_check_passed": true
   }
 }

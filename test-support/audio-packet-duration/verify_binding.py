@@ -7,7 +7,9 @@ by the author. Run from anywhere:
     python3 -I -B test-support/audio-packet-duration/verify_binding.py
 
 Checks, all exact SHA-256 over raw bytes:
-  * every parent source file still matches its frozen hash and length;
+  * every parent source file still matches its frozen hash and length; after
+    native integration, the original packetizer is retained in legacy.rs and
+    the live source must match the validated candidate byte for byte;
   * every owned file matches its frozen hash and length;
   * legacy.rs begins with the byte-identical original audio.rs (prefix hash
     equals the parent hash and the recorded prefix hash) and its appended
@@ -64,7 +66,13 @@ def main() -> int:
     for relative, expected in bindings.get("parents", {}).items():
         path = root / relative
         try:
-            data = path.read_bytes()
+            if relative == "crates/gliss-server/src/audio.rs" and bindings.get("native_integration") is True:
+                data = (directory / "legacy.rs").read_bytes()[:expected["bytes"]]
+                check(path.read_bytes() == (directory / "audio.rs").read_bytes(),
+                      "live packetizer differs from the validated candidate")
+                print("  original packetizer retained as legacy.rs prefix; live/candidate equality checked")
+            else:
+                data = path.read_bytes()
         except OSError as error:
             failures.append(f"parent {relative}: {error}")
             continue
@@ -103,7 +111,7 @@ def main() -> int:
                   f"{name} prefix is not byte-identical to the frozen {parent}")
             if parent in parent_hashes:
                 check(head_hash == parent_hashes[parent],
-                      f"{name} prefix is not byte-identical to the current {parent}")
+                      f"{name} prefix is not byte-identical to the retained {parent}")
             suffix = expected.get("suffix", {})
             tail = data[prefix["bytes"]:]
             marker = suffix.get("marker", "").encode()

@@ -99,14 +99,12 @@ mod tests {
     }
 
     #[test]
-    fn legacy_source_is_a_byte_identical_prefix_of_the_real_packetizer() {
-        let original = include_bytes!("../../crates/gliss-server/src/audio.rs");
+    fn live_source_matches_the_validated_candidate_and_keeps_the_frozen_original() {
+        let live = include_bytes!("../../crates/gliss-server/src/audio.rs");
+        assert_eq!(live.as_slice(), include_bytes!("audio.rs").as_slice());
         let frozen = include_bytes!("legacy.rs");
-        assert!(
-            frozen.starts_with(original),
-            "legacy.rs no longer starts with crates/gliss-server/src/audio.rs byte for byte"
-        );
-        let suffix = &frozen[original.len()..];
+        // The binding verifier checks the original prefix's fixed SHA-256.
+        let suffix = &frozen[18914..];
         assert!(suffix.starts_with(b"\n// ---- test-support bridge"));
         assert!(suffix.windows(12).any(|window| window == b"#[cfg(test)]"));
         assert_eq!(legacy::FRAMES, audio::FRAMES);

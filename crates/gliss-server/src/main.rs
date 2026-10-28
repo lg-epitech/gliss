@@ -47,7 +47,7 @@ use std::{
 };
 use subtle::ConstantTimeEq;
 use tokio::{
-    sync::{Semaphore, mpsc, oneshot, watch},
+    sync::{Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinSet,
 };
 
@@ -65,6 +65,9 @@ struct Args {
     /// Fixed accepted HTTP/WebSocket TCP_NODELAY policy; verified before HTTP IO.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     tcp_nodelay: bool,
+    /// Trusted audio packet duration (20 or 40 ms); does not change the freshness budget.
+    #[arg(long, default_value_t = audio::PacketDuration::DEFAULT)]
+    audio_packet_ms: audio::PacketDuration,
     /// Authenticated QUIC DATAGRAM media. Default scope remains loopback.
     #[arg(long)]
     datagram_bind: Option<SocketAddr>,
@@ -187,6 +190,48 @@ struct Args {
     session_ttl: u64,
     #[arg(long, default_value = "static")]
     workload: String,
+}
+
+#[cfg(test)]
+mod audio_option_tests {
+    use super::*;
+
+    #[test]
+    fn duration_defaults_to_20_and_rejects_noncanonical_values_during_argument_parsing() {
+        let parse = |extra: &[&str]| {
+            Args::try_parse_from(
+                [
+                    "gliss-server",
+                    "--demo",
+                    "--token",
+                    "01234567890123456789012345678901",
+                ]
+                .into_iter()
+                .chain(extra.iter().copied()),
+            )
+        };
+        assert_eq!(
+            parse(&[]).unwrap().audio_packet_ms,
+            audio::PacketDuration::Ms20
+        );
+        for (text, expected) in [
+            ("20", audio::PacketDuration::Ms20),
+            ("40", audio::PacketDuration::Ms40),
+        ] {
+            assert_eq!(
+                parse(&["--audio-packet-ms", text]).unwrap().audio_packet_ms,
+                expected
+            );
+        }
+        for invalid in [
+            "0", "10", "30", "60", "020", "040", "+20", "20.0", "20ms", " 20", "40 ", "",
+        ] {
+            assert!(
+                parse(&["--audio-packet-ms", invalid]).is_err(),
+                "{invalid:?}"
+            );
+        }
+    }
 }
 
 struct App {
@@ -1527,6 +1572,7 @@ fn with_stream_metadata(value: serde_json::Value, app: &App) -> serde_json::Valu
         value["hybrid_config"]["base_tile"] = json!(64);
     }
     value["tcp_listener"] = json!(app.tcp_listener.snapshot());
+    value["audio_packet_ms"] = json!(app.args.audio_packet_ms.millis());
     if app.args.datagram_display_input_only {
         value["display_input_only"] = json!(true);
     }
@@ -2356,6 +2402,7 @@ struct Captured {
 
 struct Source {
     audio: audio::Session,
+    audio_counters: Arc<audio::Counters>,
     frames: watch::Receiver<Option<Captured>>,
     input: mpsc::Sender<Input>,
     events: mpsc::Receiver<serde_json::Value>,
@@ -2375,6 +2422,8 @@ async fn source(app: &App) -> Result<Source> {
     let (input, mut input_rx) = mpsc::channel::<Input>(128);
     let (event_tx, events) = mpsc::channel(16);
     let (audio, mut audio_requests, audio_status) = audio::channel();
+    let audio_config = audio::EncodeConfig::new(app.args.audio_packet_ms);
+    let audio_counters = audio_config.counters.clone();
     let mut tasks = JoinSet::new();
     let mut shutdown = None;
     let mut capture_lease = None;
@@ -2425,10 +2474,11 @@ async fn source(app: &App) -> Result<Source> {
         let teardown_control = reader.teardown_control();
         let raw_audio = reader.audio_events();
         let mut audio_available = writer.audio_available();
-        tasks.spawn(audio::encode(
+        tasks.spawn(audio::encode_with(
             raw_audio,
             audio.request.subscribe(),
             audio.packets.clone(),
+            audio_config,
         ));
         let close_policy = app.args.rfb_close_policy.unwrap_or_default();
         let input_id = Arc::new(AtomicU32::new(0));
@@ -2616,6 +2666,7 @@ async fn source(app: &App) -> Result<Source> {
     }
     Ok(Source {
         audio,
+        audio_counters,
         frames,
         input,
         events,
@@ -2747,6 +2798,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     let writer_audio_request = audio_request.subscribe();
     let mut audio_status = source.audio.status.clone();
     let mut audio_packets = source.audio.packets.subscribe();
+    let writer_audio_counters = source.audio_counters.clone();
     // This task forwards input independently of semaphore waits, encoding and writes.
     // Dropping the session's JoinSet aborts it and releases its input sender clone.
     io_tasks.spawn(async move {
@@ -2808,11 +2860,15 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                     continue;
                 }
                 packet = audio_packets.recv() => {
-                    if let Ok(packet) = packet {
-                        let request = *writer_audio_request.borrow();
-                        if request.codec.is_some() && packet.generation == request.generation && packet.received.elapsed() <= audio::MAX_AGE {
-                            tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Binary(packet.bytes.to_vec().into()))).await.context("audio write timed out")??;
+                    match packet {
+                        Ok(packet) => {
+                            let request = *writer_audio_request.borrow();
+                            if audio::admit_for_write(&packet, request, &writer_audio_counters) {
+                                tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Binary(packet.bytes.to_vec().into()))).await.context("audio write timed out")??;
+                            }
                         }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => writer_audio_counters.record_writer_lag(skipped),
+                        Err(broadcast::error::RecvError::Closed) => return Ok(()),
                     }
                     continue;
                 }
@@ -3014,6 +3070,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 stats["waiting_encoded_bytes"] = json!(waiting.as_ref().map_or(0, |packet| packet.bytes.len()));
                 stats["encoder_busy"] = json!(!encoder_jobs.is_empty());
                 stats["writer_jobs"] = json!(writer_jobs);
+                stats["audio"] = json!({"packet_ms":app.args.audio_packet_ms.millis(),"counters":source.audio_counters.snapshot()});
                 if app.args.video_frame_skip { stats["native_skipped_frames"] = json!(native_skipped_frames); }
                 // Diagnostics never block input/media and have no unbounded history.
                 let _ = control_tx.try_send(ControlPacket { message: Message::Text(stats.to_string().into()), flushed: None });

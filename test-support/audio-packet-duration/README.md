@@ -3,19 +3,19 @@
 28 October 2026 · branch `research/audio-performance` · declared head
 `37962fd6` (as stated by the brief; no Git command was run here)
 
-**Status: root validated, unserved.** The formatted candidate passed all
-29 native tests and Clippy with warnings denied. The [validation record](validation.json)
-binds the checked source bytes and log identities. The original handoff was
-archived before formatting; legacy and parent source bytes stayed unchanged.
-Production source, runtime options and services remain unchanged. CPU, latency
-and fidelity benefits remain unmeasured.
+**Status: native branch integration validated.** The operator can select
+`--audio-packet-ms 40`; omission remains 20 ms. No service, release or Distribox
+setting was changed. Full CPU, latency and fidelity tradeoffs remain unmeasured.
+All 182 server tests, 30 component tests and Clippy with warnings denied passed.
+The [validation record](validation.json) identifies the executed checks. Earlier
+handoffs and the 29-test revision were archived before integration.
 
 ## Files (7 of at most 7)
 
 | File | Role |
 | --- | --- |
-| `audio.rs` | Candidate replacement for `crates/gliss-server/src/audio.rs`. Same module layout and `super::audio_adpcm` path, so root can later drop it in place. |
-| `legacy.rs` | Byte-identical copy of the current `crates/gliss-server/src/audio.rs` followed by one `#[cfg(test)]` bridge (`continuous_packets`). The original prefix is hash-bound; it was not edited. |
+| `audio.rs` | Snapshot of `crates/gliss-server/src/audio.rs`. Byte-identical to the native module; the wrapper checks that equality. |
+| `legacy.rs` | Byte-identical copy of the original `crates/gliss-server/src/audio.rs` followed by one `#[cfg(test)]` bridge (`continuous_packets`). The original prefix is hash-bound; it was not edited. |
 | `wrapper.rs` | Module shim an example includes with `#[path]`; binds the real `audio_adpcm.rs`, the candidate and the frozen original, and holds the byte-comparison tests. |
 | `verify_binding.py` | Stdlib-only hash verifier for `source-bindings.json`. |
 | `source-bindings.json` | Parent hashes, derivations and owned hashes. Carries no hash of itself. |
@@ -53,11 +53,17 @@ Added:
   private `PCM_BYTES` (3,840) remain the default-policy constants.
 - `EncodeConfig { packet_duration, counters }` and `encode_with(..)`; the
   historical `encode(..)` is now a wrapper that passes `EncodeConfig::default()`.
-- `Counters` / `CountersSnapshot` and a writer-side increment path.
+- `Counters` / serializable `CountersSnapshot` and separate writer age/lag paths.
+- Native operator option, hello `audio_packet_ms`, and optional 1 Hz
+  `stream_stats.audio = {packet_ms, counters}`. Counter lifetime is one source,
+  including mute/re-enable periods; one writer owns each source here.
+- `admit_for_write` excludes muted/old-generation packets before counting age
+  rejections. It does not bound a write already in progress; the existing
+  ten-second WebSocket write timeout is unchanged.
 
 ## Exact public API of `audio.rs`
 
-Unchanged signatures:
+Historical test compatibility signatures:
 
 ```rust
 pub const FRAMES: u32;                       // 960, the 20 ms default
@@ -71,6 +77,7 @@ pub struct Session { pub request: watch::Sender<Request>, pub status: watch::Rec
 pub fn channel() -> (Session, watch::Receiver<Request>, watch::Sender<Status>)
 pub fn request(sender: &watch::Sender<Request>, value: serde_json::Value) -> anyhow::Result<()>
 pub async fn update_capture(writer: &mut gliss_rfb::RfbWriter, request: Request, enabled: &mut bool, status: &watch::Sender<Status>, allowed: bool)
+#[cfg(test)]
 pub async fn encode(raw: broadcast::Receiver<Event>, requests: watch::Receiver<Request>, packets: broadcast::Sender<Packet>)
 ```
 
@@ -86,6 +93,7 @@ impl PacketDuration {
     pub const fn pcm_bytes(self) -> usize;           // 3840 | 7680
     pub fn from_millis(millis: u32) -> anyhow::Result<Self>;
 }
+impl Display for PacketDuration { /* canonical milliseconds */ }
 impl FromStr for PacketDuration { type Err = anyhow::Error; }   // "20" | "40" only
 
 #[derive(Debug, Default)]
@@ -96,7 +104,7 @@ impl Counters {
     pub fn record_writer_lag(&self, skipped: u64);
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CountersSnapshot {
     pub stale_raw_events: u64,       pub stale_raw_bytes: u64,
     pub stale_pending_discards: u64, pub stale_pending_bytes: u64,
@@ -112,6 +120,7 @@ pub struct CountersSnapshot {
 pub struct EncodeConfig { pub packet_duration: PacketDuration, pub counters: Arc<Counters> }
 impl EncodeConfig { pub fn new(packet_duration: PacketDuration) -> Self }
 
+pub fn admit_for_write(packet: &Packet, request: Request, counters: &Counters) -> bool
 pub async fn encode_with(raw: broadcast::Receiver<Event>, requests: watch::Receiver<Request>, packets: broadcast::Sender<Packet>, config: EncodeConfig)
 ```
 
@@ -149,9 +158,9 @@ combines a stale raw event and the partial it evicts into one discard total;
 these counters put the latter in `reset_pending`, alongside other reset causes.
 That model total cannot be reconstructed from the snapshot alone.
 
-## Tests authored (29 passed under root execution)
+## Component checks (see validation record)
 
-Candidate `audio.rs` tests (18): the six original cases verbatim —
+Candidate `audio.rs` tests (19): the six original cases verbatim —
 `opus_roundtrip_preserves_stereo_at_bounded_bitrate`,
 `adpcm_is_advertised_and_framed_only_when_requested`,
 `fragmented_pcm_is_exact_and_audio_is_only_encoded_on_request`,
@@ -169,11 +178,12 @@ Candidate `audio.rs` tests (18): the six original cases verbatim —
 `raw_lag_clears_partial_sound_and_is_counted`,
 `disabled_raw_data_is_unencoded_and_excluded_from_discard_counters`,
 `counters_start_at_zero_and_the_writer_stale_path_is_separate`,
+`writer_admission_counts_only_current_requested_packets_rejected_for_age`,
 `default_encode_matches_explicit_20ms_config_byte_for_byte`.
 
 Wrapper tests (3):
-`legacy_source_is_a_byte_identical_prefix_of_the_real_packetizer`
-(`include_bytes!` against the live source),
+`live_source_matches_the_validated_candidate_and_keeps_the_frozen_original`
+(`include_bytes!` against the live source; original prefix hash checked by the verifier),
 `default_20ms_packets_are_byte_identical_to_the_frozen_original` (12
 continuous tone blocks, all three codecs, candidate public pipeline versus the
 original encoder), and
@@ -182,7 +192,7 @@ fragments through both public `encode` pipelines, plus status JSON and invalid
 control parity).
 
 The example also runs the six original tests inside `legacy` and the two
-`audio_adpcm` tests, for 29 in total. Three tests sleep about 120 ms (one of
+`audio_adpcm` tests, for 30 in total. Three tests sleep about 120 ms (one of
 them twice) to age a partial packet in real time, as the original does.
 
 ## Root-only serial commands (not executed here)
@@ -213,29 +223,26 @@ byte-identical prefix. The `mod legacy;` item in `wrapper.rs` carries
 `#[rustfmt::skip]` for that reason; if rustfmt still touches the file, add a
 `rustfmt.toml` `ignore` entry or re-copy the prefix from the original source.
 
-## Later integration sketch (root's call, not done here)
+## Native integration
 
-- `main.rs`: build one `audio::EncodeConfig::new(duration)` next to
-  `audio::channel()`, pass a clone to `audio::encode_with(..)` instead of
-  `audio::encode(..)`. Split the writer's existing compound condition: first
-  exclude muted or stale-generation packets, then count only age rejections
-  through `record_writer_stale_packet(packet.bytes.len())`. Match encoded
-  `RecvError::Lagged(n)` separately and call `record_writer_lag(n)`.
-- CLI: an operator-only `--audio-packet-ms` parsed with
-  `PacketDuration::from_str` (clap `value_parser!(PacketDuration)` works
-  through `FromStr`), default 20, wired like `configured_video_qp`.
-- Status/protocol: none. A later `counters.snapshot()` exposure is a separate
-  decision.
+`--audio-packet-ms` uses the exact typed parser before any source is opened.
+One `EncodeConfig` is created per source, shared with the writer and optional
+1 Hz scheduler diagnostics. Lag notifications count skipped encoded messages
+without assuming their age, size or generation. The hello reports the selected
+milliseconds; browser negotiation cannot alter this setting. The GLA1 header
+and audio-status shape remain unchanged. Audio stays disabled for datagram
+workers configured for display/input only.
+
+After integration, the verifier validates the original audio parent from the
+18,914-byte `legacy.rs` prefix, and requires live source/candidate equality.
+All other parents still bind the current file bytes. The wrapper retains both
+default-20 byte comparisons against the historical encoder/pipeline.
 
 ## Limits
 
-- The original candidate was validated by root per `validation.json`; it was
-  not promoted. The review repair adds writer-lag coverage and a disabled-input
-  test; both passed in the recorded root execution.
-- Promoted into the binary crate, any new public item root leaves unwired
-  (`millis`, `from_millis`, `snapshot`, `record_writer_stale_packet`,
-  `EncodeConfig::new`) warns as dead code under `-D warnings`; the example
-  wrapper's allowances cover that only there.
+- The root validation record distinguishes the original 28-test candidate,
+  29-test counter repair and native integration checks. No performance claim
+  follows from those component tests.
 - `encoder_errors` and `encoder_init_errors` have no trigger in tests: the
   pipeline cannot feed a wrong length and Opus construction does not fail in
   practice; tests only assert they stay zero.

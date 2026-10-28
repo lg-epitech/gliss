@@ -1,11 +1,8 @@
 //! On-demand VM sound, independent of the video ACK window.
 //! Both raw and encoded queues discard stale sound instead of delaying the desktop.
 //!
-//! Candidate replacement for `crates/gliss-server/src/audio.rs` (research
-//! preparation, not promoted): adds a typed, validated 20/40 ms packet-duration
-//! policy, per-encoder frozen frame/PCM sizing, an explicit opt-in encode
-//! configuration and cumulative native counters. Every pre-existing public entry
-//! point keeps its signature and its 20 ms default behavior.
+//! The operator selects 20 ms (default) or 40 ms before source construction.
+//! Packet duration never changes the 100 ms ingress-age budget.
 use std::{
     str::FromStr,
     sync::{
@@ -17,12 +14,12 @@ use std::{
 
 use anyhow::{Context, Result, bail, ensure};
 use gliss_rfb::audio::{CHANNELS, Event, SAMPLE_RATE};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, watch};
 
 /// Frames per packet under the default (20 ms) policy; retained for callers.
-pub const FRAMES: u32 = PacketDuration::DEFAULT.frames();
+pub const FRAMES: u32 = 960;
 /// Fixed freshness budget for raw fragments, partial packets and the writer.
 /// The packet-duration policy never changes it.
 pub const MAX_AGE: Duration = Duration::from_millis(100);
@@ -53,7 +50,7 @@ impl PacketDuration {
     /// Frames (stereo sample pairs) per packet at `SAMPLE_RATE`.
     pub const fn frames(self) -> u32 {
         match self {
-            Self::Ms20 => 960,
+            Self::Ms20 => FRAMES,
             Self::Ms40 => 1920,
         }
     }
@@ -80,10 +77,16 @@ impl FromStr for PacketDuration {
     /// sign, leading zero or unit suffix.
     fn from_str(text: &str) -> Result<Self> {
         match text {
-            "20" => Ok(Self::Ms20),
-            "40" => Ok(Self::Ms40),
+            "20" => Self::from_millis(20),
+            "40" => Self::from_millis(40),
             other => bail!("audio packet duration must be exactly \"20\" or \"40\", not {other:?}"),
         }
+    }
+}
+
+impl std::fmt::Display for PacketDuration {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.millis().fmt(f)
     }
 }
 
@@ -241,7 +244,7 @@ pub struct Counters {
 }
 
 /// Plain copy of [`Counters`] taken field by field (see the coherence note).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct CountersSnapshot {
     /// Raw `Event::Data` messages discarded on arrival because their ingress
     /// instant was older than `MAX_AGE`, and their stereo s16le byte total.
@@ -274,6 +277,20 @@ pub struct CountersSnapshot {
     /// Encoded broadcast lag notifications and messages the writer missed.
     pub writer_lag_events: u64,
     pub writer_lag_messages: u64,
+}
+
+/// Admission immediately before the WebSocket send starts. Muted or previous
+/// generations are excluded before the age check, so they cannot inflate age
+/// discard counters. This does not bound a write already in progress.
+pub fn admit_for_write(packet: &Packet, request: Request, counters: &Counters) -> bool {
+    if request.codec.is_none() || request.generation != packet.generation {
+        return false;
+    }
+    if packet.received.elapsed() > MAX_AGE {
+        counters.record_writer_stale_packet(packet.bytes.len());
+        return false;
+    }
+    true
 }
 
 impl Counters {
@@ -471,6 +488,7 @@ impl Encoder {
 
 /// Historical entry point: 20 ms packets, counters unobserved.
 /// A lagging source or writer drops sound; neither can block capture or input.
+#[cfg(test)]
 pub async fn encode(
     raw: broadcast::Receiver<Event>,
     requests: watch::Receiver<Request>,
@@ -1377,6 +1395,48 @@ mod tests {
         assert_eq!(config.packet_duration, PacketDuration::Ms40);
         assert!(Arc::ptr_eq(&config.counters, &config.clone().counters));
         assert_eq!(config.counters.snapshot(), CountersSnapshot::default());
+    }
+
+    #[test]
+    fn writer_admission_counts_only_current_requested_packets_rejected_for_age() {
+        let counters = Counters::default();
+        let requested = Request {
+            codec: Some(Codec::Opus),
+            generation: 2,
+        };
+        let mut packet = Packet {
+            generation: 2,
+            received: Instant::now() - MAX_AGE - Duration::from_millis(1),
+            bytes: vec![0; 123].into(),
+        };
+        assert!(!admit_for_write(
+            &packet,
+            Request {
+                codec: None,
+                generation: 2
+            },
+            &counters
+        ));
+        assert!(!admit_for_write(
+            &packet,
+            Request {
+                generation: 3,
+                ..requested
+            },
+            &counters
+        ));
+        assert_eq!(counters.snapshot(), CountersSnapshot::default());
+        assert!(!admit_for_write(&packet, requested, &counters));
+        packet.received = Instant::now();
+        assert!(admit_for_write(&packet, requested, &counters));
+        assert_eq!(
+            counters.snapshot(),
+            CountersSnapshot {
+                writer_stale_packets: 1,
+                writer_stale_bytes: 123,
+                ..CountersSnapshot::default()
+            }
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
