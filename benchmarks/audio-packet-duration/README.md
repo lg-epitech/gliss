@@ -27,7 +27,7 @@ changing the default or the browser jitter buffer.
   20 ms, and **4 and 4 events** at 40 ms. That counter includes queue resets
   and discards; it is not a count of lost packets or proof of audible glitches.
   Its branch of origin was not retained. Sampled pending decodes reached at
-  most two, and queued playback reached 178–188 ms. Intervening peaks remain
+  most two, and queued playback reached 177–188 ms. Intervening peaks remain
   unknown.
 - Native stale, partial-reset, lag and encoder-error counters showed no
   increments between the first and last retained diagnostics. Those spans
