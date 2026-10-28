@@ -4,10 +4,13 @@ import gzip
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "benchmarks"))
+from source_snapshot import source_bytes
 
 
 def require(condition, message):
@@ -52,7 +55,7 @@ def main():
         require(data["guest_cpu"] == 19 and data["native_browser_cpu"] == 0, "CPU placement changed")
         require(len(data["positions"]) == len(expected) == 12, "Positions missing")
         for source, pinned in data["source_pins"].items():
-            require(digest((ROOT / source).read_bytes()) == pinned, f"Benchmark source changed: {source}")
+            require(digest(source_bytes(source)) == pinned, f"Benchmark source changed: {source}")
         for slot, (position, treatment) in enumerate(zip(data["positions"], expected), 1):
             require(position["slot"] == slot, "Position order changed")
             require((position["profile"], position["mode"]) == treatment, "Treatment changed")
@@ -124,7 +127,7 @@ def main():
     for row in observation["result"]["rounded"]:
         require(row["actual"] - row["expected"] == row["delta"] == -1, "Timestamp diagnostic changed")
     stereo = json.loads((HERE / "stereo-observations.json").read_text())
-    require(digest((ROOT / stereo["test"]).read_bytes()) == stereo["test_sha256"], "Stereo test changed")
+    require(digest(source_bytes(stereo["test"])) == stereo["test_sha256"], "Stereo test changed")
     require([run["build"] for run in stereo["runs"]] == ["freshness-first", "freshness-final"],
             "Stereo smoke history changed")
     for run in stereo["runs"]:

@@ -20,6 +20,7 @@ test('real guest serial markers reach actual stereo Web Audio output in both cod
     if (codec === 'pcm') await page.addInitScript(() => {window.AudioDecoder = undefined;});
     await loginPage(page, server);
     await page.waitForFunction(() => window.gliss.audio.available);
+    if (codec === 'pcm') await page.evaluate(() => {window.gliss.audio.codecs = ['pcm'];});
     await page.evaluate(() => {
       const button = document.createElement('button');button.id = 'marker-sound';button.textContent = 'Sound';
       button.onclick = () => {window.markerSound = window.gliss.setAudioEnabled(true);};document.body.append(button);

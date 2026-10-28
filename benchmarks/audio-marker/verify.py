@@ -3,10 +3,13 @@ import gzip
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "benchmarks"))
+from source_snapshot import source_bytes
 
 
 def require(value, message):
@@ -22,7 +25,7 @@ def main():
     require(digest(plan_bytes) == binding["plan_sha256"], "Mixer plan changed")
     plan = json.loads(plan_bytes)
     for name, expected in plan["source_pins"].items():
-        require(digest((ROOT / name).read_bytes()) == expected, f"Source changed: {name}")
+        require(digest(source_bytes(name)) == expected, f"Source changed: {name}")
     packed = (HERE / binding["file"]).read_bytes()
     require(digest(packed) == binding["compressed_sha256"], "Compressed observation changed")
     raw = gzip.decompress(packed)
@@ -80,7 +83,7 @@ def verify_latency(manifest, digest):
             "Latency plan/binary binding mismatch")
     require(data["cleanup_complete"] is True, "Guest cleanup unconfirmed")
     for name, expected in data["source_pins"].items():
-        require(digest((ROOT / name).read_bytes()) == expected, f"Latency source changed: {name}")
+        require(digest(source_bytes(name)) == expected, f"Latency source changed: {name}")
     expected = [(profile["name"], mode) for profile in plan["profiles"] for mode in plan["order"]]
     require(len(data["positions"]) == len(expected) == 8, "Latency positions missing")
     all_codes = []

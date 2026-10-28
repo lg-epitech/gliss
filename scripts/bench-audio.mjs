@@ -127,6 +127,8 @@ test('audio cost and control RTT: fixed muted/Opus/PCM positions', {timeout: 280
         });
         await loginPage(page, server, proxy?.url ?? server.url);
         await page.waitForFunction(() => window.gliss.audio.available);
+        // PCM is an explicit comparison arm, even when the peer offers ADPCM.
+        if (position.mode === 'pcm') await page.evaluate(() => {window.gliss.audio.codecs = ['pcm'];});
         if (position.mode !== 'off') {
           await page.evaluate(() => {
             const button = document.createElement('button');button.id = 'bench-sound';button.textContent = 'Sound';

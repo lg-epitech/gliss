@@ -75,6 +75,8 @@ test('guest marker latency: eight fixed Opus/PCM positions', {timeout: 150000}, 
         await loginPage(page, server);
         position.socket_policy = validateSocketPolicy(await page.evaluate(() => window.markerSocketPolicy), true);
         await page.waitForFunction(() => window.gliss.audio.available);
+        // PCM is an explicit comparison arm, even when the peer offers ADPCM.
+        if (position.mode === 'pcm') await page.evaluate(() => {window.gliss.audio.codecs = ['pcm'];});
         await page.evaluate(() => {
           const button = document.createElement('button');button.id = 'marker-sound';button.textContent = 'Sound';
           button.onclick = () => {window.markerSound = window.gliss.setAudioEnabled(true);};document.body.append(button);

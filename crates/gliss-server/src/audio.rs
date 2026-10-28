@@ -20,6 +20,8 @@ const PCM_BYTES: usize = FRAMES as usize * CHANNELS as usize * 2;
 pub enum Codec {
     Pcm,
     Opus,
+    #[serde(rename = "ima-adpcm")]
+    ImaAdpcm,
 }
 
 impl Codec {
@@ -27,6 +29,7 @@ impl Codec {
         match self {
             Self::Pcm => "pcm",
             Self::Opus => "opus",
+            Self::ImaAdpcm => "ima-adpcm",
         }
     }
 }
@@ -47,8 +50,8 @@ pub struct Status {
 
 impl Status {
     pub fn message(&self) -> Value {
-        let mut value =
-            json!({"type":"audio_status", "available":self.available, "enabled":self.enabled});
+        let mut value = json!({"type":"audio_status", "available":self.available, "enabled":self.enabled,
+                "codecs":["opus", "ima-adpcm", "pcm"]});
         if let Some(codec) = self.codec {
             value["codec"] = codec.name().into();
         }
@@ -140,6 +143,7 @@ pub async fn update_capture(
 struct Encoder {
     codec: Codec,
     opus: Option<opus::Encoder>,
+    adpcm: super::audio_adpcm::Encoder,
     pending: Vec<u8>,
     pending_received: Option<Instant>,
     sequence: u32,
@@ -162,6 +166,7 @@ impl Encoder {
         Ok(Self {
             codec,
             opus,
+            adpcm: super::audio_adpcm::Encoder::default(),
             pending: Vec::with_capacity(PCM_BYTES),
             pending_received: None,
             sequence: 0,
@@ -178,20 +183,32 @@ impl Encoder {
             pcm.len() == PCM_BYTES,
             "audio packet needs 20 ms of stereo s16le"
         );
-        let payload = if let Some(encoder) = &mut self.opus {
+        let payload = if self.codec != Codec::Pcm {
             let samples: Vec<i16> = pcm
                 .as_chunks::<2>()
                 .0
                 .iter()
                 .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
                 .collect();
-            encoder.encode_vec(&samples, 1275)?
+            if self.codec == Codec::ImaAdpcm {
+                self.adpcm.encode(&samples)?
+            } else {
+                self.opus
+                    .as_mut()
+                    .expect("Opus encoder")
+                    .encode_vec(&samples, 1275)?
+            }
         } else {
             pcm.to_vec()
         };
         let mut packet = Vec::with_capacity(20 + payload.len());
         packet.extend_from_slice(b"GLA1");
-        packet.extend_from_slice(&[u8::from(self.codec == Codec::Opus), CHANNELS, 0, 0]);
+        let wire_codec = match self.codec {
+            Codec::Pcm => 0,
+            Codec::Opus => 1,
+            Codec::ImaAdpcm => 2,
+        };
+        packet.extend_from_slice(&[wire_codec, CHANNELS, 0, 0]);
         packet.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
         packet.extend_from_slice(&self.sequence.to_le_bytes());
         packet.extend_from_slice(&FRAMES.to_le_bytes());
@@ -320,6 +337,41 @@ mod tests {
             "Opus: {} kbit/s including GLA1 headers; 2 s encode/decode took {:?}",
             bytes * 4 / 1000,
             started.elapsed()
+        );
+    }
+
+    #[test]
+    fn adpcm_is_advertised_and_framed_only_when_requested() {
+        assert_eq!(
+            Status::default().message()["codecs"],
+            json!(["opus", "ima-adpcm", "pcm"])
+        );
+        let (session, requests, _) = channel();
+        request(
+            &session.request,
+            json!({"enabled":true,"codec":"ima-adpcm"}),
+        )
+        .unwrap();
+        assert_eq!(requests.borrow().codec, Some(Codec::ImaAdpcm));
+        assert_eq!(requests.borrow().generation, 1);
+        assert!(
+            request(
+                &session.request,
+                json!({"enabled":true,"codec":"ima-adpcm-unknown"})
+            )
+            .is_err()
+        );
+        let mut encoder = Encoder::new(Codec::ImaAdpcm).unwrap();
+        let pcm = tone(0);
+        let packet = encoder.packet(&pcm).unwrap();
+        assert_eq!(packet.len(), 987);
+        assert_eq!(packet[4], 2);
+        assert_eq!(u32::from_le_bytes(packet[16..20].try_into().unwrap()), 960);
+        assert_eq!(
+            super::super::audio_adpcm::decode(&packet[20..], 960)
+                .unwrap()
+                .len(),
+            1920
         );
     }
 

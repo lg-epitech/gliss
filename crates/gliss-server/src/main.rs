@@ -1,4 +1,5 @@
 mod audio;
+mod audio_adpcm;
 mod benchmark_recorder;
 mod datagram;
 mod demo;
@@ -220,6 +221,11 @@ const WEB_ASSETS: &[(&str, &str, &str)] = &[
         "audio-player.js",
         "text/javascript",
         include_str!("../../../web/audio-player.js"),
+    ),
+    (
+        "audio-adpcm.js",
+        "text/javascript; charset=utf-8",
+        include_str!("../../../web/audio-adpcm.js"),
     ),
     (
         "decoder.js",

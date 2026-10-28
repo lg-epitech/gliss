@@ -145,6 +145,8 @@ test('audio kernel TCP scheduling: matched explicit false/true socket policy', {
         });
         await loginPage(page, server, proxy?.url ?? server.url);
         await page.waitForFunction(() => window.gliss.audio.available);
+        // PCM is an explicit comparison arm, even when the peer offers ADPCM.
+        if (position.mode === 'pcm') await page.evaluate(() => {window.gliss.audio.codecs = ['pcm'];});
         position.socket_policy = validateSocketPolicy(await page.evaluate(() => window.benchSocketPolicy), position.tcp_nodelay);
         if (position.mode !== 'off') {
           await page.evaluate(() => {

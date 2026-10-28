@@ -3,10 +3,13 @@ import gzip
 import hashlib
 import json
 import math
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
+sys.path.insert(0, str(ROOT / "benchmarks"))
+from source_snapshot import source_bytes
 
 
 def require(value, reason):
@@ -39,7 +42,7 @@ def main():
         require(data["cleanup_complete"] is True, "Cleanup unconfirmed")
         require(data["native_browser_cpu"] == 0 and data["guest_cpu"] == 19, "CPU placement changed")
         for source, expected in data["source_pins"].items():
-            require(sha((ROOT / source).read_bytes()) == expected, f"Source changed: {source}")
+            require(sha(source_bytes(source)) == expected, f"Source changed: {source}")
         expected = [(profile["name"], treatment) for profile in plan["profiles"] for treatment in plan["order"]]
         require(len(data["positions"]) == len(expected) == 24, "Positions missing")
         for slot, (position, (profile, treatment)) in enumerate(zip(data["positions"], expected), 1):

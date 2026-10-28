@@ -22,6 +22,7 @@ test('real QEMU HDA → VNC → Gliss → browser: stereo Opus/PCM, bounded play
     if (codec === 'pcm') await page.addInitScript(() => {window.AudioDecoder = undefined;});
     await loginPage(page, server);
     await page.waitForFunction(() => window.gliss.audio.available);
+    if (codec === 'pcm') await page.evaluate(() => {window.gliss.audio.codecs = ['pcm'];});
     await page.evaluate(() => {
       window.audioWire = {bytes: 0, frames: 0, packets: 0, first: null, last: null};
       window.gliss.socket.addEventListener('message', event => {
