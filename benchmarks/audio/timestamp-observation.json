@@ -1,0 +1,62 @@
+{
+  "schema": "gliss-audio-timestamp-observation-v1",
+  "test": "tests/audio-timestamp.test.mjs",
+  "test_sha256": "f8ab80b344e0a7495dc2fd653abe5a8a264f50816df6595055ded98290760751",
+  "chromium": "149.0.7827.55",
+  "result": {
+    "outputs": 320,
+    "rounded": [
+      {
+        "actual": 259999,
+        "expected": 260000,
+        "delta": -1
+      },
+      {
+        "actual": 519999,
+        "expected": 520000,
+        "delta": -1
+      },
+      {
+        "actual": 1039999,
+        "expected": 1040000,
+        "delta": -1
+      },
+      {
+        "actual": 2059999,
+        "expected": 2060000,
+        "delta": -1
+      },
+      {
+        "actual": 2079999,
+        "expected": 2080000,
+        "delta": -1
+      },
+      {
+        "actual": 4099999,
+        "expected": 4100000,
+        "delta": -1
+      },
+      {
+        "actual": 4119999,
+        "expected": 4120000,
+        "delta": -1
+      },
+      {
+        "actual": 4139999,
+        "expected": 4140000,
+        "delta": -1
+      },
+      {
+        "actual": 4159999,
+        "expected": 4160000,
+        "delta": -1
+      },
+      {
+        "actual": 4179999,
+        "expected": 4180000,
+        "delta": -1
+      }
+    ]
+  },
+  "qualification": "Browser encode/decode component on synthetic silent packets, not native-QEMU audio latency."
+}

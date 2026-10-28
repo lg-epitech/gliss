@@ -1,0 +1,29 @@
+{
+  "schema": "gliss-audio-performance-plan-v1",
+  "source": "Owned diskless QEMU HDA fixture; 440/880 Hz stereo tones; static VGA desktop.",
+  "codec": "h264",
+  "video_fps_cap": 30,
+  "video_bitrate_target": 2000000,
+  "video_in_flight_frames": 4,
+  "profiles": [
+    {"name": "loopback", "rttMs": 0, "mbps": null},
+    {"name": "limited", "rttMs": 80, "mbps": 1}
+  ],
+  "order": ["off", "opus", "pcm", "pcm", "opus", "off"],
+  "measurement_ms": 6000,
+  "warmup_ms": 1500,
+  "ping_interval_ms": 300,
+  "sample_interval_ms": 50,
+  "proxy_max_queued_bytes_per_direction": 1048576,
+  "positions": 12,
+  "nice": 19,
+  "native_browser_cpu": 0,
+  "guest_cpu": "Explicit distinct allowed CPU selected by root.",
+  "physical_gpu": false,
+  "memory_max_bytes": 3221225472,
+  "swap_max_bytes": 0,
+  "outer_limit_seconds": 300,
+  "whole_frame_fps": false,
+  "source_to_speaker_latency": false,
+  "qualification": "Local tone/static-desktop comparison and a bounded TCP byte-rate/delay model, without packet loss. Pings measure application-control RTT, not guest input or display response."
+}

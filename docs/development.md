@@ -118,6 +118,50 @@ stubs authentication/database lookups and VM discovery to target only its own
 disposable QEMU guest; it does not validate deployed credentials, networks or VM
 provisioning. VM-id access is entered through client navigation after hydration.
 
+## Audio performance study
+
+The [audio review](performance/audio.md) records the baseline, rejected candidate
+and corrected candidate. `python3 -B benchmarks/audio/verify.py` verifies their
+retained bytes and recomputes rates, CPU arithmetic, queues and control RTTs.
+
+The opt-in controller uses the same disposable guest as the audio smoke. It runs
+twelve fixed positions, with muted, Opus and forced PCM playback on loopback and
+a nominal 80 ms RTT / 1 Mbit/s TCP model. It needs the smoke dependencies plus
+`bubblewrap`, `iproute2`, `util-linux`, and a user systemd manager with memory
+accounting. It never attaches to Distribox or an existing guest.
+
+Build the executable first. Choose a fresh unit/output name and an allowed guest
+CPU distinct from CPU 0; the registered runs used CPU 19. The controller requires
+CPU 0 for itself, the browser and the native server, nice 19, and a private device
+namespace. This launch bounds the whole process group and leaves an exclusive
+JSON result in the checkout:
+
+```sh
+export GLISS_BINARY="$PWD/target/release/gliss-server"
+export AUDIO_RUN=audio-study-1
+export AUDIO_GUEST_CPU=19
+systemd-run --user --pipe --wait --collect --unit "$AUDIO_RUN" \
+  --property Nice=19 --property MemoryMax=3221225472 \
+  --property MemorySwapMax=0 --property TasksMax=256 \
+  --property RuntimeMaxSec=300 --property TimeoutStopSec=5s \
+  --property KillMode=control-group --working-directory="$PWD" \
+  --setenv="GLISS_BINARY=$GLISS_BINARY" \
+  /usr/bin/unshare --user --map-root-user --net /bin/sh -c '
+    set -eu
+    ip link set lo up
+    exec bwrap --bind / / --dev /dev --proc /proc \
+      --dev-bind /dev/kvm /dev/kvm taskset -c 0 \
+      node scripts/bench-audio.mjs --output "$1" --label "$2" --guest-cpu "$3"
+  ' gliss-audio-study "$PWD/$AUDIO_RUN.json" "$AUDIO_RUN" "$AUDIO_GUEST_CPU"
+```
+
+Keep the release and candidate outputs separately. Results include original
+missed probes and sampled queue state. They measure application-control RTT and
+local CPU/buffering, not source-to-speaker latency, music quality or motion FPS.
+The two counter types use their own measured windows; browser CPU uses stable
+process identities visible at both endpoints. Do not report incomplete probe
+sets as an overall p95 or compare missing baseline counters as measured zeroes.
+
 ## Releasing
 
 `pyproject.toml` packages `gliss-server` as a binary-only Python wheel with [maturin](https://www.maturin.rs/), so Python projects can depend on it without a Rust toolchain. Build one locally with:

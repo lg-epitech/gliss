@@ -53,6 +53,7 @@ An earlier moving-desktop cohort on a kernel netem link (20 ms delay, 5 ms jitte
 
 ## Data and reproduction
 
+- [Audio performance](performance/audio.md) compares the audio release with two freshness candidates across 36 real-QEMU browser positions. It includes CPU cost, Opus/PCM bandwidth, control contention on a 1 Mbit/s link, and the retained rejected candidate.
 - [`benchmarks/reference.json`](../benchmarks/reference.json) holds the terminal and kernel-loss measurements. `python3 benchmarks/verify.py` recomputes the terminal table and exclusion counts from it.
 - [`benchmarks/motion/`](../benchmarks/motion/) holds the per-run Gliss and WebRTC moving-desktop results.
 - [`benchmarks/component-smoke.json`](../benchmarks/component-smoke.json) is a deterministic codec component run: roundtrips, bytes and CPU on synthetic frames, with no network or browser. Regenerate it with `cargo run --locked --release -p gliss-codec --bin codec-bench -- --repetitions 3 --output output.json`.

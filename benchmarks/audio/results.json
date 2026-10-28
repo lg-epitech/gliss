@@ -1,0 +1,97 @@
+{
+  "schema": "gliss-audio-performance-public-v1",
+  "date": "2026-10-28",
+  "plan": "plan.json",
+  "environment": {
+    "cpu": "Intel Core i5-13600KF",
+    "os": "Linux x86_64",
+    "chromium": "149.0.7827.55",
+    "node": "24.10.0",
+    "python": "3.14.7",
+    "rust": "1.98.0",
+    "native_browser_controller_cpu": 0,
+    "guest_cpu": 19,
+    "nice": 19,
+    "memory_max_bytes": 3221225472,
+    "swap_max_bytes": 0,
+    "tasks_max": 256,
+    "supervision": "Separate 300-second transient user service per cohort; control-group cleanup",
+    "devices": "Fresh user/network namespace and private /dev; KVM exposed, physical GPU devices absent"
+  },
+  "qualifications": [
+    "Three sequential cohorts, two repetitions per mode and network; shared host and short windows.",
+    "Each compressed file retains the complete original JSON bytes, including all samples and missed pings.",
+    "Audio bytes include GLA1 headers, excluding WebSocket/TCP/IP overhead. Proxy bytes cover the entire session, including warmup.",
+    "Browser CPU covers the stable CDP process endpoint intersection; it is not decoder-only cost. Native/guest CPU windows are measured separately.",
+    "Decoder trace uses exact timestamps and excludes unmatched outputs; it is not a complete decoder latency distribution.",
+    "Sampled playback and pending-output maxima can miss peaks between 50 ms observations.",
+    "There is no source-to-speaker, moving-desktop, guest-input-response, real-WAN or music-quality measurement.",
+    "Source commits identify native and embedded browser code; the same separately pinned benchmark sources were used for all three builds. Binary hashes identify measured files, not reproducible-build guarantees.",
+    "The released baseline exposes no pendingDecodes counter; its recorded zero is a harness fallback, not an observation of hidden decoder work."
+  ],
+  "runs": [
+    {
+      "name": "baseline-alpha.4",
+      "source_commit": "d1e4187191e60a1e578f8c786247ecf0ab8e1e2d",
+      "assessment": "released baseline",
+      "file": "baseline-alpha.4.json.gz",
+      "compressed_bytes": 31908,
+      "compressed_sha256": "1ba08e6ad201e8d8ef8e2012b391b5f2402bf33b96b772f48448b91d37935749",
+      "original_bytes": 593634,
+      "original_sha256": "7b500636898a95ce6617f4a35d8aee2098a3eb94664d620af8063a3a7e087629",
+      "binary_sha256": "cd8f2e0297e590c8850f861126f38b83e852e33f7d55b156011efc273e1b4607",
+      "code_and_dependency_pins": {
+        "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+        "Cargo.toml": "340e665cbbcdd6049fe32dd8d891592e690b78251054d9e338a5adf245f5ee01",
+        "crates/gliss-server/Cargo.toml": "5e4beb66be12ca4749da21e2d23e0e3ec30a33e43e1ecdc499eaf54e94cdaa55",
+        "crates/gliss-server/src/audio.rs": "75777a385073d8aad29a796dfbfeb406ff7af4ed99db5fa090d85aa0613b9ca5",
+        "crates/gliss-server/src/main.rs": "e4b4a4fcc64b1d3940233d452fce96c7eb8619d2d713bd85ead8115390341415",
+        "crates/gliss-rfb/src/audio.rs": "1008da7fab60733ad91780a55dddc764d3226ff6c39b47e6539314bf708c1ee6",
+        "web/audio-player.js": "776b462db7ee2728892fd7a8989ea8f48bf483ee4d4430e6a84451248fb570fc",
+        "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+      }
+    },
+    {
+      "name": "freshness-first",
+      "source_commit": "43cc89be0289ed34c8913abf9e102eef021b4d2e",
+      "assessment": "rejected: exact timestamp matching causes false decoder resets",
+      "file": "freshness-first.json.gz",
+      "compressed_bytes": 32734,
+      "compressed_sha256": "01e4448855aefd39181742faa4783c21e0513800b4bd84fc644c1c4c28b81b1d",
+      "original_bytes": 640250,
+      "original_sha256": "5137a52384b417f7ebdd05fbb4a05276b20ab5b9e25218a1ec984ad92e35acbc",
+      "binary_sha256": "f30598b6585a8a40969444b2515a2ad418a1b683e6d5b1ee6b965eee8497933f",
+      "code_and_dependency_pins": {
+        "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+        "Cargo.toml": "340e665cbbcdd6049fe32dd8d891592e690b78251054d9e338a5adf245f5ee01",
+        "crates/gliss-server/Cargo.toml": "5e4beb66be12ca4749da21e2d23e0e3ec30a33e43e1ecdc499eaf54e94cdaa55",
+        "crates/gliss-server/src/audio.rs": "f5c768b3aaee1e097f5c8635038377c16e2db6a7a1b41ea29f940131994c2d6c",
+        "crates/gliss-server/src/main.rs": "e4b4a4fcc64b1d3940233d452fce96c7eb8619d2d713bd85ead8115390341415",
+        "crates/gliss-rfb/src/audio.rs": "1008da7fab60733ad91780a55dddc764d3226ff6c39b47e6539314bf708c1ee6",
+        "web/audio-player.js": "c7f6558125993cad8ab421c1236642032239621257cb92082ce19ce999cc11ff",
+        "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+      }
+    },
+    {
+      "name": "freshness-final",
+      "source_commit": "44d78048b1bd7c4fd5d3256fe829ec948cf5bc18",
+      "assessment": "selected for this branch: accepts measured one-microsecond timestamp rounding",
+      "file": "freshness-final.json.gz",
+      "compressed_bytes": 32383,
+      "compressed_sha256": "16a0038a2162ff3119751b59e84dbaf4832464c6bfdd3b756f762ea88cb9f03f",
+      "original_bytes": 641253,
+      "original_sha256": "e3ef2d097c821ed5e045132e37498f155b2f84d0e0f97032c61c1265f37effb3",
+      "binary_sha256": "0ff16eaa42be2dd31ece1b4243830a6f037c38f5ef4d795f2b27d26716a80c11",
+      "code_and_dependency_pins": {
+        "Cargo.lock": "c880b868c8de56eeeb335dea4cb9ee1bedcd8dedc96e4ae56548e2abdea8bc4b",
+        "Cargo.toml": "340e665cbbcdd6049fe32dd8d891592e690b78251054d9e338a5adf245f5ee01",
+        "crates/gliss-server/Cargo.toml": "5e4beb66be12ca4749da21e2d23e0e3ec30a33e43e1ecdc499eaf54e94cdaa55",
+        "crates/gliss-server/src/audio.rs": "f5c768b3aaee1e097f5c8635038377c16e2db6a7a1b41ea29f940131994c2d6c",
+        "crates/gliss-server/src/main.rs": "e4b4a4fcc64b1d3940233d452fce96c7eb8619d2d713bd85ead8115390341415",
+        "crates/gliss-rfb/src/audio.rs": "1008da7fab60733ad91780a55dddc764d3226ff6c39b47e6539314bf708c1ee6",
+        "web/audio-player.js": "8fdc8a692e5a1edcc3db4f9223f651ecf00bb69ba954720a018ee9c63a9dfd1a",
+        "package-lock.json": "99ef99b2560f8aa84760ced510640db9d1a06458d6a9c6148288bf0937ddfd1e"
+      }
+    }
+  ]
+}

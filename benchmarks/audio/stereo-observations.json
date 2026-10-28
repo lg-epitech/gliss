@@ -1,0 +1,164 @@
+{
+  "schema": "gliss-qemu-audio-stereo-observations-v1",
+  "test": "scripts/test-qemu-audio.mjs",
+  "test_sha256": "cc1317f6619fee8e6376d6e6a236a3e42cf55ec554a43356eb92534efcd676b9",
+  "qualification": "Tone frequency/RMS observed at the browser Web Audio output, not a physical speaker or end-to-end timing measurement. Both original smoke tests passed their existing thresholds.",
+  "runs": [
+    {
+      "build": "freshness-first",
+      "original_log_sha256": "73712c91645dd847e24cecc6515b99b0c4f572b637f27299163dfe3bc2835b8f",
+      "observations": [
+        {
+          "codec": "opus",
+          "bitrate": 105036,
+          "wire": {
+            "bytes": 39651,
+            "frames": 144960,
+            "packets": 151,
+            "first": 337.4000000357628,
+            "last": 3317
+          },
+          "player": {
+            "available": true,
+            "enabled": true,
+            "codec": "opus",
+            "contextState": "running",
+            "sources": 4,
+            "queuedSeconds": 0.07333333333333414,
+            "decodeQueue": 0,
+            "pendingDecodes": 5,
+            "received": 151,
+            "scheduled": 146,
+            "dropped": 5
+          },
+          "signal": [
+            {
+              "rms": 0.2601884637656674,
+              "hz": 433.59375
+            },
+            {
+              "rms": 0.17281190077768852,
+              "hz": 878.90625
+            }
+          ],
+          "videoFrames": 9,
+          "videoErrors": 0
+        },
+        {
+          "codec": "pcm",
+          "bitrate": 1544000,
+          "wire": {
+            "bytes": 582860,
+            "frames": 144960,
+            "packets": 151,
+            "first": 191.19999998807907,
+            "last": 3176.300000011921
+          },
+          "player": {
+            "available": true,
+            "enabled": true,
+            "codec": "pcm",
+            "contextState": "running",
+            "sources": 5,
+            "queuedSeconds": 0.09333333333333549,
+            "decodeQueue": 0,
+            "pendingDecodes": 0,
+            "received": 151,
+            "scheduled": 151,
+            "dropped": 0
+          },
+          "signal": [
+            {
+              "rms": 0.25891437301495007,
+              "hz": 445.3125
+            },
+            {
+              "rms": 0.17215975470511127,
+              "hz": 878.90625
+            }
+          ],
+          "videoFrames": 10,
+          "videoErrors": 0
+        }
+      ]
+    },
+    {
+      "build": "freshness-final",
+      "original_log_sha256": "84365dde4056a29525f7c2508b8737991a10a8819d50d023f463f79dc02285ef",
+      "observations": [
+        {
+          "codec": "opus",
+          "bitrate": 105036,
+          "wire": {
+            "bytes": 39651,
+            "frames": 144960,
+            "packets": 151,
+            "first": 303.60000002384186,
+            "last": 3291.5
+          },
+          "player": {
+            "available": true,
+            "enabled": true,
+            "codec": "opus",
+            "contextState": "running",
+            "sources": 5,
+            "queuedSeconds": 0.09333333333333593,
+            "decodeQueue": 0,
+            "pendingDecodes": 0,
+            "received": 151,
+            "scheduled": 151,
+            "dropped": 0
+          },
+          "signal": [
+            {
+              "rms": 0.26060687724731224,
+              "hz": 433.59375
+            },
+            {
+              "rms": 0.1723272221901879,
+              "hz": 878.90625
+            }
+          ],
+          "videoFrames": 9,
+          "videoErrors": 0
+        },
+        {
+          "codec": "pcm",
+          "bitrate": 1544000,
+          "wire": {
+            "bytes": 582860,
+            "frames": 144960,
+            "packets": 151,
+            "first": 190.9000000357628,
+            "last": 3171
+          },
+          "player": {
+            "available": true,
+            "enabled": true,
+            "codec": "pcm",
+            "contextState": "running",
+            "sources": 4,
+            "queuedSeconds": 0.07200000000000228,
+            "decodeQueue": 0,
+            "pendingDecodes": 0,
+            "received": 151,
+            "scheduled": 151,
+            "dropped": 0
+          },
+          "signal": [
+            {
+              "rms": 0.25863677175374317,
+              "hz": 433.59375
+            },
+            {
+              "rms": 0.1721414326362934,
+              "hz": 878.90625
+            }
+          ],
+          "videoFrames": 10,
+          "videoErrors": 0
+        }
+      ]
+    }
+  ]
+}
