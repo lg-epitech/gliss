@@ -7,12 +7,14 @@ const keysyms = {Backspace:0xff08,Tab:0xff09,Enter:0xff0d,Escape:0xff1b,Delete:0
 for(let n=1;n<=24;n++)keysyms[`F${n}`]=0xffbd+n;
 
 export class GlissClient {
-  constructor(canvas, onStatus=()=>{}, onEvent=()=>{}, {url}={}) {
+  constructor(canvas, onStatus=()=>{}, onEvent=()=>{}, {url,videoPresentation='direct'}={}) {
+    if(!['direct','rgba'].includes(videoPresentation))throw new Error('Invalid video presentation policy');
     this.canvas=canvas; this.url=url; this.listeners=new AbortController(); this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new Decoder(); this.onStatus=onStatus; this.onEvent=onEvent;
     this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
     this.renderStrategy='full';this.codec=null;
+    this.videoPresentation=videoPresentation;this.rgbaPresentation=null;
     this.profiler=null;this.profilingStart=null;
     this.audio=new AudioPlayer(state=>{
       if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
@@ -23,6 +25,12 @@ export class GlissClient {
   async connect() {
     this.disconnect(); this.decoder=new Decoder(); this.chain=Promise.resolve();
     let decoder=this.decoder;const epoch=++this.epoch;
+    let rgba;
+    if(this.videoPresentation==='rgba'){
+      const {RgbaVideoPresentation}=await import('./video-presentation.js');
+      if(epoch!==this.epoch)return;
+      rgba=new RgbaVideoPresentation();this.rgbaPresentation=rgba;
+    }
     let socket;
     if(!this.url&&location.pathname==='/datagram'){
       try{
@@ -39,6 +47,7 @@ export class GlissClient {
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
       this.profilingStart=null;this.profiler?.stop('disconnect');
+      rgba?.reset();if(this.rgbaPresentation===rgba)this.rgbaPresentation=null;
       ++this.epoch;decoder.close?.();this.audioRequested=false;this.audio.dispose();this.keys.clear();this.buttons=0;
       this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
       this.onEvent({type:'close',code:event.code,reason:event.reason});
@@ -82,8 +91,9 @@ export class GlissClient {
       const started=performance.now();
       try {
         socket.beginVideoDecode?.(event.data,decoder);
-        const frame=await decoder.decode(event.data);
+        let frame=await decoder.decode(event.data);
         if(epoch!==this.epoch){frame.videoFrame?.close();return;}
+        if(rgba&&frame.videoFrame){frame=await rgba.prepare(frame);if(epoch!==this.epoch){frame.videoFrame?.close();return;}}
         const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
         if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
@@ -174,7 +184,7 @@ export class GlissClient {
     this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
-  disconnect(){this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  disconnect(){this.profilingStart=null;this.profiler?.stop('disconnect');this.rgbaPresentation?.reset();this.rgbaPresentation=null;this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
   dispose(){this.disconnect();this.listeners.abort();}
   bindInput(){

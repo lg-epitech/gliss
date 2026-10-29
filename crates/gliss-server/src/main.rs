@@ -263,6 +263,11 @@ struct App {
 /// Browser modules served at `/<path>`; `--export-web` writes the same files.
 const WEB_ASSETS: &[(&str, &str, &str)] = &[
     (
+        "video-presentation.js",
+        "text/javascript",
+        include_str!("../../../web/video-presentation.js"),
+    ),
+    (
         "profiling.js",
         "text/javascript",
         include_str!("../../../web/profiling.js"),
