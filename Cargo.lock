@@ -730,7 +730,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-codec"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "flate2",
@@ -743,14 +743,14 @@ dependencies = [
 
 [[package]]
 name = "gliss-core"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "gliss-dbus"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "gliss-core",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-hybrid"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "gliss-codec",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-hybrid-continuity"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "gliss-codec",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-hybrid-grid"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "gliss-codec",
@@ -820,7 +820,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-rfb"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "des",
@@ -831,7 +831,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-server"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "axum",
@@ -865,7 +865,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-tiles"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "flate2",
@@ -878,7 +878,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-video"
-version = "0.1.0-alpha.5"
+version = "0.1.0-alpha.6"
 dependencies = [
  "anyhow",
  "gliss-core",

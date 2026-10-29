@@ -68,6 +68,10 @@ it is unavailable for demo/shared D-Bus sources. It includes worker wait.
 Enqueue-to-ACK also overlaps browser processing and return traffic. Do not add
 native timing fields as if they were disjoint CPU costs.
 
+If stalls coincide with large keyframes, compare `--video-intra-period` settings
+while keeping the other controls fixed. A longer interval reduces recurring
+bursts; it does not shrink individual keyframes or remove their delivery delay.
+
 Browser and native clocks are separate. Control round trip includes outgoing
 and return traffic, relays and event-loop scheduling; half of it is not proven
 one-way latency. Relay residence and guest render time require separate evidence.

@@ -121,6 +121,18 @@ async function assertHealthy(page,pageErrors,{native=false}={}){
   return result;
 }
 
+test('scheduler h264: default keyframe interval decodes through the next periodic reference',{timeout:20000},async t=>{
+  const {page,pageErrors}=await fixture(t,{codec:'h264',fps:15});
+  const first=await page.evaluate(()=>window.schedulerTest.frames.find(frame=>frame.keyframe&&frame.width===320&&frame.height===240));
+  assert.ok(first,'resize must establish an independent reference');
+  await page.waitForFunction(sequence=>window.schedulerTest.frames.at(-1)?.sequence>=sequence+123,first.sequence,{timeout:15000,polling:50});
+  const result=await assertHealthy(page,pageErrors);
+  const next=result.frames.find(frame=>frame.keyframe&&frame.sequence>first.sequence);
+  assert.ok(next,'the next periodic reference must be painted');
+  assert.equal(next.sequence-first.sequence,120,'15 FPS defaults to 120 encoded frames per interval');
+  assert.ok(result.frames.some(frame=>frame.sequence===next.sequence+2),'dependent frames must continue after the reference');
+});
+
 for(const codec of ['adaptive','h264'])test(`scheduler ${codec}: delayed ACKs fill a bounded four-frame window with real pixels`,{timeout:20000},async t=>{
   const {page,pageErrors}=await fixture(t,{codec,inFlightFrames:4,streamStats:true});
   const full=await holdWindow(page,4);
