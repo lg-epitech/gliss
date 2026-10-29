@@ -145,7 +145,7 @@ pub async fn run(
             }
             _=interval.tick() => {
                 if dirty || workload!="static" {
-                    if tx.send(Some(Captured{frame:Arc::new(render(width,height,tick,id,workload,pointer)),forwarded_input_id:id,stage_generation:None})).is_err(){break;}
+                    if tx.send(Some(Captured{frame:Arc::new(render(width,height,tick,id,workload,pointer)),forwarded_input_id:id,stage_generation:None,published_at:None})).is_err(){break;}
                     dirty=false;tick=tick.wrapping_add(1);
                 }
             }

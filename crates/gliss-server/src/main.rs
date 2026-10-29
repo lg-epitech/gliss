@@ -3,6 +3,7 @@ mod audio_adpcm;
 mod benchmark_recorder;
 mod datagram;
 mod demo;
+mod profiling;
 #[cfg(unix)]
 mod rfb_fd;
 mod rfb_request;
@@ -261,6 +262,11 @@ struct App {
 
 /// Browser modules served at `/<path>`; `--export-web` writes the same files.
 const WEB_ASSETS: &[(&str, &str, &str)] = &[
+    (
+        "profiling.js",
+        "text/javascript",
+        include_str!("../../../web/profiling.js"),
+    ),
     (
         "viewer.js",
         "text/javascript",
@@ -2398,6 +2404,7 @@ struct Captured {
     frame: Arc<Frame>,
     forwarded_input_id: u32,
     stage_generation: Option<u64>,
+    published_at: Option<Instant>,
 }
 
 struct Source {
@@ -2514,6 +2521,7 @@ async fn source(app: &App) -> Result<Source> {
         let reader_trace = app.stage_trace.clone();
         let reader_actor = stage_trace::lease(&reader_trace)?;
         let display_input_only = app.args.datagram_display_input_only;
+        let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
             let _trace_actor = reader_actor;
             loop {
@@ -2533,7 +2541,7 @@ async fn source(app: &App) -> Result<Source> {
                             let forwarded_input_id = reader_id.load(Ordering::Acquire);
                             let stage_frame = reader_trace.as_ref().map(|_|frame.clone());
                             let stage_generation = reader_trace.as_ref().map(|trace|trace.publication_started(reader.traced_update_ordinal()));
-                            let sent = rfb_frames.send(Some(Captured { frame, forwarded_input_id,stage_generation }));
+                            let sent = rfb_frames.send(Some(Captured { frame, forwarded_input_id,stage_generation,published_at:profile_capture.then(Instant::now) }));
                             if let (Some(trace),Some(frame),Some(generation)) = (&reader_trace,stage_frame,stage_generation) {
                                 trace.publication_finished(generation,&frame,reader.traced_update_ordinal(),sent.is_ok());
                             }
@@ -2568,7 +2576,7 @@ async fn source(app: &App) -> Result<Source> {
                     if event.disabled { let _ = frame_tx.send(None); }
                     if let Some(frame) = event.frame {
                         capture_dimensions.store((u32::from(frame.width) << 16) | u32::from(frame.height), Ordering::Release);
-                        if frame_tx.send(Some(Captured { frame:Arc::new(frame), forwarded_input_id:capture_input.load(Ordering::Acquire),stage_generation:None })).is_err() { break; }
+                        if frame_tx.send(Some(Captured { frame:Arc::new(frame), forwarded_input_id:capture_input.load(Ordering::Acquire),stage_generation:None,published_at:diagnostics.then(Instant::now) })).is_err() { break; }
                     }
                     let next_cursor = if event.mouse.is_none_or(|(_,_,visible)| visible) { event.cursor } else { None };
                     if next_cursor != cursor {
@@ -2758,6 +2766,8 @@ struct Encoded {
     packet: Result<Option<Vec<u8>>>,
     work: Duration,
     worker_wait: Duration,
+    cpu_work: Option<Duration>,
+    source_age: Option<Duration>,
 }
 
 fn replace_latest(
@@ -3014,6 +3024,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             Some(result) = encoder_jobs.join_next(), if !encoder_jobs.is_empty() => {
                 let completed = result.context("encoder worker failed")??;
                 window.encoded(completed.work, completed.worker_wait);
+                window.profiled_encode(completed.cpu_work, completed.source_age);
                 encoder = Some(completed.encoder);
                 if completed.generation != window.generation() {
                     window.discarded_encode();
@@ -3051,6 +3062,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 }
                 let permits = app.encoders.clone();
                 let queued = Instant::now();
+                let profile_encode = app.args.stream_stats;
                 let encode_actor = stage_trace::lease(&app.stage_trace)?;
                 let blocking_actor = stage_trace::lease(&app.stage_trace)?;
                 encoder_jobs.spawn(async move {
@@ -3060,13 +3072,18 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                         let _trace_actor = blocking_actor;
                         let _permit = permit;
                         let started = Instant::now();
+                        let source_age = captured.published_at.map(|at| started.saturating_duration_since(at));
+                        let cpu_started = profile_encode.then(profiling::thread_cpu_time).flatten();
                         let packet = next_encoder.encode_optional(&captured.frame, packet_sequence, captured.forwarded_input_id);
-                        Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work: started.elapsed(), worker_wait: started.saturating_duration_since(queued) }
+                        let work = started.elapsed();
+                        let cpu_work = cpu_started.and_then(|at| profiling::thread_cpu_time()?.checked_sub(at));
+                        Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
                     }).await.context("blocking encoder worker failed")
                 });
             }
             _ = telemetry.tick(), if app.args.stream_stats => {
                 let mut stats = window.snapshot();
+                stats["process_cpu"] = profiling::process_cpu(app.started.elapsed());
                 stats["waiting_encoded_bytes"] = json!(waiting.as_ref().map_or(0, |packet| packet.bytes.len()));
                 stats["encoder_busy"] = json!(!encoder_jobs.is_empty());
                 stats["writer_jobs"] = json!(writer_jobs);

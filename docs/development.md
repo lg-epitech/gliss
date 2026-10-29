@@ -120,6 +120,8 @@ provisioning. VM-id access is entered through client navigation after hydration.
 
 ## Streaming controls
 
+For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).
+
 The WebSocket audio player prefers Opus, with advertised IMA ADPCM and PCM
 fallbacks. The [audio wire format](audio-wire.md) describes codec negotiation,
 payload bounds and freshness limits.
