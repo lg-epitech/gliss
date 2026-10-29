@@ -79,9 +79,9 @@ This initial recorder supports WebSocket desktops. Datagram and tile transports
 reject recording explicitly. Profiling does not change codec settings, buffers,
 frame pacing, ACK order or recovery policy.
 
-## Compare CPU presentation
+## Experimental CPU presentation
 
-An embedder can opt into a reusable RGBA buffer before constructing a client:
+CPU-only embedders can try a reusable RGBA buffer:
 
 ```js
 const client = new GlissClient(canvas, onStatus, onEvent, {
@@ -90,15 +90,11 @@ const client = new GlissClient(canvas, onStatus, onEvent, {
 });
 ```
 
-The default, `direct`, still draws the decoded VideoFrame directly. `rgba` copies
-software I420 frames into a tightly packed reusable buffer before rAF, then uses
-`putImageData`. Other formats and mismatched visible/display dimensions retain direct
-rendering. A rejected copy disables conversion until reconnect. Buffers are
-released on disconnect. Encoded media and encoder settings are unchanged.
+Direct rendering remains the default. RGBA copies software I420 frames before
+rAF; other formats and rejected copies fall back to direct rendering.
+It adds 8.3 MB per client at 1080p (33.2 MB at 4K), released on disconnect.
+`event.frame.pixels` is reused on the next frame; copy it if retaining pixels.
 
-Measure this on the target browser: GPU-backed direct drawing can be faster.
-Compare browser CPU as well as the sum of decoder and Canvas time, since RGBA
-conversion moves work into the decoder stage. A lower Canvas duration alone is
-not an improvement. Keep workload, dimensions and frame rate equal, alternate
-the two policies, and preserve failed runs. Receipt-to-Canvas timing still does
-not establish physical display latency.
+Use a separate browser profiler for CPU. Compare decoder plus Canvas time,
+since conversion moves work earlier. RGBA can be slower on GPU-backed canvases;
+a repeatable display-latency gain has not been established.
