@@ -42,6 +42,8 @@ struct Stats {
     reserved_frames_high_water: usize,
     reserved_bytes_high_water: usize,
     encode_ms: Timing,
+    encode_cpu_ms: Timing,
+    source_age_ms: Timing,
     encode_worker_wait_ms: Timing,
     write_ms: Timing,
     enqueue_to_ack_ms: Timing,
@@ -279,6 +281,14 @@ impl Window {
     }
     pub fn discarded_encode(&mut self) {
         self.stats.discarded_generation_encodes += 1;
+    }
+    pub fn profiled_encode(&mut self, cpu: Option<Duration>, source_age: Option<Duration>) {
+        if let Some(cpu) = cpu {
+            self.stats.encode_cpu_ms.observe(cpu);
+        }
+        if let Some(age) = source_age {
+            self.stats.source_age_ms.observe(age);
+        }
     }
     pub fn waited_for_bytes(&mut self, wait: Duration) {
         self.stats.byte_capacity_wait_ms.observe(wait);

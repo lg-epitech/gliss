@@ -250,6 +250,7 @@ impl Inner {
                 member.dimensions.store(dimensions, Ordering::Release);
                 member.frames.send_replace(Some(Captured {
                     stage_generation: None,
+                    published_at: None,
                     frame: frame.clone(),
                     forwarded_input_id: member.forwarded_id.load(),
                 }));
@@ -427,6 +428,7 @@ impl SharedCapture {
                 );
                 viewer.frames.send_replace(Some(Captured {
                     stage_generation: None,
+                    published_at: None,
                     frame: frame.clone(),
                     forwarded_input_id: viewer.forwarded_id.load(),
                 }));

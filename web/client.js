@@ -13,6 +13,7 @@ export class GlissClient {
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
     this.renderStrategy='full';this.codec=null;
+    this.profiler=null;this.profilingStart=null;
     this.audio=new AudioPlayer(state=>{
       if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
       this.onEvent(state);
@@ -37,6 +38,7 @@ export class GlissClient {
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
+      this.profilingStart=null;this.profiler?.stop('disconnect');
       ++this.epoch;decoder.close?.();this.audioRequested=false;this.audio.dispose();this.keys.clear();this.buttons=0;
       this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
       this.onEvent({type:'close',code:event.code,reason:event.reason});
@@ -45,9 +47,11 @@ export class GlissClient {
     socket.onmessage=event=>{if(epoch!==this.epoch)return;
       // Audio must keep running when video waits for a decoder or animation frame.
       if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
+      const profiling=this.profiler,receivedAt=profiling?performance.now():null;
+      if(profiling&&typeof event.data!=='string')profiling.received(event.data.byteLength,receivedAt);
       let textMessage,textError;
       if(typeof event.data==='string'){
-        try{textMessage=JSON.parse(event.data);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}if(textMessage?.type==='pong'){this.onEvent(textMessage);return;}}catch(error){textError=error;}
+        try{textMessage=JSON.parse(event.data);profiling?.control(textMessage,receivedAt);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}if(textMessage?.type==='pong'){this.onEvent(textMessage);return;}}catch(error){textError=error;}
       }
       this.chain=this.chain.then(async()=>{
       if(epoch!==this.epoch)return;
@@ -80,7 +84,7 @@ export class GlissClient {
         socket.beginVideoDecode?.(event.data,decoder);
         const frame=await decoder.decode(event.data);
         if(epoch!==this.epoch){frame.videoFrame?.close();return;}
-        const decodeMs=performance.now()-started;
+        const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
         if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
         await new Promise(resolve=>requestAnimationFrame(resolve));
@@ -108,6 +112,7 @@ export class GlissClient {
         if(pixelTime!==undefined){this.metrics.pixelEchoLatencyMs.push(presented-pixelTime);(this.metrics.pixelEchoEvents??=[]).push({id:echo,latencyMs:presented-pixelTime,presentedAtMs:presented});this.pixelInputs.delete(echo);}
         for(const array of [this.metrics.decodeMs,this.metrics.presentTimes,this.metrics.forwardedInputAgeMs,this.metrics.pixelEchoLatencyMs,this.metrics.pixelEchoEvents??[],this.metrics.paintMs??[]])if(array.length>10000)array.splice(0,array.length-10000);
         socket.send(JSON.stringify({type:'ack',sequence:frame.sequence}));
+        profiling?.frame({received:receivedAt,started,decoded,paintStarted,presented,bytes:frame.bytes});
         this.onEvent({type:'frame',frame,decodeMs});
       }catch(error){if(epoch!==this.epoch)return;this.metrics.errors++;decoder.reset();this.onStatus(`Display recovery: ${error.message}`);if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resync'}));}
     }).catch(error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}});};
@@ -146,13 +151,30 @@ export class GlissClient {
     if(!codec||epoch!==this.epoch||socket!==this.socket||socket.readyState!==WebSocket.OPEN)return;
     this.audioRequested=true;this.audioControl(true,codec);
   }
+  async startProfiling(options={}){
+    if(this.profiler||this.profilingStart)throw new Error('A profile is already recording');
+    const socket=this.socket,epoch=this.epoch;
+    if(socket?.readyState!==WebSocket.OPEN||!this.codec)throw new Error('Connect the desktop before profiling');
+    if(socket.transportStats||this.tileMedia)throw new Error('Profiling currently supports WebSocket desktops');
+    const token={};this.profilingStart=token;
+    try{
+      const {StreamProfiler}=await import('./profiling.js');
+      if(this.profilingStart!==token||this.epoch!==epoch||socket!==this.socket||socket.readyState!==WebSocket.OPEN)throw new Error('Profiling start cancelled');
+      const profiler=new StreamProfiler(options,{codec:this.codec,
+        sample:()=>({audio:this.audio.snapshot(),bufferedBytes:socket.bufferedAmount}),
+        sendProbe:id=>socket.send(JSON.stringify({type:'ping',id})),
+        onStop:()=>{if(this.profiler===profiler)this.profiler=null;}});
+      this.profiler=profiler;return profiler;
+    }finally{if(this.profilingStart===token)this.profilingStart=null;}
+  }
+  stopProfiling(){this.profilingStart=null;return this.profiler?.stop()??null;}
   readProbe(){return decodeProbe((x,y)=>this.ctx.getImageData(x,y,1,1).data);}
   release() {
     for(const keysym of this.keys.values())this.send({type:'key',keysym,down:false});
     this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
-  disconnect(){this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  disconnect(){this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
   dispose(){this.disconnect();this.listeners.abort();}
   bindInput(){
