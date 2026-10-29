@@ -151,7 +151,7 @@ struct Args {
     /// H.264 synthetic timestamp FPS; defaults to capture FPS.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=60))]
     video_timestamp_fps: Option<u32>,
-    /// H.264 periodic IDR interval in encoded frames; WebSocket default: eight times capture FPS.
+    /// H.264 periodic IDR interval in encoded frames; defaults to 8x capture FPS on WebSocket, 2x on datagram.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
     video_intra_period: Option<u32>,
     /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
@@ -1500,15 +1500,10 @@ fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
         );
         return Ok(None);
     }
+    // WebSocket clients request resync on decode errors instead of waiting for a periodic IDR.
     let default_intra_period = args
         .fps
-        .checked_mul(
-            if args.datagram_bind.is_none() && args.benchmark_capture_dir.is_none() {
-                8
-            } else {
-                2
-            },
-        )
+        .checked_mul(if args.datagram_bind.is_none() { 8 } else { 2 })
         .context("H.264 keyframe interval overflow")?;
     Ok(Some(VideoTiming::new(
         args.video_fps.unwrap_or(args.fps),
@@ -1887,7 +1882,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn websocket_h264_uses_eight_seconds_between_periodic_keyframes() {
+    fn websocket_h264_keyframe_interval_counts_eight_capture_fps_of_encoded_frames() {
         for fps in ["15", "30", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap().unwrap();
@@ -1933,16 +1928,21 @@ mod video_timing_option_tests {
             configured_video_timing(&datagram).unwrap().unwrap(),
             VideoTiming::new(30, 30, 60).unwrap()
         );
+    }
+
+    #[test]
+    fn reference_capture_does_not_change_video_timing() {
         let mut benchmark = args(&["--codec", "h264", "--fps", "30"]).unwrap();
+        let timing = configured_video_timing(&benchmark).unwrap().unwrap();
         benchmark.benchmark_capture_dir = Some("unused-capture-directory".into());
         assert_eq!(
             configured_video_timing(&benchmark).unwrap().unwrap(),
-            VideoTiming::new(30, 30, 60).unwrap()
+            timing
         );
     }
 
     #[test]
-    fn default_video_rates_and_metadata_remain_unchanged() {
+    fn default_rates_follow_capture_fps_and_metadata_stays_implicit() {
         for fps in ["15", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap().unwrap();

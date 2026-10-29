@@ -122,11 +122,11 @@ provisioning. VM-id access is entered through client navigation after hydration.
 
 For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).
 
-WebSocket H.264 inserts a periodic keyframe every eight times the capture FPS
-(240 encoded frames at 30 FPS), reducing recurring bandwidth bursts. New sessions,
-resyncs and resizes still force an immediate keyframe. `--video-intra-period 60`
-restores the previous interval at 30 FPS. Datagram, benchmark-capture and public
-encoder-library defaults are unchanged.
+WebSocket `--codec h264` defaults to a keyframe every `8 × --fps` encoded frames
+(240 at 30 FPS), reducing recurring bandwidth bursts. Idle desktops take longer
+to reach that count. New sessions, resyncs and resizes still force an immediate
+keyframe. `--video-intra-period 60` restores the previous interval at 30 FPS.
+Datagram and public encoder-library defaults are unchanged.
 
 The WebSocket audio player prefers Opus, with advertised IMA ADPCM and PCM
 fallbacks. The [audio wire format](audio-wire.md) describes codec negotiation,
