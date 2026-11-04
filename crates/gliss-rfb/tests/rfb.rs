@@ -9,6 +9,10 @@ use tokio::{
 const PIXEL_FORMAT: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0];
 
 async fn init(stream: &mut TcpStream, minor: u8, width: u16, height: u16) {
+    init_named(stream, minor, width, height, "test").await;
+}
+
+async fn init_named(stream: &mut TcpStream, minor: u8, width: u16, height: u16, name: &str) {
     stream
         .write_all(format!("RFB 003.{minor:03}\n").as_bytes())
         .await
@@ -25,16 +29,20 @@ async fn init(stream: &mut TcpStream, minor: u8, width: u16, height: u16) {
             stream.write_u32(0).await.unwrap();
         }
     }
-    init_after_security(stream, width, height).await;
+    init_after_security_named(stream, width, height, name).await;
 }
 
 async fn init_after_security(stream: &mut TcpStream, width: u16, height: u16) {
+    init_after_security_named(stream, width, height, "test").await;
+}
+
+async fn init_after_security_named(stream: &mut TcpStream, width: u16, height: u16, name: &str) {
     assert_eq!(stream.read_u8().await.unwrap(), 1, "shared connection");
     stream.write_u16(width).await.unwrap();
     stream.write_u16(height).await.unwrap();
     stream.write_all(&PIXEL_FORMAT).await.unwrap();
-    stream.write_u32(4).await.unwrap();
-    stream.write_all(b"test").await.unwrap();
+    stream.write_u32(name.len() as u32).await.unwrap();
+    stream.write_all(name.as_bytes()).await.unwrap();
     let mut format = [0; 20];
     stream.read_exact(&mut format).await.unwrap();
     assert_eq!(&format[..4], &[0, 0, 0, 0]);
@@ -624,7 +632,7 @@ async fn client_clipboard(stream: &mut TcpStream) -> (u32, Vec<u8>) {
 }
 
 #[tokio::test]
-async fn qemu_extended_clipboard_transfers_utf8_in_both_directions() {
+async fn standard_extended_clipboard_transfers_utf8_in_both_directions() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let peer = tokio::spawn(async move {
@@ -674,5 +682,45 @@ async fn qemu_extended_clipboard_transfers_utf8_in_both_directions() {
         .await
         .unwrap();
     assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn qemu_named_server_receives_browser_text_without_protocol_bytes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init_named(&mut stream, 8, 1, 1, "QEMU (guest)").await;
+        extended_clipboard(&mut stream, 0x1b00_0001, &0u32.to_be_bytes()).await;
+        client_clipboard(&mut stream).await;
+        stream.write_u8(2).await.unwrap();
+        assert_eq!(client_clipboard(&mut stream).await, (0x0800_0001, vec![]));
+        extended_clipboard(&mut stream, 0x0200_0001, &[]).await;
+        let (flags, compressed) = client_clipboard(&mut stream).await;
+        assert_eq!(flags, 0x1000_0001);
+        let mut payload = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::ZlibDecoder::new(&compressed[..]),
+            &mut payload,
+        )
+        .unwrap();
+        let expected = "browser: Ελληνικά\n🚀\n".as_bytes();
+        assert_eq!(
+            u32::from_be_bytes(payload[..4].try_into().unwrap()) as usize,
+            expected.len()
+        );
+        assert_eq!(&payload[4..], expected);
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    // The bell follows the capabilities, so the input below uses the extended format.
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
+    writer
+        .send_input(&Input::Clipboard {
+            id: 1,
+            text: "browser: Ελληνικά\r\n🚀\n".to_owned(),
+        })
+        .await
+        .unwrap();
     peer.await.unwrap();
 }
