@@ -118,6 +118,27 @@ stubs authentication/database lookups and VM discovery to target only its own
 disposable QEMU guest; it does not validate deployed credentials, networks or VM
 provisioning. VM-id access is entered through client navigation after hydration.
 
+## Real QEMU clipboard smoke
+
+This opt-in test boots a temporary diskless Linux guest with QEMU's `qemu-vdagent`
+device. A small test agent stands where `spice-vdagent` normally sits and speaks
+the same protocol, so the test compares the exact bytes the guest receives after
+browser input, Gliss and QEMU's VNC server. It also copies text from the guest to
+the browser. It runs outside the portable `npm test` suite and does not exercise
+`spice-vdagent` or guest applications.
+
+```sh
+export GLISS_BINARY="$PWD/target/release/gliss-server"
+node scripts/test-qemu-clipboard.mjs
+```
+
+The fixture requires an x86_64 Linux host with a readable kernel that has built-in
+virtio-pci and virtio-console, QEMU with `qemu-vdagent`, KVM access, GCC with a
+static libc and cpio. It uses the installed Playwright Chromium. Set
+`GLISS_QEMU_KERNEL` to select another kernel; `GLISS_QEMU_ACCEL=tcg` selects
+software emulation. It creates no disk images or libvirt definitions and removes
+its own temporary files and QEMU process.
+
 ## Streaming controls
 
 For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).

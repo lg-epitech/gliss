@@ -23,25 +23,41 @@ pub struct Clipboard {
     server_caps: u32,
     local: Option<Vec<u8>>,
     local_owned: bool,
+    qemu: bool,
 }
 
 impl Clipboard {
+    pub fn new(server_name: &str) -> Self {
+        Self {
+            // QEMU's ui/vnc.c always names itself "QEMU" or "QEMU (<guest>)".
+            qemu: server_name == "QEMU" || server_name.starts_with("QEMU ("),
+            ..Self::default()
+        }
+    }
+
     pub fn input(&mut self, text: &str) -> Result<Vec<u8>> {
         ensure!(
             text.len() <= MAX_CLIPBOARD,
             "clipboard exceeds {MAX_CLIPBOARD} bytes"
         );
+        let text = text.replace("\r\n", "\n");
         if self.server_caps & (TEXT | NOTIFY | PROVIDE) == TEXT | NOTIFY | PROVIDE {
-            let text = text.replace("\r\n", "\n").replace('\n', "\r\n");
+            // The protocol requires CRLF and a terminating NUL, and neatvnc drops
+            // text without it. QEMU instead hands these bytes to guest applications
+            // unchanged, so it gets plain text, matching the text it sends itself.
+            let text = if self.qemu {
+                text
+            } else {
+                text.replace('\n', "\r\n") + "\0"
+            };
             // QEMU's inflater caps the entire decompressed payload at 1 MiB.
             ensure!(
-                text.len() + 5 <= MAX_CLIPBOARD,
+                text.len() + 4 <= MAX_CLIPBOARD,
                 "encoded clipboard exceeds {MAX_CLIPBOARD} bytes"
             );
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&((text.len() + 1) as u32).to_be_bytes())?;
+            encoder.write_all(&(text.len() as u32).to_be_bytes())?;
             encoder.write_all(text.as_bytes())?;
-            encoder.write_all(&[0])?;
             let provide = message(PROVIDE | TEXT, &encoder.finish()?);
             ensure!(
                 provide.len() - 8 <= MAX_CLIPBOARD,
@@ -157,6 +173,8 @@ fn message(flags: u32, data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
 
     fn provide(data: &[u8]) -> Vec<u8> {
@@ -244,6 +262,71 @@ mod tests {
                 .as_deref(),
             Some("a")
         );
+    }
+
+    fn provided_text(clipboard: &mut Clipboard, text: &str) -> Vec<u8> {
+        clipboard
+            .receive(&[CLIENT_CAPS.to_be_bytes(), 0u32.to_be_bytes()].concat())
+            .unwrap();
+        clipboard.input(text).unwrap();
+        let reply = clipboard
+            .receive(&(REQUEST | TEXT).to_be_bytes())
+            .unwrap()
+            .0
+            .unwrap();
+        let mut payload = Vec::new();
+        flate2::read::ZlibDecoder::new(&reply[12..])
+            .read_to_end(&mut payload)
+            .unwrap();
+        let length = u32::from_be_bytes(payload[..4].try_into().unwrap()) as usize;
+        assert_eq!(length, payload.len() - 4);
+        payload.split_off(4)
+    }
+
+    #[test]
+    fn qemu_receives_text_without_crlf_or_terminator() {
+        for name in ["QEMU", "QEMU (guest)"] {
+            let mut clipboard = Clipboard::new(name);
+            assert_eq!(
+                provided_text(&mut clipboard, "é\r\n🚀\n"),
+                "é\n🚀\n".as_bytes()
+            );
+            assert_eq!(provided_text(&mut clipboard, ""), b"");
+        }
+    }
+
+    #[test]
+    fn other_servers_receive_the_specified_text_format() {
+        for name in ["", "test", "QEMUlator", "not QEMU (guest)", "qemu"] {
+            let mut clipboard = Clipboard::new(name);
+            assert_eq!(
+                provided_text(&mut clipboard, "é\r\n🚀\n"),
+                "é\r\n🚀\r\n\0".as_bytes()
+            );
+            assert_eq!(provided_text(&mut clipboard, ""), b"\0");
+        }
+    }
+
+    #[test]
+    fn base_clipboard_uses_lf_for_every_server() {
+        for name in ["QEMU", "test"] {
+            let mut clipboard = Clipboard::new(name);
+            assert_eq!(
+                clipboard.input("é\r\nb\n").unwrap(),
+                [6, 0, 0, 0, 0, 0, 0, 4, 0xe9, b'\n', b'b', b'\n']
+            );
+        }
+    }
+
+    #[test]
+    fn qemu_limit_counts_only_the_length_prefix() {
+        let mut clipboard = Clipboard::new("QEMU");
+        clipboard
+            .receive(&[CLIENT_CAPS.to_be_bytes(), 0u32.to_be_bytes()].concat())
+            .unwrap();
+        assert!(clipboard.input(&"a".repeat(MAX_CLIPBOARD - 4)).is_ok());
+        assert!(clipboard.input(&"a".repeat(MAX_CLIPBOARD - 3)).is_err());
+        assert!(clipboard.input(&"\n".repeat(MAX_CLIPBOARD - 4)).is_ok());
     }
 
     #[test]

@@ -11,7 +11,7 @@ class Reader {
   read(n){return new Promise((resolve,reject)=>{this.waiters.push({n,resolve,reject});this.flush();});}
 }
 
-export async function startRfb({extendedClipboard=false}={}){
+export async function startRfb({extendedClipboard=false,name='fixture'}={}){
   const inputs=[];const sockets=new Set();const waiters=[];
   const extended=(flags,data=Buffer.alloc(0))=>Buffer.concat([Buffer.from([3,0,0,0]),integer(-(4+data.length)),integer(flags),data]);
   let guestText='';
@@ -23,7 +23,7 @@ export async function startRfb({extendedClipboard=false}={}){
       socket.write('RFB 003.008\n');await reader.read(12);
       socket.write(Buffer.from([1,1]));await reader.read(1);socket.write(integer(0));await reader.read(1);
       const format=Buffer.from([32,24,0,1,0,255,0,255,0,255,0,8,16,0,0,0]);
-      socket.write(Buffer.concat([word(96),word(64),format,integer(7),Buffer.from('fixture')]));
+      socket.write(Buffer.concat([word(96),word(64),format,integer(Buffer.byteLength(name)),Buffer.from(name)]));
       let color=[12,34,56,0],pending=false,dirty=true;
       const update=()=>{if(!pending||!dirty)return;const pixels=Buffer.alloc(96*64*4);for(let i=0;i<pixels.length;i+=4)pixels.set(color,i);socket.write(Buffer.concat([Buffer.from([0,0]),word(1),word(0),word(0),word(96),word(64),integer(0),pixels]));pending=false;dirty=false;};
       while(!socket.destroyed){

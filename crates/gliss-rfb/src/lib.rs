@@ -327,9 +327,10 @@ where
     });
     let drain = ReaderDrainControl::new(drain_tx, read_task.abort_handle());
     let write_trace = trace.clone();
+    let clipboard = clipboard::Clipboard::new(&info.name);
     let write_task = tokio::spawn(async move {
         let _trace_actor = write_actor;
-        write_messages(write, command_rx, write_trace).await;
+        write_messages(write, clipboard, command_rx, write_trace).await;
     });
     Ok((
         RfbReader {
@@ -616,10 +617,10 @@ impl RfbWriter {
 
 async fn write_messages<W: AsyncWrite + Unpin>(
     mut write: W,
+    mut clipboard: clipboard::Clipboard,
     mut commands: mpsc::Receiver<WriteCommand>,
     trace: trace::Sink,
 ) {
-    let mut clipboard = clipboard::Clipboard::default();
     while let Some(command) = commands.recv().await {
         // Ordinal zero is reserved for internal clipboard protocol replies.
         let trace = if command.ordinal == 0 {
