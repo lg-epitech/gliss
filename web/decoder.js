@@ -66,6 +66,7 @@ export class Decoder {
     // Empty deltas keep the reference; later updates still copy before writing.
     const output = keyframe ? new Uint8ClampedArray(pixels * 4) : count ? previous.slice() : previous;
     const coverage = keyframe || count ? new Uint8Array(pixels) : null;
+    let solidOutput;
     let pos = 24, touched = 0;
     let left=width,top=height,right=0,bottom=0;
     for (let tile = 0; tile < count; tile++) {
@@ -122,10 +123,11 @@ export class Decoder {
       }
       if (codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
       if ((codec === 4||codec===7) && !previous) throw new Error('Keyframe contains a temporal tile');
-      const solidWord=codec===6?new Uint32Array(payload.slice().buffer)[0]:0;
+      const solidWord=codec===6?view.getUint32(pos-length,HOST_LITTLE_ENDIAN):0;
+      if(codec===6)solidOutput??=new Uint32Array(output.buffer);
       for (let row=0; row<h; row++) {
         const dest = ((y+row)*width+x)*4, source=row*w*4;
-        if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
+        if(codec===6)solidOutput.fill(solidWord,dest>>>2,(dest>>>2)+w);
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
         else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
         const begin=(y+row)*width+x,end=begin+w;
