@@ -66,7 +66,6 @@ export class Decoder {
     // Empty deltas keep the reference; later updates still copy before writing.
     const output = keyframe ? new Uint8ClampedArray(pixels * 4) : count ? previous.slice() : previous;
     const coverage = keyframe || count ? new Uint8Array(pixels) : null;
-    let paletteOutput;
     let pos = 24, touched = 0;
     let left=width,top=height,right=0,bottom=0;
     for (let tile = 0; tile < count; tile++) {
@@ -90,18 +89,15 @@ export class Decoder {
         if (body.length < 2) throw new Error('Truncated palette');
         const colors = body[0] | (body[1] << 8);
         if (!colors || colors > 256 || body.length !== 2+colors*4+w*h) throw new Error('Invalid palette size');
+        decoded = new Uint8Array(w*h*4);
         if(global&&(colors<2||colors>w*h))throw new Error('Invalid global palette');
         // Both word views use the host byte order, preserving RGBA on either
         // endian architecture without a subarray allocation for every pixel.
         const paletteBytes=body.slice(2,2+colors*4),palette=new Uint32Array(paletteBytes.buffer);
-        paletteOutput??=new Uint32Array(output.buffer);
-        const used=new Uint8Array(colors);let source=2+colors*4;
-        for(let row=0;row<h;row++){
-          let destination=(y+row)*width+x;
-          for(let col=0;col<w;col++){
-            const index=body[source++];if(index>=colors)throw new Error('Invalid palette index');
-            paletteOutput[destination++]=palette[index];used[index]=1;
-          }
+        const outputWords=new Uint32Array(decoded.buffer),used=new Uint8Array(colors);
+        for(let p=0;p<w*h;p++){
+          const index=body[2+colors*4+p];if(index>=colors)throw new Error('Invalid palette index');
+          outputWords[p]=palette[index];used[index]=1;
         }
         if(global&&used.includes(0))throw new Error('Unused global palette entry');
       } else if(codec===6){
@@ -124,14 +120,14 @@ export class Decoder {
         decoded = new Uint8Array(w*h*4);
         for (let row=0; row<h; row++) decoded.set(previous.subarray(((sy+row)*width+sx)*4, ((sy+row)*width+sx+w)*4), row*w*4);
       }
-      if (codec!==2&&codec!==3&&codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
+      if (codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
       if ((codec === 4||codec===7) && !previous) throw new Error('Keyframe contains a temporal tile');
       const solidWord=codec===6?new Uint32Array(payload.slice().buffer)[0]:0;
       for (let row=0; row<h; row++) {
         const dest = ((y+row)*width+x)*4, source=row*w*4;
         if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
-        else if(codec!==2&&codec!==3&&codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
+        else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
         const begin=(y+row)*width+x,end=begin+w;
         for(let p=begin;p<end;p++){if(coverage[p])throw new Error('Overlapping tiles');coverage[p]=1;}
       }
