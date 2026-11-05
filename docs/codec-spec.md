@@ -84,7 +84,7 @@ A delta has flags zero. Its dimensions match the last successfully decoded frame
 
 Duplicate, skipped or reordered deltas fail the sequence check. There is no frame reordering, retransmission or independent tile recovery in GLB1. Input IDs do not prove a causal input-to-pixel relationship.
 
-Both implementations commit their next reference only after a successful decode. Rust constructs a separate output frame; the browser also writes to a separate array before assigning its reference. Rejected packets leave the committed reference and sequence intact during ordinary sequential use. Browser callers must serialize asynchronous decode calls and avoid modifying returned pixel arrays, which alias its committed frame. No concurrent-call or caller-mutation isolation is provided.
+Both implementations commit their next reference only after a successful decode. Rust constructs a separate output frame. The browser writes changed frames to a separate array and can reuse unchanged pixels for empty deltas. Rejected packets leave the committed reference and sequence intact during ordinary sequential use. Browser callers must serialize asynchronous decode calls and avoid modifying returned pixel arrays, which alias its committed frame. No concurrent-call or caller-mutation isolation is provided.
 
 The current viewer resets its decoder after a decode failure and sends the control message `{"type":"resync"}`. The server resets its encoder once its media work drains, so the next encode is independent. Reset clears the encoder reference and sequence. Geometry changes and a nonconsecutive encode sequence also force a keyframe. Recovery requests and acknowledgements belong to the surrounding session protocol, not the GLB1 header.
 

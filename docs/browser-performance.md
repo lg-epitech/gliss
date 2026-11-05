@@ -148,3 +148,23 @@ taskset -c 0,2,4,6 node scripts/bench-lossless-browser.mjs \
 Omitting `--workload` retains the sparse and full-motion comparisons. The full
 client measurement has the CPU sampling and physical-presentation limits
 described above.
+
+The [full-client confirmation](../benchmarks/browser-empty-client-2026-11-05.json.gz)
+compares implementation `930b4ba2` with `168d0ed9` on the same CPU/browser setup.
+All 200 positions passed, covering 16,800 timed updates with matching Canvas
+pixels and ACK counts, and no exclusions. The archive includes every regular
+and global-format control, the longer XOR confirmation, and the private
+global-control harness and corpus needed to reproduce it.
+
+For empty updates, median stable-process CPU per 180 completed updates was
+390 → 65 ms at 1280×800 and 590 → 60 ms at 1920×1080, across four repetitions.
+The mixed sparse raw workload, which includes two empty updates per eight,
+used 155 → 125 ms and 245 → 210 ms per 60 updates, respectively. These are
+controlled workload results, not a general desktop CPU reduction estimate.
+
+Nonempty controls varied. An initially slower 1080p global-XOR median did not
+repeat in six longer counterbalanced pairs; both runs remain in the archive.
+This change establishes savings for empty updates without claiming a general
+full-frame speedup. Whole-canvas checks occurred before and after each timed
+run; the separate correctness suite checks individual native frames and damage
+composition.
