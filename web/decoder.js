@@ -66,7 +66,6 @@ export class Decoder {
     // Empty deltas keep the reference; later updates still copy before writing.
     const output = keyframe ? new Uint8ClampedArray(pixels * 4) : count ? previous.slice() : previous;
     const coverage = keyframe || count ? new Uint8Array(pixels) : null;
-    const coverageWords = coverage && new Uint32Array(coverage.buffer,0,pixels>>>2);
     let pos = 24, touched = 0;
     let left=width,top=height,right=0,bottom=0;
     for (let tile = 0; tile < count; tile++) {
@@ -129,16 +128,8 @@ export class Decoder {
         if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
         else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
-        let begin=(y+row)*width+x;const end=begin+w;
-        for(;begin<end&&(begin&3);begin++){if(coverage[begin])throw new Error('Overlapping tiles');coverage[begin]=1;}
-        // A nonzero word means at least one of these four pixels was covered.
-        const alignedEnd=end&~3;
-        for(;begin<alignedEnd;begin+=4){
-          const index=begin>>>2;
-          if(coverageWords[index])throw new Error('Overlapping tiles');
-          coverageWords[index]=0x01010101;
-        }
-        for(;begin<end;begin++){if(coverage[begin])throw new Error('Overlapping tiles');coverage[begin]=1;}
+        const begin=(y+row)*width+x,end=begin+w;
+        for(let p=begin;p<end;p++){if(coverage[p])throw new Error('Overlapping tiles');coverage[p]=1;}
       }
     }
     if (pos !== bytes.length || (keyframe && coverage.includes(0))) throw new Error('Incomplete frame');
