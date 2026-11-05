@@ -12,7 +12,7 @@ export class GlissClient {
     this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
-    this.renderStrategy='damage';this.needsFullPaint=false;this.codec=null;
+    this.renderStrategy='damage';this.needsFullPaint=false;this.codec=null;this.pendingPaint=null;
     this.profiler=null;this.profilingStart=null;
     this.audio=new AudioPlayer(state=>{
       if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
@@ -40,9 +40,10 @@ export class GlissClient {
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
+      ++this.epoch;this.pendingPaint?.();decoder.close?.();
+      this.keys.clear();this.buttons=0;this.pendingInputs.clear();this.pixelInputs.clear();
       this.profilingStart=null;this.profiler?.stop('disconnect');
-      ++this.epoch;decoder.close?.();this.audioRequested=false;this.audio.dispose();this.keys.clear();this.buttons=0;
-      this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
+      this.audioRequested=false;this.audio.dispose();this.onStatus('Desktop disconnected');
       this.onEvent({type:'close',code:event.code,reason:event.reason});
     };
     socket.onerror=()=>{if(epoch===this.epoch)this.onStatus('Connection failed');};
@@ -81,22 +82,33 @@ export class GlissClient {
         }
         this.onEvent(message);return;
       }
-      const started=performance.now();
+      const started=performance.now();let ownedVideoFrame=null;
       try {
         socket.beginVideoDecode?.(event.data,decoder);
         const frame=await decoder.decode(event.data);
-        if(epoch!==this.epoch){frame.videoFrame?.close();return;}
+        ownedVideoFrame=frame.videoFrame??null;
+        if(epoch!==this.epoch){return;}
         const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
         if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
-        await new Promise(resolve=>requestAnimationFrame(resolve));
-        if(epoch!==this.epoch){frame.videoFrame?.close();return;}
+        // Disconnect can release this wait while a hidden document suspends RAF.
+        await new Promise(resolve=>{
+          let cancel;
+          // An old callback can only clear its own cancellation slot.
+          const finish=()=>{if(this.pendingPaint===cancel)this.pendingPaint=null;resolve();};
+          const id=requestAnimationFrame(finish);
+          cancel=()=>{globalThis.cancelAnimationFrame?.(id);finish();};
+          this.pendingPaint=cancel;
+        });
+        if(epoch!==this.epoch){return;}
         const paintStarted=performance.now();
         if(socket.completeVideoDecode && !socket.completeVideoDecode(frame.sequence,true)){
-          frame.videoFrame?.close();return;
+          return;
         }
+        // Admission can synchronously close the transport while pumping recovery.
+        if(epoch!==this.epoch)return;
         if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
-        if(frame.videoFrame){try{this.ctx.drawImage(frame.videoFrame,0,0);}finally{frame.videoFrame.close();}}
+        if(frame.videoFrame)this.ctx.drawImage(frame.videoFrame,0,0);
         else if(this.renderStrategy==='damage'&&!this.needsFullPaint&&frame.damage!==undefined){
           const area=frame.damage;
           if(area){
@@ -105,6 +117,7 @@ export class GlissClient {
             else this.ctx.putImageData(image,0,0,area.x,area.y,area.width,area.height);
           }
         }else this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0);
+        ownedVideoFrame?.close();ownedVideoFrame=null;
         this.needsFullPaint=false;
         // This is CPU submission + requestAnimationFrame, not physical photon presentation.
         const presented=performance.now();
@@ -121,7 +134,13 @@ export class GlissClient {
         socket.send(JSON.stringify({type:'ack',sequence:frame.sequence}));
         profiling?.frame({received:receivedAt,started,decoded,paintStarted,presented,bytes:frame.bytes});
         this.onEvent({type:'frame',frame,decodeMs});
-      }catch(error){if(epoch!==this.epoch)return;this.metrics.errors++;decoder.reset();this.onStatus(`Display recovery: ${error.message}`);if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resync'}));}
+      }catch(error){
+        ownedVideoFrame?.close();ownedVideoFrame=null;
+        if(epoch!==this.epoch)return;
+        this.metrics.errors++;decoder.reset();
+        this.onStatus(`Display recovery: ${error.message}`);
+        if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resync'}));
+      }finally{ownedVideoFrame?.close();}
     }).catch(error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}});};
   }
   recordTilePaint(batch,epoch){
@@ -181,9 +200,14 @@ export class GlissClient {
     this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
-  disconnect(){this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;}
+  disconnect(){
+    ++this.epoch;this.pendingPaint?.();
+    this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;
+    this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();
+    this.audio.dispose();
+  }
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
-  dispose(){this.disconnect();this.listeners.abort();}
+  dispose(){try{this.disconnect();}finally{this.listeners.abort();}}
   bindInput(){
     const canvas=this.canvas,{signal}=this.listeners;
     const coordinates=e=>{const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-r.left)*canvas.width/r.width))),y:Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-r.top)*canvas.height/r.height)))};};
