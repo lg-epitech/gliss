@@ -65,7 +65,7 @@ export class Decoder {
     const previous = keyframe ? null : this.frame.pixels;
     // Empty deltas keep the reference; later updates still copy before writing.
     const output = keyframe ? new Uint8ClampedArray(pixels * 4) : count ? previous.slice() : previous;
-    const coverage = keyframe || count>1 ? new Uint8Array(pixels) : null;
+    const coverage = keyframe || count ? new Uint8Array(pixels) : null;
     let pos = 24, touched = 0;
     let left=width,top=height,right=0,bottom=0;
     for (let tile = 0; tile < count; tile++) {
@@ -129,7 +129,7 @@ export class Decoder {
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
         else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
         const begin=(y+row)*width+x,end=begin+w;
-        if(coverage)for(let p=begin;p<end;p++){if(coverage[p])throw new Error('Overlapping tiles');coverage[p]=1;}
+        for(let p=begin;p<end;p++){if(coverage[p])throw new Error('Overlapping tiles');coverage[p]=1;}
       }
     }
     if (pos !== bytes.length || (keyframe && coverage.includes(0))) throw new Error('Incomplete frame');
