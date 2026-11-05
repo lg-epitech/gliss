@@ -106,3 +106,45 @@ follow-up: native CPU-browser tests were positive, but it adds a framebuffer
 copy, retained memory and presentation API choices. It needs evaluation with
 GPU decoding and real guest captures before selecting a default. This proposal
 adds no codec mode, sender state, dependency or framebuffer cache.
+
+## Empty lossless updates
+
+Empty deltas now retain their unchanged pixel reference and skip the unused
+coverage bitmap. Updates that write pixels still copy before writing, so earlier
+returned frames stay unchanged. Header, sequence, compressed-envelope and
+trailing-body validation still run. Keyframes still require complete coverage.
+There is no quantization or wire-format change.
+
+The [hill-climb record](../benchmarks/browser-lossless-hill-climb-2026-11-05.json.gz)
+contains the frozen evaluator, raw logs and every trial. The session stopped at
+`WALL`: 11 experiments, one kept, ten discarded, including nine consecutive
+unsuccessful trials after the retained change. The configured ceiling was 25.
+The [evaluator source](https://github.com/lg-epitech/gliss/tree/0cb973ccf65c3da193803f25322a463e5ebf07db/.hill-climb)
+is also retained in the research branch.
+
+The primary score was the natural logarithm of geometric mean decode milliseconds
+over 24 equally weighted synthetic cases in CPU Chromium. Three samples were
+required for each decision. Gains had to exceed both `ln(1.03)` and three times
+either sample set's median absolute deviation. Baseline score was 1.90140;
+the accepted score was 1.27058, corresponding to 6.695 and 3.563 ms. Empty cases
+drive this aggregate; it is not an estimate of a desktop workload's CPU savings.
+Per-case samples remain in the archive because aggregate scores can hide
+regressions.
+
+Independent checks covered native wire/pixel fixtures, damage and Canvas
+composition, palette alpha, malformed compressed packets, reference atomicity,
+recovery and sequence wrap. Additional held-out checks ran 500 geometry cases
+and eight valid zlib variants with 32 malformed streams on both revisions.
+
+To measure the unchanged stream through the full client, including its
+animation-frame wait, Canvas and ACK path:
+
+```sh
+taskset -c 0,2,4,6 node scripts/bench-lossless-browser.mjs \
+  --baseline=168d0ed9 --codec=raw --workload=empty \
+  --frames=180 --repetitions=4 --output=/tmp/gliss-empty.json
+```
+
+Omitting `--workload` retains the sparse and full-motion comparisons. The full
+client measurement has the CPU sampling and physical-presentation limits
+described above.
