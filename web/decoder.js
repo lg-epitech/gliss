@@ -19,7 +19,6 @@ async function inflate(bytes, max) {
     await reader.cancel().catch(() => {});
     throw error;
   }
-  if (chunks.length === 1) return chunks[0];
   const output = new Uint8Array(size);
   let pos = 0;
   for (const chunk of chunks) { output.set(chunk, pos); pos += chunk.length; }
