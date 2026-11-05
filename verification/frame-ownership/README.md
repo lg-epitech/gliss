@@ -2,6 +2,7 @@
 
 Run `bash verification/frame-ownership/check.sh` with Lean 4.35.0 installed.
 `LEAN_BINARY` can name an explicit Lean executable. The project uses only Std.
+Run the source regression tests with `node --test tests/frame-ownership.test.mjs`.
 
 The model tracks one decoded frame through waiting, invalidation, painting,
 failure, close and ACK actions. It proves ownership conservation, terminal

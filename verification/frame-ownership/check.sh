@@ -18,10 +18,18 @@ import sys
 from pathlib import Path
 
 allowed = {'propext', 'Classical.choice', 'Quot.sound'}
+expected = {
+    'Presentation.all_traces_conserve', 'Presentation.terminal_exactly_one_close',
+    'Presentation.cancelled_never_paints', 'Presentation.ack_requires_painted_closed',
+    'Presentation.cancelled_trace_terminal', 'Presentation.late_callback_preserves_new',
+    'Presentation.finish_idempotent',
+}
 text = Path(sys.argv[1]).read_text()
 reports = re.findall(r"'([^']+)' (depends on axioms: \[([^\]]*)\]|does not depend on any axioms)", text)
-assert len(reports) == 7, 'Missing theorem audit'
+if len(reports) != len(expected) or {row[0] for row in reports} != expected:
+    raise SystemExit('Missing theorem audit')
 for name, _, dependencies in reports:
     actual = {value.strip() for value in dependencies.split(',') if value.strip()}
-    assert actual <= allowed, f'{name}: unexpected proof dependencies {actual - allowed}'
+    if actual - allowed:
+        raise SystemExit(f'{name}: unexpected proof dependencies {actual - allowed}')
 PY
