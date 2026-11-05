@@ -123,6 +123,13 @@ export class Decoder {
       if (codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
       if ((codec === 4||codec===7) && !previous) throw new Error('Keyframe contains a temporal tile');
       const solidWord=codec===6?new Uint32Array(payload.slice().buffer)[0]:0;
+      // Full-width ordinary tiles occupy one contiguous range in both arrays.
+      if(w===width&&(codec<=3||codec===5)){
+        const begin=y*width,end=begin+w*h,covered=coverage.subarray(begin,end);
+        if(covered.includes(1))throw new Error('Overlapping tiles');
+        covered.fill(1);output.set(decoded,begin*4);
+        continue;
+      }
       for (let row=0; row<h; row++) {
         const dest = ((y+row)*width+x)*4, source=row*w*4;
         if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
