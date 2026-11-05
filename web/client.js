@@ -40,9 +40,10 @@ export class GlissClient {
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
+      ++this.epoch;this.pendingPaint?.();decoder.close?.();
+      this.keys.clear();this.buttons=0;this.pendingInputs.clear();this.pixelInputs.clear();
       this.profilingStart=null;this.profiler?.stop('disconnect');
-      ++this.epoch;this.pendingPaint?.();decoder.close?.();this.audioRequested=false;this.audio.dispose();this.keys.clear();this.buttons=0;
-      this.pendingInputs.clear();this.pixelInputs.clear();this.onStatus('Desktop disconnected');
+      this.audioRequested=false;this.audio.dispose();this.onStatus('Desktop disconnected');
       this.onEvent({type:'close',code:event.code,reason:event.reason});
     };
     socket.onerror=()=>{if(epoch===this.epoch)this.onStatus('Connection failed');};
@@ -104,6 +105,8 @@ export class GlissClient {
         if(socket.completeVideoDecode && !socket.completeVideoDecode(frame.sequence,true)){
           return;
         }
+        // Admission can synchronously close the transport while pumping recovery.
+        if(epoch!==this.epoch)return;
         if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
         if(frame.videoFrame)this.ctx.drawImage(frame.videoFrame,0,0);
         else if(this.renderStrategy==='damage'&&!this.needsFullPaint&&frame.damage!==undefined){
@@ -197,9 +200,14 @@ export class GlissClient {
     this.keys.clear();const heldButtons=this.buttons;this.buttons=0;
     if(heldButtons)this.send({type:'pointer',...this.point,buttons:0});
   }
-  disconnect(){this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;this.audio.dispose();this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();++this.epoch;this.pendingPaint?.();}
+  disconnect(){
+    ++this.epoch;this.pendingPaint?.();
+    this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;
+    this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();
+    this.audio.dispose();
+  }
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.
-  dispose(){this.disconnect();this.listeners.abort();}
+  dispose(){try{this.disconnect();}finally{this.listeners.abort();}}
   bindInput(){
     const canvas=this.canvas,{signal}=this.listeners;
     const coordinates=e=>{const r=canvas.getBoundingClientRect();return{x:Math.max(0,Math.min(canvas.width-1,Math.floor((e.clientX-r.left)*canvas.width/r.width))),y:Math.max(0,Math.min(canvas.height-1,Math.floor((e.clientY-r.top)*canvas.height/r.height)))};};

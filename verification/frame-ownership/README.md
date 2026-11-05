@@ -12,7 +12,10 @@ A late callback cannot clear a fresh connection's cancellation function.
 
 The source bridge is `web/client.js`: a local owned-frame reference is released
 in `finally`; disconnect resolves the presentation wait; callback identity
-protects the current cancellation slot. Regression tests execute the real client
+protects the current cancellation slot. The epoch is checked again after transport
+admission, which can synchronously close a connection. Invalidation and cancellation
+precede cleanup callbacks, and audio notifications follow core transport cleanup.
+Regression tests execute the real client and predictive transport
 with controlled scheduling and errors, checking close, paint and ACK outcomes.
 
 These are mathematical models with a reviewed and tested source bridge. They do
