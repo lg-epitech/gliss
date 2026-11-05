@@ -1,5 +1,5 @@
 // node scripts/bench-lossless-browser.mjs --output /tmp/gliss-bench.json
-// Optional: --baseline REF --frames 180 --repetitions 4 --codec raw,palette,palette-zlib
+// Optional: --baseline REF --frames 180 --repetitions 4 --codec raw,palette,palette-zlib --workload sparse,motion,empty
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
@@ -10,19 +10,20 @@ import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {launchBrowser, CPU_BROWSER_ARGS} from '../tests/helpers.mjs';
 
-const root=new URL('../',import.meta.url), options={baseline:'25642b57',frames:'180',repetitions:'4',codec:'raw,palette'};
+const root=new URL('../',import.meta.url), options={baseline:'25642b57',frames:'180',repetitions:'4',codec:'raw,palette',workload:'sparse,motion'};
 for(let i=2;i<process.argv.length;i++){
-  const match=/^--(output|baseline|frames|repetitions|codec)(?:=(.*))?$/.exec(process.argv[i]);
+  const match=/^--(output|baseline|frames|repetitions|codec|workload)(?:=(.*))?$/.exec(process.argv[i]);
   assert.ok(match,`Unknown argument: ${process.argv[i]}`);
   const value=match[2]??process.argv[++i];
   assert.ok(value&&!value.startsWith('--'),`Missing value for --${match[1]}`);
   options[match[1]]=value;
 }
 assert.ok(options.output,'--output PATH is required and must name a new file');
-const frames=Number(options.frames), repetitions=Number(options.repetitions), codecs=options.codec.split(',');
+const frames=Number(options.frames), repetitions=Number(options.repetitions), codecs=options.codec.split(','),workloads=options.workload.split(',');
 assert.ok(Number.isInteger(frames)&&frames>0&&frames<=1800,'--frames must be an integer from 1 to 1800');
 assert.ok(Number.isInteger(repetitions)&&repetitions>0&&repetitions<=10,'--repetitions must be an integer from 1 to 10');
 assert.ok(codecs.length&&new Set(codecs).size===codecs.length&&codecs.every(c=>['raw','palette','palette-zlib'].includes(c)),'Invalid --codec list');
+assert.ok(workloads.length&&new Set(workloads).size===workloads.length&&workloads.every(w=>['sparse','motion','empty'].includes(w)),'Invalid --workload list');
 assert.equal(platform(),'linux','CDP process identity checks require Linux /proc');
 const output=await open(resolve(options.output),'wx'), hash=bytes=>createHash('sha256').update(bytes).digest('hex');
 
@@ -48,6 +49,7 @@ function installHarness(GlissClient){
   window.prepare=async({width,height,workload,codec})=>{
     const rectangles=(phase,full=false)=>{
       // Each position changes twice per cycle; replay keeps changing pixels.
+      if(!full&&workload==='empty')return [];
       if(!full&&workload==='sparse')return phase%4===0?[]:[{x:64*(1+phase%3),y:64,w:64,h:64,phase}];
       const tiles=[];
       for(let y=0;y<height;y+=64)for(let x=0;x<width;x+=64){
@@ -130,10 +132,10 @@ function installHarness(GlissClient){
 }
 
 const report={startedAt:new Date().toISOString(),scope:'Controlled GLS1 packets through real GlissClient, decoder, requestAnimationFrame, Canvas and ACK in CPU Chromium. Packet generation and whole-canvas readback excluded from timing. Process CPU sums CDP-reported processes present at both endpoints; exited intermediate processes are unobserved. Process CPU and renderer TaskDuration enclose the timed page evaluation and CDP boundary calls. No native encoder, network transport or physical-display claim.',
-  options:{...options,frames,repetitions,codecs},browserArgs:CPU_BROWSER_ARGS,
+  options:{...options,frames,repetitions,codecs,workloads},browserArgs:CPU_BROWSER_ARGS,
   host:{platform:platform(),release:release(),cpu:cpus()[0]?.model,logicalCPUs:cpus().length,
     cpuAffinity:(await readFile('/proc/self/status','utf8')).match(/^Cpus_allowed_list:[ \t]+(.+)$/m)?.[1]},
-  plannedRuns:codecs.length*4*repetitions*2,runs:[]};
+  plannedRuns:codecs.length*2*workloads.length*repetitions*2,runs:[]};
 let browser,server;
 try{
   const git=(...args)=>execFileSync('git',args,{cwd:fileURLToPath(root),encoding:'utf8'});
@@ -183,7 +185,7 @@ try{
       wallBoundsMs:[after.began-before.ended,after.ended-before.began]};
   };
   const packetIdentities=new Map();
-  for(const codec of codecs)for(const [width,height]of [[1280,800],[1920,1080]])for(const workload of ['sparse','motion'])for(let repetition=0;repetition<repetitions;repetition++){
+  for(const codec of codecs)for(const [width,height]of [[1280,800],[1920,1080]])for(const workload of workloads)for(let repetition=0;repetition<repetitions;repetition++){
     for(const variant of repetition%2?['candidate','baseline']:['baseline','candidate']){
       const row={codec,width,height,workload,repetition,variant};report.runs.push(row);
       let page;

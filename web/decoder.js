@@ -63,8 +63,9 @@ export class Decoder {
     if (!width || !height || pixels > MAX_PIXELS || flags > 1 || view.getUint32(20, true)) throw new Error('Invalid frame header');
     if (!keyframe && (!this.frame || this.frame.width !== width || this.frame.height !== height || sequence !== ((this.sequence + 1) >>> 0))) throw new Error('Missing reference frame');
     const previous = keyframe ? null : this.frame.pixels;
-    const output = keyframe ? new Uint8ClampedArray(pixels * 4) : previous.slice();
-    const coverage = new Uint8Array(pixels);
+    // Empty deltas keep the reference; later updates still copy before writing.
+    const output = keyframe ? new Uint8ClampedArray(pixels * 4) : count ? previous.slice() : previous;
+    const coverage = keyframe || count ? new Uint8Array(pixels) : null;
     let pos = 24, touched = 0;
     let left=width,top=height,right=0,bottom=0;
     for (let tile = 0; tile < count; tile++) {
