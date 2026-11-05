@@ -128,7 +128,9 @@ export class Decoder {
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
         else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
         const begin=(y+row)*width+x,end=begin+w;
-        for(let p=begin;p<end;p++){if(coverage[p])throw new Error('Overlapping tiles');coverage[p]=1;}
+        const covered=coverage.subarray(begin,end);
+        if(covered.includes(1))throw new Error('Overlapping tiles');
+        covered.fill(1);
       }
     }
     if (pos !== bytes.length || (keyframe && coverage.includes(0))) throw new Error('Incomplete frame');
