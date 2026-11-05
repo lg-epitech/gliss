@@ -74,6 +74,10 @@ cargo run --locked --release -j 2 -p gliss-codec --bin codec-bench -- \
 
 Its output is a local component measurement, not a live desktop, browser latency or network comparison. See [benchmarks](benchmarks.md) for the published results and their limits.
 
+The opt-in [lossless browser benchmark](browser-performance.md) compares client
+and decoder revisions using identical packets, Canvas pixels, ACKs and CPU
+counters. It needs Chromium and npm dependencies, but no native build or VM.
+
 ## Real QEMU audio smoke
 
 This opt-in test boots a temporary diskless Linux guest with an output-only HDA

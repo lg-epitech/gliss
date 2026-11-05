@@ -89,24 +89,16 @@ export class Decoder {
         const colors = body[0] | (body[1] << 8);
         if (!colors || colors > 256 || body.length !== 2+colors*4+w*h) throw new Error('Invalid palette size');
         decoded = new Uint8Array(w*h*4);
-        if(global){
-          if(colors<2||colors>w*h)throw new Error('Invalid global palette');
-          // Both word views use the host byte order, preserving RGBA on either
-          // endian architecture without a subarray allocation for every pixel.
-          const paletteBytes=body.slice(2,2+colors*4),palette=new Uint32Array(paletteBytes.buffer);
-          const outputWords=new Uint32Array(decoded.buffer),used=new Uint8Array(colors);
-          for(let p=0;p<w*h;p++){
-            const index=body[2+colors*4+p];if(index>=colors)throw new Error('Invalid palette index');
-            outputWords[p]=palette[index];used[index]=1;
-          }
-          if(used.includes(0))throw new Error('Unused global palette entry');
-        }else{
-          for (let p = 0; p < w*h; p++) {
-            const index = body[2+colors*4+p];
-            if (index >= colors) throw new Error('Invalid palette index');
-            decoded.set(body.subarray(2+index*4, 6+index*4), p*4);
-          }
+        if(global&&(colors<2||colors>w*h))throw new Error('Invalid global palette');
+        // Both word views use the host byte order, preserving RGBA on either
+        // endian architecture without a subarray allocation for every pixel.
+        const paletteBytes=body.slice(2,2+colors*4),palette=new Uint32Array(paletteBytes.buffer);
+        const outputWords=new Uint32Array(decoded.buffer),used=new Uint8Array(colors);
+        for(let p=0;p<w*h;p++){
+          const index=body[2+colors*4+p];if(index>=colors)throw new Error('Invalid palette index');
+          outputWords[p]=palette[index];used[index]=1;
         }
+        if(global&&used.includes(0))throw new Error('Unused global palette entry');
       } else if(codec===6){
         if(payload.length!==4)throw new Error('Invalid solid tile');
       } else if(codec===8){

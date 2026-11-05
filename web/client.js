@@ -12,12 +12,14 @@ export class GlissClient {
     this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
-    this.renderStrategy='full';this.codec=null;
+    this.renderStrategy='damage';this.needsFullPaint=false;this.codec=null;
     this.profiler=null;this.profilingStart=null;
     this.audio=new AudioPlayer(state=>{
       if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
       this.onEvent(state);
     });this.audioRequested=false;
+    // Canvas restoration clears its bitmap, including regions outside damage.
+    canvas.addEventListener('contextrestored',()=>{this.needsFullPaint=true;},{signal:this.listeners.signal});
     this.bindInput();
   }
   async connect() {
@@ -86,19 +88,24 @@ export class GlissClient {
         if(epoch!==this.epoch){frame.videoFrame?.close();return;}
         const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
-        if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
+        if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
         await new Promise(resolve=>requestAnimationFrame(resolve));
         if(epoch!==this.epoch){frame.videoFrame?.close();return;}
         const paintStarted=performance.now();
         if(socket.completeVideoDecode && !socket.completeVideoDecode(frame.sequence,true)){
           frame.videoFrame?.close();return;
         }
-        if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;}
+        if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
         if(frame.videoFrame){try{this.ctx.drawImage(frame.videoFrame,0,0);}finally{frame.videoFrame.close();}}
-        else if(this.renderStrategy==='damage'){
+        else if(this.renderStrategy==='damage'&&!this.needsFullPaint&&frame.damage!==undefined){
           const area=frame.damage;
-          if(area)this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0,area.x,area.y,area.width,area.height);
+          if(area){
+            const image=new ImageData(frame.pixels,frame.width,frame.height);
+            if(area.width===frame.width&&area.height===frame.height)this.ctx.putImageData(image,0,0);
+            else this.ctx.putImageData(image,0,0,area.x,area.y,area.width,area.height);
+          }
         }else this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0);
+        this.needsFullPaint=false;
         // This is CPU submission + requestAnimationFrame, not physical photon presentation.
         const presented=performance.now();
         this.presentationState={codec:this.codec,sequence:frame.sequence,width:frame.width,height:frame.height,presentedAtMs:presented,wholeFrame:true};
