@@ -81,7 +81,7 @@ export class Decoder {
       pos += 16;
       const payload = bytes.subarray(pos, pos + length);
       pos += length;
-      let decoded,copyX,copyY;
+      let decoded;
       if (codec === 0 || codec === 7) decoded = payload;
       else if (codec === 1 || codec === 4) decoded = await inflate(payload, w*h*4);
       else if (codec === 2 || codec === 3) {
@@ -115,18 +115,17 @@ export class Decoder {
         }
       } else {
         if (!previous || payload.length !== 4) throw new Error('Invalid copy tile');
-        copyX = payload[0] | (payload[1]<<8);copyY = payload[2] | (payload[3]<<8);
-        if (copyX+w > width || copyY+h > height) throw new Error('Copy outside reference frame');
+        const sx = payload[0] | (payload[1]<<8), sy = payload[2] | (payload[3]<<8);
+        if (sx+w > width || sy+h > height) throw new Error('Copy outside reference frame');
+        decoded = new Uint8Array(w*h*4);
+        for (let row=0; row<h; row++) decoded.set(previous.subarray(((sy+row)*width+sx)*4, ((sy+row)*width+sx+w)*4), row*w*4);
       }
-      if (codec!==5&&codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
+      if (codec!==6&&codec!==8&&decoded.length !== w*h*4) throw new Error('Invalid tile pixel length');
       if ((codec === 4||codec===7) && !previous) throw new Error('Keyframe contains a temporal tile');
       const solidWord=codec===6?new Uint32Array(payload.slice().buffer)[0]:0;
       for (let row=0; row<h; row++) {
         const dest = ((y+row)*width+x)*4, source=row*w*4;
-        if(codec===5){
-          const start=((copyY+row)*width+copyX)*4;
-          output.set(previous.subarray(start,start+w*4),dest);
-        }else if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
+        if(codec===6)new Uint32Array(output.buffer,dest,w).fill(solidWord);
         else if (codec === 4||codec===7) { for (let p=0; p<w*4; p++) output[dest+p] = previous[dest+p] ^ decoded[source+p]; }
         else if(codec!==8)output.set(decoded.subarray(source,source+w*4), dest);
         const begin=(y+row)*width+x,end=begin+w;
