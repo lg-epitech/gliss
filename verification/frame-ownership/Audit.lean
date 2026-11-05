@@ -1,0 +1,9 @@
+import Cancellation
+
+#print axioms Presentation.all_traces_conserve
+#print axioms Presentation.terminal_exactly_one_close
+#print axioms Presentation.cancelled_never_paints
+#print axioms Presentation.ack_requires_painted_closed
+#print axioms Presentation.cancelled_trace_terminal
+#print axioms Presentation.late_callback_preserves_new
+#print axioms Presentation.finish_idempotent
