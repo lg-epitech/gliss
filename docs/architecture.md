@@ -20,6 +20,14 @@ browser keyboard / pointer -> WebSocket or reliable QUIC stream -> original RFB 
 
 `gliss-rfb` negotiates RFB, validates bounded framebuffer updates and handles pointer, keyboard, cursor, clipboard and supported resize messages. VNC capture and input use QEMU's existing interface, so the guest needs no extra software. The upstream address is fixed by the operator and never accepted from the browser. The optional connected Unix graphics FD is one-use and deadline-bound; it lets a trusted launcher hand over an authorized display without opening a new port.
 
+Browser clipboard text reaches the VNC server in one of three forms:
+
+- A server with the extended clipboard gets the protocol's format: UTF-8 with CRLF line endings and a terminating NUL. Some servers need that NUL; neatvnc drops text without it.
+- QEMU gets UTF-8 with LF line endings and no NUL, because it hands these bytes to guest applications unchanged. Gliss recognizes QEMU by the fixed desktop name in its `ServerInit` message, `QEMU` or `QEMU (<guest>)`. Another server using that name also gets this form.
+- A server without the extended clipboard gets Latin-1 with LF line endings. Text outside Latin-1 is rejected.
+
+QEMU doesn't tell VNC clients which line endings a guest wants, so Windows guests also get LF. Neither QEMU nor the Windows SPICE agent converts them, so applications that need CRLF may show pasted lines joined. This comes from reading their source and hasn't been tested on a Windows guest. A NUL that is part of the browser's own text is not removed for QEMU.
+
 `gliss-dbus` provides experimental private QEMU D-Bus capture, still using VNC for input. Optional shared capture reuses one producer across viewers; encoders and input connections remain separate.
 
 ## Lossless desktop codec
