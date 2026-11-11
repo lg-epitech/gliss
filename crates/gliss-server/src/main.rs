@@ -152,7 +152,7 @@ struct Args {
     /// H.264 synthetic timestamp FPS; defaults to capture FPS.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=60))]
     video_timestamp_fps: Option<u32>,
-    /// H.264 periodic IDR interval in encoded frames; defaults to 8x capture FPS on WebSocket, 2x on datagram.
+    /// H.264 periodic IDR interval in encoded frames; defaults to 3600 on WebSocket, 2x capture FPS on datagram.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
     video_intra_period: Option<u32>,
     /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
@@ -1484,6 +1484,9 @@ fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
     }
 }
 
+/// The longest interval the encoder accepts: two minutes of frames at 30 fps.
+const WEBSOCKET_INTRA_PERIOD: u32 = 3600;
+
 fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
     let qp = configured_video_qp(args)?;
     if args.video_frame_skip || qp.is_some() {
@@ -1501,11 +1504,16 @@ fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
         );
         return Ok(None);
     }
-    // WebSocket clients request resync on decode errors instead of waiting for a periodic IDR.
-    let default_intra_period = args
-        .fps
-        .checked_mul(if args.datagram_bind.is_none() { 8 } else { 2 })
-        .context("H.264 keyframe interval overflow")?;
+    // A WebSocket stream loses nothing, and its client asks for a keyframe after a
+    // decode error. A periodic keyframe there only costs a burst of bytes and
+    // resets the picture to a coarser quality, so it is as rare as the encoder allows.
+    let default_intra_period = if args.datagram_bind.is_none() {
+        WEBSOCKET_INTRA_PERIOD
+    } else {
+        args.fps
+            .checked_mul(2)
+            .context("H.264 keyframe interval overflow")?
+    };
     Ok(Some(VideoTiming::new(
         args.video_fps.unwrap_or(args.fps),
         args.video_timestamp_fps.unwrap_or(args.fps),
@@ -1883,11 +1891,11 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn websocket_h264_keyframe_interval_counts_eight_capture_fps_of_encoded_frames() {
+    fn websocket_h264_keyframes_are_3600_encoded_frames_apart_at_any_fps() {
         for fps in ["15", "30", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap().unwrap();
-            assert_eq!(timing.intra_period(), args.fps * 8);
+            assert_eq!(timing.intra_period(), 3600);
         }
         let args = args(&["--codec", "h264", "--fps", "30"]).unwrap();
         let timing = configured_video_timing(&args).unwrap().unwrap();
@@ -1898,16 +1906,17 @@ mod video_timing_option_tests {
             options: gliss_video::VideoOptions::default(),
         };
         let frame = Frame::new(64, 48).unwrap();
-        for sequence in 0..=240 {
+        // Well past the former 240-frame interval, only the first frame is a keyframe.
+        for sequence in 0..=300 {
             let bytes = encoder.encode(&frame, sequence, 0).unwrap();
             assert_eq!(
                 gliss_video::parse_packet(&bytes).unwrap().keyframe,
-                sequence % 240 == 0,
+                sequence == 0,
                 "unexpected periodic keyframe at {sequence}"
             );
         }
         encoder.reset();
-        let bytes = encoder.encode(&frame, 241, 0).unwrap();
+        let bytes = encoder.encode(&frame, 301, 0).unwrap();
         assert!(gliss_video::parse_packet(&bytes).unwrap().keyframe);
     }
 
@@ -1947,10 +1956,7 @@ mod video_timing_option_tests {
         for fps in ["15", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap().unwrap();
-            assert_eq!(
-                timing,
-                VideoTiming::new(args.fps, args.fps, args.fps * 8).unwrap()
-            );
+            assert_eq!(timing, VideoTiming::new(args.fps, args.fps, 3600).unwrap());
             let original = json!({"codec": "h264", "fps_limit": args.fps});
             assert_eq!(
                 with_video_metadata(original.clone(), &args, Some(timing)),
@@ -1970,20 +1976,20 @@ mod video_timing_option_tests {
         let args = args(&["--codec", "h264", "--fps", "60", "--video-fps", "15"]).unwrap();
         let timing = configured_video_timing(&args).unwrap().unwrap();
         assert_eq!(args.fps, 60);
-        assert_eq!(timing, VideoTiming::new(15, 60, 480).unwrap());
+        assert_eq!(timing, VideoTiming::new(15, 60, 3600).unwrap());
         let metadata = with_video_metadata(json!({"fps_limit": args.fps}), &args, Some(timing));
         assert_eq!(
             metadata,
             json!({"fps_limit":60,"video_config":{
-                "fps":15,"timestamp_fps":60,"intra_period":480
+                "fps":15,"timestamp_fps":60,"intra_period":3600
             }})
         );
         for (option, value, expected) in [
-            ("--video-fps", "60", VideoTiming::new(60, 15, 120).unwrap()),
+            ("--video-fps", "60", VideoTiming::new(60, 15, 3600).unwrap()),
             (
                 "--video-timestamp-fps",
                 "60",
-                VideoTiming::new(15, 60, 120).unwrap(),
+                VideoTiming::new(15, 60, 3600).unwrap(),
             ),
             (
                 "--video-intra-period",
