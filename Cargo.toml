@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/gliss-core", "crates/gliss-rfb", "crates/gliss-codec", "crates/gliss-video", "crates/gliss-server", "crates/gliss-dbus", "crates/gliss-hybrid", "crates/gliss-hybrid-grid", "crates/gliss-hybrid-continuity"]
+members = ["crates/gliss-core", "crates/gliss-rfb", "crates/gliss-codec", "crates/gliss-video", "crates/gliss-server", "crates/gliss-hybrid", "crates/gliss-hybrid-grid", "crates/gliss-hybrid-continuity"]
 resolver = "2"
 
 [workspace.package]
@@ -18,7 +18,6 @@ gliss-core = { path = "crates/gliss-core" }
 gliss-rfb = { path = "crates/gliss-rfb" }
 gliss-codec = { path = "crates/gliss-codec" }
 gliss-video = { path = "crates/gliss-video" }
-gliss-dbus = { path = "crates/gliss-dbus" }
 gliss-hybrid = { path = "crates/gliss-hybrid" }
 gliss-hybrid-grid = { path = "crates/gliss-hybrid-grid" }
 

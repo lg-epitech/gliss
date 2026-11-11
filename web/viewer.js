@@ -25,7 +25,6 @@ const client=new GlissClient($('screen'),text=>$('status').textContent=text,even
   }
   if(event.type==='error'||event.type==='input_error')$('status').textContent=event.message;
   if(event.type==='resize_result'&&event.status!==0)$('status').textContent='The VM declined the desktop size change.';
-  if(event.type==='display_state')$('status').textContent=event.available?'Connected':'The VM display is temporarily unavailable.';
 });
 window.gliss=client;
 window.glissSource=()=>sourceType;

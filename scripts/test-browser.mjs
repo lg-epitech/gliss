@@ -5,7 +5,7 @@ import {spawn} from 'node:child_process';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const tests=(await readdir(new URL('../tests/',import.meta.url)))
   .filter(name=>name.endsWith('.test.mjs')).sort();
-const excluded=['owned-qmp-fd.test.mjs','qemu.test.mjs','dbus-qemu.test.mjs'];
+const excluded=['qemu.test.mjs'];
 if(tests.some(name=>excluded.includes(name)))throw new Error('Prepared-VM tests must stay outside the portable release suite');
 console.error(JSON.stringify({kind:'gliss-portable-test-scope',requires_prepared_vm:false,
   included:tests,

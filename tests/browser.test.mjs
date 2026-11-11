@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createConnection } from 'node:net';
 import { launchBrowser,startServer,loginPage,assertColour,COLOUR_TOLERANCE } from './helpers.mjs';
 import { startRfb } from './mock-rfb.mjs';
 
@@ -18,6 +19,35 @@ test('authorization: origin, secret, cookie and display upgrade boundaries',asyn
   const page=await browser.newPage();await page.goto(server.url);
   const rejected=await page.evaluate(()=>new Promise(resolve=>{const ws=new WebSocket(`ws://${location.host}/ws`);ws.onopen=()=>resolve(false);ws.onerror=()=>resolve(true);}));
   assert.equal(rejected,true);
+});
+
+// The HTTP status of a display upgrade, sent without a browser choosing its headers.
+async function upgradeStatus(server,{origin=server.url,cookie}={}){
+  const socket=createConnection({host:'127.0.0.1',port:server.port});
+  try{
+    return await new Promise((resolve,reject)=>{
+      let buffer='';
+      const timer=setTimeout(()=>reject(new Error('No upgrade response')),4000);
+      socket.on('error',reject);
+      socket.on('data',chunk=>{buffer+=chunk.toString('latin1');const match=/^HTTP\/1\.1 (\d{3}) /.exec(buffer);if(match){clearTimeout(timer);resolve(Number(match[1]));}});
+      socket.once('connect',()=>socket.write(`GET /ws HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nOrigin: ${origin}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: AAECAwQFBgcICQoLDA0ODw==\r\nSec-WebSocket-Version: 13\r\n${cookie?`Cookie: ${cookie}\r\n`:''}\r\n`));
+    });
+  }finally{socket.destroy();}
+}
+
+test('admission: a display upgrade needs the session cookie, the allowed origin and a free client slot',async t=>{
+  const server=await startServer({maxClients:1});t.after(server.stop);
+  const accepted=await fetch(`${server.url}/api/session`,{method:'POST',headers:{Origin:server.url,'Content-Type':'application/json'},body:JSON.stringify({token:server.token})});
+  const cookie=accepted.headers.get('set-cookie').split(';')[0];
+  assert.equal(await upgradeStatus(server),401);
+  assert.equal(await upgradeStatus(server,{origin:'https://untrusted.invalid',cookie}),401);
+  const browser=await launchBrowser();t.after(()=>browser.close());
+  const page=await browser.newPage();await loginPage(page,server);
+  assert.equal(await upgradeStatus(server,{cookie}),503);
+  await page.evaluate(()=>window.gliss.disconnect());
+  // The slot is free again once the first viewer's session has ended.
+  await page.waitForFunction(async()=>{const response=await fetch('/api/stats');return response.ok&&(await response.json()).active_clients===0;});
+  assert.equal(await upgradeStatus(server,{cookie}),101);
 });
 
 test('browser: pixel echo, keyboard release and resize',async t=>{

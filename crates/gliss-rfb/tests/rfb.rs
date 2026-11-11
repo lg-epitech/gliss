@@ -890,3 +890,206 @@ async fn qemu_named_server_receives_browser_text_without_protocol_bytes() {
         .unwrap();
     peer.await.unwrap();
 }
+
+async fn banner(stream: &mut TcpStream) {
+    stream.write_all(b"RFB 003.008\n").await.unwrap();
+    let mut version = [0; 12];
+    stream.read_exact(&mut version).await.unwrap();
+    assert_eq!(&version, b"RFB 003.008\n");
+}
+
+async fn expect_eof(stream: &mut TcpStream) {
+    let mut byte = [0; 1];
+    assert_eq!(
+        timeout(Duration::from_secs(2), stream.read(&mut byte))
+            .await
+            .expect("the client must close the connection")
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_handshake_closes_the_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let pending = tokio::spawn(async move { connect(&address.to_string(), None).await });
+    let (mut stream, _) = listener.accept().await.unwrap();
+    // The version reply proves the handshake began; the security list never comes.
+    banner(&mut stream).await;
+    pending.abort();
+    assert!(pending.await.err().unwrap().is_cancelled());
+    expect_eof(&mut stream).await;
+}
+
+#[tokio::test]
+async fn missing_or_unsupported_security_fails_before_client_init() {
+    for (security, expected) in [
+        (2, "requires a VNC password"),
+        (19, "no supported security type"),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            banner(&mut stream).await;
+            stream.write_all(&[1, security]).await.unwrap();
+            // Rejected before a security type is chosen: no ClientInit or input follows.
+            expect_eof(&mut stream).await;
+        });
+        let error = connect(&address.to_string(), None)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains(expected), "{error}");
+        peer.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn oversized_refusal_reason_is_rejected() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        banner(&mut stream).await;
+        // No security types, then a reason one byte longer than the limit.
+        stream.write_all(&[0, 0, 1, 0, 1]).await.unwrap();
+        expect_eof(&mut stream).await;
+    });
+    let error = connect(&address.to_string(), Some("password-extra"))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("RFB text exceeds"), "{error}");
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn server_init_geometry_and_name_limits_fail_the_handshake() {
+    for (width, height, excessive_name) in [
+        (0u16, 1u16, false),
+        (u16::MAX, u16::MAX, false),
+        (2, 1, true),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            banner(&mut stream).await;
+            stream.write_all(&[1, 1]).await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), 1);
+            stream.write_all(&[0; 4]).await.unwrap();
+            assert_eq!(stream.read_u8().await.unwrap(), 1);
+            stream.write_u16(width).await.unwrap();
+            stream.write_u16(height).await.unwrap();
+            if excessive_name {
+                stream.write_all(&PIXEL_FORMAT).await.unwrap();
+                stream.write_u32(65_537).await.unwrap();
+            }
+            expect_eof(&mut stream).await;
+        });
+        let error = connect(&address.to_string(), None)
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(
+            error.contains(if excessive_name {
+                "RFB text exceeds"
+            } else {
+                "invalid or excessive RFB framebuffer"
+            }),
+            "{error}"
+        );
+        peer.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn truncated_update_and_eof_end_the_stream_without_a_partial_frame() {
+    let mut truncated = update_rectangle(0, 0, 2, 1, 0);
+    truncated.extend_from_slice(&[12, 34]);
+    for (bytes, inside_message) in [(truncated, true), (vec![], false)] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            init(&mut stream, 8, 2, 1).await;
+            stream.write_all(&bytes).await.unwrap();
+        });
+        let (mut reader, _writer, _) = connect(&address.to_string(), None).await.unwrap();
+        let error = event(&mut reader).await.unwrap_err();
+        if inside_message {
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind),
+                Some(std::io::ErrorKind::UnexpectedEof)
+            );
+        } else {
+            assert!(error.to_string().contains("read RFB message"), "{error}");
+        }
+        assert!(
+            event(&mut reader)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("reader closed")
+        );
+        peer.await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn inputs_arrive_in_order_and_dropping_both_handles_closes_the_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, 2, 1).await;
+        let mut inputs = [0; 28];
+        stream.read_exact(&mut inputs).await.unwrap();
+        assert_eq!(
+            inputs,
+            [
+                4, 1, 0, 0, 0, 0, 0, 97, 5, 1, 0, 1, 0, 0, 4, 0, 0, 0, 0, 0, 0, 97, 5, 0, 0, 1, 0,
+                0
+            ]
+        );
+        expect_eof(&mut stream).await;
+    });
+    let (reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    for input in [
+        Input::Key {
+            keysym: 97,
+            down: true,
+            id: 1,
+        },
+        Input::Pointer {
+            x: 1,
+            y: 0,
+            buttons: 1,
+            id: 2,
+        },
+        Input::Key {
+            keysym: 97,
+            down: false,
+            id: 3,
+        },
+        Input::Pointer {
+            x: 1,
+            y: 0,
+            buttons: 0,
+            id: 4,
+        },
+    ] {
+        writer.send_input(&input).await.unwrap();
+    }
+    // The caller releases held input itself; the writer does not synthesize releases.
+    drop(reader);
+    drop(writer);
+    peer.await.unwrap();
+}

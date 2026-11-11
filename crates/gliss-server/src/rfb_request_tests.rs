@@ -176,9 +176,6 @@ fn app(address: &str, policy: &str) -> App {
         hybrid_mask_grid: None,
         video_timing: None,
         tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
-        #[cfg(unix)]
-        rfb_fd: None,
-        source_deadline: None,
         worker_shutdown: watch::channel(false).0,
         origins: Vec::new(),
         cookie_key: [0; 32],
@@ -188,7 +185,6 @@ fn app(address: &str, policy: &str) -> App {
         bytes: AtomicU64::new(0),
         frames: AtomicU64::new(0),
         started: std::time::Instant::now(),
-        shared_capture: None,
     }
 }
 

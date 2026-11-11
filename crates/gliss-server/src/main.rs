@@ -3,11 +3,8 @@ mod audio_adpcm;
 mod demo;
 mod pacer;
 mod profiling;
-#[cfg(unix)]
-mod rfb_fd;
 mod rfb_request;
 mod scheduler;
-mod shared_capture;
 mod tcp_listener;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -61,27 +58,11 @@ struct Args {
     #[arg(long, default_value_t = audio::PacketDuration::DEFAULT)]
     audio_packet_ms: audio::PacketDuration,
     /// Fixed upstream target. The browser cannot choose a VNC address.
-    #[arg(long, conflicts_with_all = ["demo", "rfb_fd"], required_unless_present_any = ["demo", "rfb_fd", "export_web"])]
+    #[arg(long, conflicts_with = "demo", required_unless_present_any = ["demo", "export_web"])]
     vnc: Option<String>,
     /// When to ask the VNC server for the next update. The FPS cap limits encoding either way.
     #[arg(long, value_enum, default_value = "eager")]
     rfb_request_policy: rfb_request::Policy,
-    /// Private one-use connected Unix graphics descriptor inherited from a trusted launcher.
-    #[arg(long, conflicts_with_all = ["vnc", "demo", "dbus_address", "vm_uuid", "shared_dbus"], requires = "rfb_deadline_unix_ms", value_parser = clap::value_parser!(i32).range(3..))]
-    rfb_fd: Option<i32>,
-    /// Absolute source lease deadline; independent of login time, at most one hour ahead.
-    #[arg(long, requires = "rfb_fd", conflicts_with_all = ["vnc", "demo", "dbus_address", "vm_uuid", "shared_dbus"])]
-    rfb_deadline_unix_ms: Option<u64>,
-    /// Experimental CPU capture from a private QEMU D-Bus; VNC still carries input.
-    #[arg(long, requires = "vm_uuid", conflicts_with = "demo")]
-    dbus_address: Option<String>,
-    #[arg(long, requires = "dbus_address")]
-    vm_uuid: Option<String>,
-    #[arg(long, default_value_t = 0)]
-    dbus_console: u32,
-    /// Share one canonical D-Bus producer; inputs and encoders remain per viewer.
-    #[arg(long, requires = "dbus_address", conflicts_with = "demo")]
-    shared_dbus: bool,
     #[arg(long)]
     demo: bool,
     #[arg(
@@ -200,9 +181,6 @@ struct App {
     hybrid_mask_grid: Option<u16>,
     video_timing: Option<VideoTiming>,
     tcp_listener: Arc<tcp_listener::SocketPolicy>,
-    #[cfg(unix)]
-    rfb_fd: Option<rfb_fd::RfbFd>,
-    source_deadline: Option<tokio::time::Instant>,
     worker_shutdown: watch::Sender<bool>,
     origins: Vec<String>,
     cookie_key: [u8; 32],
@@ -212,7 +190,6 @@ struct App {
     bytes: AtomicU64,
     frames: AtomicU64,
     started: Instant,
-    shared_capture: Option<shared_capture::SharedCapture>,
 }
 
 /// Browser modules served at `/<path>`; `--export-web` writes the same files.
@@ -289,67 +266,14 @@ fn main() -> Result<()> {
     if let Some(directory) = &args.export_web {
         return export_web(directory);
     }
-    let source_deadline = configured_source_deadline(&args)?;
-    // SAFETY: a trusted launcher transfers this one exclusive owner. Adopt before
-    // runtime/logging/threads can allocate another descriptor with that number.
-    #[cfg(unix)]
-    let rfb_fd = args
-        .rfb_fd
-        .map(|raw| unsafe { rfb_fd::RfbFd::take_inherited(raw) })
-        .transpose()?;
-    #[cfg(not(unix))]
-    ensure!(args.rfb_fd.is_none(), "rfb-fd requires a Unix host");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
-    #[cfg(unix)]
-    let result = runtime.block_on(run(args, source_deadline, rfb_fd));
-    #[cfg(not(unix))]
-    let result = runtime.block_on(run(args, source_deadline));
-    if source_deadline.is_some() {
-        // Main returning ends the private worker. A blocking task cannot keep
-        // its source lease alive indefinitely during runtime shutdown.
-        runtime.shutdown_timeout(Duration::from_secs(1));
-    }
-    result
+    runtime.block_on(run(args))
 }
 
-fn configured_source_deadline(args: &Args) -> Result<Option<tokio::time::Instant>> {
-    if args.rfb_fd.is_none() {
-        ensure!(
-            args.rfb_deadline_unix_ms.is_none(),
-            "source deadline requires rfb-fd"
-        );
-        return Ok(None);
-    }
-    ensure!(
-        args.bind.ip().is_loopback() && args.max_clients == 1 && args.dbus_console == 0,
-        "rfb-fd requires loopback, max-clients1 and the default D-Bus console"
-    );
-    let anchor = Instant::now();
-    let now = SystemTime::now();
-    let expiry = UNIX_EPOCH
-        .checked_add(Duration::from_millis(
-            args.rfb_deadline_unix_ms
-                .context("Missing graphics lease deadline")?,
-        ))
-        .context("Invalid graphics lease timestamp")?;
-    let remaining = expiry
-        .duration_since(now)
-        .context("graphics lease deadline has expired")?;
-    ensure!(
-        !remaining.is_zero() && remaining <= Duration::from_secs(3600),
-        "graphics lease deadline must be future and within one hour"
-    );
-    Ok(Some(tokio::time::Instant::from_std(anchor + remaining)))
-}
-
-async fn run(
-    args: Args,
-    source_deadline: Option<tokio::time::Instant>,
-    #[cfg(unix)] rfb_fd: Option<rfb_fd::RfbFd>,
-) -> Result<()> {
+async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -406,19 +330,6 @@ async fn run(
     };
     let bind = args.bind;
     let max_clients = args.max_clients;
-    let shared_capture = if args.shared_dbus {
-        Some(shared_capture::SharedCapture::new(
-            shared_capture::FixedTarget {
-                address: args.dbus_address.as_ref().unwrap().clone(),
-                vm_uuid: args.vm_uuid.as_ref().unwrap().clone(),
-                console: args.dbus_console,
-                diagnostics: args.stream_stats,
-                max_viewers: max_clients,
-            },
-        )?)
-    } else {
-        None
-    };
     let (worker_shutdown, _) = watch::channel(false);
     let tcp_listener = tcp_listener::SocketPolicy::new(args.tcp_nodelay);
     let app = Arc::new(App {
@@ -428,9 +339,6 @@ async fn run(
         hybrid_config,
         hybrid_mask_grid,
         video_timing,
-        #[cfg(unix)]
-        rfb_fd,
-        source_deadline,
         worker_shutdown,
         origins,
         cookie_key: rand::random(),
@@ -440,7 +348,6 @@ async fn run(
         bytes: AtomicU64::new(0),
         frames: AtomicU64::new(0),
         started: Instant::now(),
-        shared_capture,
     });
     let mut router = Router::new().route(
         "/",
@@ -472,47 +379,14 @@ async fn run(
         tcp_listener,
     );
     println!("Gliss listening on http://{bind} (CPU-only)");
-    let (shutdown_notice, shutdown_started) = oneshot::channel();
     let shutdown_signal = app.worker_shutdown.clone();
-    let serving = axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {},
-                _ = async {
-                    if let Some(deadline) = source_deadline { tokio::time::sleep_until(deadline).await; }
-                    else { std::future::pending::<()>().await; }
-                } => {},
-            }
+            let _ = tokio::signal::ctrl_c().await;
             shutdown_signal.send_replace(true);
-            let _ = shutdown_notice.send(tokio::time::Instant::now());
-        });
-    let result = if source_deadline.is_some() {
-        // Incomplete HTTP bodies must not extend an unused graphics lease.
-        // Upgraded WebSocket callbacks are detached from Axum's drain barrier;
-        // their existing client permits cover setup, stream and held releases.
-        let mut serving = Box::pin(serving.into_future());
-        let (result, hard_stop) = tokio::select! {
-            result = &mut serving => (Ok(result), tokio::time::Instant::now() + Duration::from_secs(2)),
-            started = shutdown_started => {
-                let hard_stop = started.unwrap_or_else(|_| tokio::time::Instant::now()) + Duration::from_secs(2);
-                (tokio::time::timeout_at(hard_stop, &mut serving).await, hard_stop)
-            }
-        };
-        let _ = tokio::time::timeout_at(hard_stop, app.clients.clone().acquire_owned()).await;
-        result.unwrap_or_else(|_| {
-            tracing::warn!("graphics lease shutdown grace elapsed");
-            Ok(())
         })
-    } else {
-        serving.await
-    };
+        .await;
     app.worker_shutdown.send_replace(true);
-    if let Some(capture) = &app.shared_capture {
-        capture
-            .shutdown()
-            .await
-            .context("shared capture shutdown")?;
-    }
     result?;
     Ok(())
 }
@@ -1178,102 +1052,6 @@ mod video_timing_option_tests {
     }
 }
 
-#[cfg(test)]
-mod fd_option_tests {
-    use super::*;
-
-    fn args(extra: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(
-            [
-                "gliss-server",
-                "--token",
-                "01234567890123456789012345678901",
-            ]
-            .into_iter()
-            .chain(extra.iter().copied()),
-        )
-    }
-
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
-
-    #[test]
-    fn fd_source_requires_its_absolute_deadline_and_excludes_other_sources() {
-        assert!(args(&["--rfb-fd", "9"]).is_err());
-        assert!(args(&["--demo", "--rfb-deadline-unix-ms", "1"]).is_err());
-        let expiry = (now_ms() + 60_000).to_string();
-        for other in [
-            vec!["--demo"],
-            vec!["--vnc", "127.0.0.1:5907"],
-            vec!["--dbus-address", "unix:path=/tmp/bus", "--vm-uuid", "uuid"],
-            vec!["--shared-dbus"],
-        ] {
-            let mut selected = vec!["--rfb-fd", "9", "--rfb-deadline-unix-ms", expiry.as_str()];
-            selected.extend(other);
-            assert!(args(&selected).is_err());
-        }
-        for raw in ["0", "1", "2"] {
-            assert!(args(&["--rfb-fd", raw, "--rfb-deadline-unix-ms", &expiry]).is_err());
-        }
-    }
-
-    #[test]
-    fn fd_source_is_loopback_single_viewer_and_cannot_select_a_dbus_console() {
-        let expiry = (now_ms() + 60_000).to_string();
-        let base = ["--rfb-fd", "9", "--rfb-deadline-unix-ms", &expiry];
-        assert!(configured_source_deadline(&args(&base).unwrap()).is_err());
-        let selected = [&base[..], &["--max-clients", "1"]].concat();
-        assert!(
-            configured_source_deadline(&args(&selected).unwrap())
-                .unwrap()
-                .is_some()
-        );
-        for extra in [
-            vec![
-                "--bind",
-                "0.0.0.0:8080",
-                "--origin",
-                "https://example.invalid",
-            ],
-            vec!["--dbus-console", "1"],
-        ] {
-            let mut selected = selected.clone();
-            selected.extend(extra);
-            assert!(configured_source_deadline(&args(&selected).unwrap()).is_err());
-        }
-    }
-
-    #[test]
-    fn expired_or_overlong_source_lease_is_rejected_before_adoption() {
-        for expiry in [now_ms().saturating_sub(1), now_ms() + 3_700_000] {
-            let expiry = expiry.to_string();
-            assert!(
-                configured_source_deadline(
-                    &args(&[
-                        "--rfb-fd",
-                        "9",
-                        "--rfb-deadline-unix-ms",
-                        &expiry,
-                        "--max-clients",
-                        "1"
-                    ])
-                    .unwrap()
-                )
-                .is_err()
-            );
-        }
-        assert!(
-            configured_source_deadline(&args(&["--demo"]).unwrap())
-                .unwrap()
-                .is_none()
-        );
-    }
-}
-
 fn signed_cookie(app: &App) -> String {
     let payload = format!(
         "{}.{}",
@@ -1375,7 +1153,7 @@ async fn stats(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     Json(with_stream_metadata(
-        json!({"bytes":app.bytes.load(Ordering::Relaxed),"frames":app.frames.load(Ordering::Relaxed),"active_clients":app.args.max_clients-app.clients.available_permits(),"uptime_s":app.started.elapsed().as_secs_f64(),"codec":app.args.codec,"shared_capture":app.shared_capture.as_ref().map(|capture|capture.snapshot())}),
+        json!({"bytes":app.bytes.load(Ordering::Relaxed),"frames":app.frames.load(Ordering::Relaxed),"active_clients":app.args.max_clients-app.clients.available_permits(),"uptime_s":app.started.elapsed().as_secs_f64(),"codec":app.args.codec}),
         &app,
     ))
     .into_response()
@@ -1392,12 +1170,6 @@ async fn upgrade(
     let Some(expires_at) = authorized_until(&app, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    if app
-        .source_deadline
-        .is_some_and(|deadline| deadline <= tokio::time::Instant::now())
-    {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
     let Ok(permit) = app.clients.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -1427,7 +1199,6 @@ struct Source {
     events: mpsc::Receiver<serde_json::Value>,
     shutdown: Option<oneshot::Receiver<()>>,
     _tasks: JoinSet<()>,
-    capture_lease: Option<shared_capture::CaptureLease>,
 }
 
 async fn source(app: &App) -> Result<Source> {
@@ -1439,7 +1210,6 @@ async fn source(app: &App) -> Result<Source> {
     let audio_counters = audio_config.counters.clone();
     let mut tasks = JoinSet::new();
     let mut shutdown = None;
-    let mut capture_lease = None;
     if app.args.demo {
         let workload = app.args.workload.clone();
         let fps = app.args.fps;
@@ -1447,36 +1217,15 @@ async fn source(app: &App) -> Result<Source> {
             demo::run(&workload, fps, frame_tx, input_rx).await;
         });
     } else {
-        let dbus = if app.shared_capture.is_some() {
-            None
-        } else if let Some(address) = &app.args.dbus_address {
-            Some(
-                gliss_dbus::connect_private_bus(
-                    address,
-                    app.args.vm_uuid.as_deref().unwrap(),
-                    app.args.dbus_console,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
-        let dbus_capture = dbus.is_some() || app.shared_capture.is_some();
-        let (mut reader, mut writer, info) = tokio::time::timeout(Duration::from_secs(10), async {
-            #[cfg(unix)]
-            if let Some(slot) = &app.rfb_fd {
-                return gliss_rfb::connect_unix(slot.claim()?, app.args.vnc_password.as_deref())
-                    .await;
-            }
-            gliss_rfb::connect(
-                app.args
-                    .vnc
-                    .as_deref()
-                    .context("Missing fixed RFB source")?,
-                app.args.vnc_password.as_deref(),
-            )
-            .await
-        })
+        let address = app
+            .args
+            .vnc
+            .as_deref()
+            .context("Missing fixed RFB source")?;
+        let (mut reader, mut writer, info) = tokio::time::timeout(
+            Duration::from_secs(10),
+            gliss_rfb::connect(address, app.args.vnc_password.as_deref()),
+        )
         .await
         .context("VNC connect timeout")??;
         let raw_audio = reader.audio_events();
@@ -1491,30 +1240,12 @@ async fn source(app: &App) -> Result<Source> {
         let dimensions = Arc::new(AtomicU32::new(
             (u32::from(info.width) << 16) | u32::from(info.height),
         ));
-        if let Some(capture) = &app.shared_capture {
-            capture_lease = Some(
-                capture
-                    .attach(shared_capture::ViewerChannels {
-                        forwarded_id: shared_capture::ForwardedId::new(input_id.clone()),
-                        dimensions: dimensions.clone(),
-                        frames: frame_tx.clone(),
-                        events: event_tx.clone(),
-                    })
-                    .await?,
-            );
-        }
         let pending = Arc::new(AtomicBool::new(false));
         let refresh = Arc::new(AtomicBool::new(false));
         let period = Duration::from_secs_f64(1.0 / f64::from(app.args.fps));
-        // D-Bus retains its original one-initial-request interval branch.
-        let spacing = app
-            .args
-            .rfb_request_policy
-            .spacing(period)
-            .filter(|_| !dbus_capture);
+        let spacing = app.args.rfb_request_policy.spacing(period);
         let completion = spacing.map(|_| Arc::new(tokio::sync::Notify::new()));
-        // D-Bus capture does not depend on the VNC server's refresh timer.
-        let display_changed = (!dbus_capture).then(|| Arc::new(tokio::sync::Notify::new()));
+        let display_changed = Arc::new(tokio::sync::Notify::new());
         let reader_display_changed = display_changed.clone();
         let reader_completion = completion.clone();
         let reader_id = input_id.clone();
@@ -1522,7 +1253,6 @@ async fn source(app: &App) -> Result<Source> {
         let reader_pending = pending.clone();
         let reader_refresh = refresh.clone();
         let reader_events = event_tx.clone();
-        let rfb_frames = frame_tx.clone();
         let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
             loop {
@@ -1530,65 +1260,21 @@ async fn source(app: &App) -> Result<Source> {
                 match event {
                     Event::Frame(frame) => {
                         let size = (u32::from(frame.width) << 16) | u32::from(frame.height);
-                        if !dbus_capture && reader_size.swap(size, Ordering::AcqRel) != size { reader_refresh.store(true, Ordering::Release); }
+                        if reader_size.swap(size, Ordering::AcqRel) != size { reader_refresh.store(true, Ordering::Release); }
                         reader_pending.store(false, Ordering::Release);
                         if let Some(completion) = &reader_completion { completion.notify_one(); }
-                        if let Some(changed) = &reader_display_changed { changed.notify_one(); }
-                        if !dbus_capture {
-                            let frame = Arc::new(frame);
-                            let forwarded_input_id = reader_id.load(Ordering::Acquire);
-                            if rfb_frames.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
-                        }
+                        reader_display_changed.notify_one();
+                        let frame = Arc::new(frame);
+                        let forwarded_input_id = reader_id.load(Ordering::Acquire);
+                        if frame_tx.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
                     }
                     Event::Clipboard(text) => { let _ = reader_events.try_send(json!({"type":"clipboard","text":text})); }
-                    Event::Cursor(cursor) => { if !dbus_capture { let _ = reader_events.try_send(json!({"type":"cursor","width":cursor.width,"height":cursor.height,"hotspot_x":cursor.hotspot_x,"hotspot_y":cursor.hotspot_y,"pixels":cursor.pixels})); } }
+                    Event::Cursor(cursor) => { let _ = reader_events.try_send(json!({"type":"cursor","width":cursor.width,"height":cursor.height,"hotspot_x":cursor.hotspot_x,"hotspot_y":cursor.hotspot_y,"pixels":cursor.pixels})); }
                     Event::Bell => { let _ = reader_events.try_send(json!({"type":"bell"})); }
                     Event::ResizeResult { width, height, status } => { let _ = reader_events.try_send(json!({"type":"resize_result","width":width,"height":height,"status":status})); }
                 }
             }
         });
-        if let Some(mut capture) = dbus {
-            let capture_input = input_id.clone();
-            let capture_dimensions = dimensions.clone();
-            let capture_events = event_tx.clone();
-            let diagnostics = app.args.stream_stats;
-            tasks.spawn(async move {
-                let mut cursor = None;
-                let mut disabled = None;
-                let mut telemetry = Instant::now();
-                loop {
-                    let event = match capture.read_event().await {
-                        Ok(event) => event,
-                        Err(error) => { let _ = capture_events.send(json!({"type":"error","message":format!("The VM CPU display disconnected: {error}")})).await; break; }
-                    };
-                    if disabled != Some(event.disabled) {
-                        disabled = Some(event.disabled);
-                        let _ = capture_events.try_send(json!({"type":"display_state","available":!event.disabled}));
-                    }
-                    if event.disabled { let _ = frame_tx.send(None); }
-                    if let Some(frame) = event.frame {
-                        capture_dimensions.store((u32::from(frame.width) << 16) | u32::from(frame.height), Ordering::Release);
-                        if frame_tx.send(Some(Captured { frame:Arc::new(frame), forwarded_input_id:capture_input.load(Ordering::Acquire),published_at:diagnostics.then(Instant::now) })).is_err() { break; }
-                    }
-                    let next_cursor = if event.mouse.is_none_or(|(_,_,visible)| visible) { event.cursor } else { None };
-                    if next_cursor != cursor {
-                        match &next_cursor {
-                            Some(shape) if shape.width<=128 && shape.height<=128 => {
-                                let pixels:Vec<u8> = shape.argb.iter().flat_map(|word| [(word>>16) as u8, (word>>8) as u8, *word as u8, (word>>24) as u8]).collect();
-                                let _ = capture_events.try_send(json!({"type":"cursor","width":shape.width,"height":shape.height,"hotspot_x":shape.hotspot_x,"hotspot_y":shape.hotspot_y,"pixels":pixels}));
-                            }
-                            _ => { let _ = capture_events.try_send(json!({"type":"cursor","width":0,"height":0,"hotspot_x":0,"hotspot_y":0,"pixels":[]})); }
-                        }
-                        cursor = next_cursor;
-                    }
-                    if diagnostics && telemetry.elapsed() >= Duration::from_secs(1) {
-                        telemetry = Instant::now();
-                        let _ = capture_events.try_send(json!({"type":"capture_stats","source":"dbus","accepted_plane_bytes":event.stats.source_bytes,"scanouts":event.stats.scanouts,"updates":event.stats.updates,"normalization_ms_total":event.stats.normalization_ns as f64/1_000_000.,"snapshot_ms":event.snapshot_ns as f64/1_000_000.,"timing_scope":"local callback conversion/snapshot; not guest-write time"}));
-                    }
-                }
-                capture.close().await;
-            });
-        }
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         shutdown = Some(shutdown_rx);
         tasks.spawn(async move {
@@ -1622,22 +1308,20 @@ async fn source(app: &App) -> Result<Source> {
                         if let Err(error) = writer.send_input(&command).await { let _ = event_tx.try_send(json!({"type":"input_error","message":error.to_string()})); }
                         else { input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
                     }
-                    _ = async { display_changed.as_ref().unwrap().notified().await }, if display_changed.is_some() => {
+                    _ = display_changed.notified() => {
                         hold.display_changed();
                     }
-                    _ = tokio::time::sleep_until(hold.deadline()), if !dbus_capture && hold.active() && *audio_available.borrow() => {
+                    _ = tokio::time::sleep_until(hold.deadline()), if hold.active() && *audio_available.borrow() => {
                         if writer.hold_refresh().await.is_err() { break; }
                         hold.hint_sent();
                     }
-                    // D-Bus capture requests one initial RFB update only, for cursor/
-                    // resize negotiation. Later media arrives exclusively through D-Bus.
                     _ = async {
                         if let (Some(ready), Some(completion)) = (&ready, &completion) {
                             ready.wait(&pending, completion).await;
                         } else {
                             tick.tick().await;
                         }
-                    }, if !dbus_capture || first => {
+                    } => {
                         if !pending.swap(true, Ordering::AcqRel) {
                             let size = dimensions.load(Ordering::Relaxed);
                             let force_refresh = refresh.swap(false, Ordering::AcqRel);
@@ -1664,7 +1348,6 @@ async fn source(app: &App) -> Result<Source> {
         events,
         shutdown,
         _tasks: tasks,
-        capture_lease,
     })
 }
 
@@ -1675,14 +1358,7 @@ async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()>
         !remaining.is_zero(),
         "display session expired before source setup"
     );
-    let session_deadline = tokio::time::Instant::now() + remaining;
-    let deadline = app
-        .source_deadline
-        .map_or(session_deadline, |source| source.min(session_deadline));
-    ensure!(
-        deadline > tokio::time::Instant::now(),
-        "graphics source lease expired before setup"
-    );
+    let deadline = tokio::time::Instant::now() + remaining;
     let mut source = tokio::select! {
         result = tokio::time::timeout_at(deadline, source(&app)) => result.context("display session expired during source setup")??,
         _ = worker_shutdown.wait_for(|stopped| *stopped) => bail!("worker stopped during source setup"),
@@ -1695,8 +1371,6 @@ async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()>
     if let Some(shutdown) = source.shutdown.take() {
         let _ = tokio::time::timeout(Duration::from_secs(1), shutdown).await;
     }
-    // Release this viewer's held input before dropping shared membership.
-    drop(source.capture_lease.take());
     result
 }
 
@@ -1756,7 +1430,7 @@ fn replace_latest(
 }
 
 async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -> Result<()> {
-    let hello = Message::Text(with_stream_metadata(json!({"type":"hello","protocol":match app.mode {Some(Mode::Batch) => "GLB1", Some(Mode::Global | Mode::GlobalCached) => "GLB2", Some(Mode::Sparse) => "GLB3", Some(_) => "GLS1", None if app.args.codec == "hybrid" => "GLH1", None if app.args.codec == "hybrid-grid" => "GLH2", None if app.args.codec == "hybrid-continuity" => "GLH4", None => "GLV1"},"codec":app.args.codec,"source":if app.args.demo {"demo"} else if app.args.dbus_address.is_some() {"dbus"} else {"rfb"},"fps_limit":app.args.fps,"input_metadata":"latest forwarded input; not proof of causal display"}),&app).to_string().into());
+    let hello = Message::Text(with_stream_metadata(json!({"type":"hello","protocol":match app.mode {Some(Mode::Batch) => "GLB1", Some(Mode::Global | Mode::GlobalCached) => "GLB2", Some(Mode::Sparse) => "GLB3", Some(_) => "GLS1", None if app.args.codec == "hybrid" => "GLH1", None if app.args.codec == "hybrid-grid" => "GLH2", None if app.args.codec == "hybrid-continuity" => "GLH4", None => "GLV1"},"codec":app.args.codec,"source":if app.args.demo {"demo"} else {"rfb"},"fps_limit":app.args.fps,"input_metadata":"latest forwarded input; not proof of causal display"}),&app).to_string().into());
     let (mut sink, mut receiver) = socket.split();
     let (command_tx, mut commands) = mpsc::channel(16);
     let (media_tx, mut media) =

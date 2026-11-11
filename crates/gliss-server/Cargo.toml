@@ -14,13 +14,10 @@ gliss-core.workspace = true
 gliss-rfb.workspace = true
 gliss-codec.workspace = true
 gliss-video.workspace = true
-flate2.workspace = true
-gliss-dbus.workspace = true
 gliss-hybrid.workspace = true
 gliss-hybrid-grid.workspace = true
 gliss-hybrid-continuity = { path = "../gliss-hybrid-continuity" }
 libc = "0.2"
-socket2 = { version = "0.6", features = ["all"] }
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
