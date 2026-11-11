@@ -1,12 +1,12 @@
 # Gliss
 
-An experimental codec for streaming VM desktops to the browser. A Rust server captures a VM's display and audio over VNC, encodes on the CPU and forwards keyboard and mouse input back. The browser needs no GPU, guest agent or plugin. Alpha quality. The code, experiments and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
+Streams a VM's desktop to the browser. A Rust server captures the display and audio of a QEMU VM over VNC, encodes H.264 on the CPU, sends it over a WebSocket and forwards keyboard and mouse input back. It needs no GPU, guest agent or browser plugin. Alpha quality. The code and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
 
-| Workload (1280×800 VM, CPU only) | Stack | p95 response | Traffic |
-| --- | --- | ---: | ---: |
-| Terminal typing, 40 ms RTT | **Gliss Batch** (lossless) | 212 ms | 0.19 Mbit/s |
-| | **Gliss H.264** | 213 ms | 0.10 Mbit/s |
-| | Guacamole | 218 ms | 0.05 Mbit/s |
-| Moving desktop, 150 ms RTT + 1% loss | **Gliss all-IDR H.264** | 460–464 ms | 4.2 Mbit/s |
-| | WebRTC H.264 (aiortc) | failed: missed inputs | 0.85 Mbit/s |
-| | WebRTC VP8 (aiortc) | failed: missed inputs | 0.5 Mbit/s |
+| 1920×1080 QEMU guest, CPU only, 30 fps cap | Result |
+| --- | ---: |
+| Typing echo, p50 / p95 | 40 / 55 ms |
+| Window drag, pointer to paint, p50 / p95 | 55 / 75 ms |
+| Scroll and video frame rate | 30 fps |
+| Bitrate during scroll / drag / video | 0.67 / 1.20 / 1.54 Mbit/s |
+
+Measured at 0.1.0-alpha.9 on one host; [how](docs/distribox-path.md). See also the [architecture](docs/architecture.md), [deployment and limits](docs/security.md) and [development](docs/development.md).
