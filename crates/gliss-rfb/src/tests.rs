@@ -1,4 +1,6 @@
 //! Behaviour that needs an in-memory connection: no socket, and a paused clock.
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use tokio::io::duplex;
 
 use super::*;
@@ -80,4 +82,33 @@ async fn a_slow_server_that_keeps_reading_is_not_cut_off() {
     }
     // 24 bytes into an 8-byte buffer: the last 16 each waited for the peer.
     assert_eq!(started.elapsed(), Duration::from_secs(16 * 9));
+}
+
+#[tokio::test]
+async fn decoding_yields_to_the_runtime_for_every_rectangle() {
+    const RECTANGLES: u16 = 1000;
+    // One update, complete in memory, so no read ever waits for the network.
+    let mut wire = vec![0, 0];
+    wire.extend_from_slice(&RECTANGLES.to_be_bytes());
+    for _ in 0..RECTANGLES {
+        // An empty CopyRect: x, y, width, height, encoding 1, source x, source y.
+        wire.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    }
+    let polls = Arc::new(AtomicUsize::new(0));
+    let other_polls = polls.clone();
+    // Stands for every other task on the worker: it runs only when decoding yields.
+    let other = tokio::spawn(async move {
+        loop {
+            other_polls.fetch_add(1, Ordering::Relaxed);
+            tokio::task::yield_now().await;
+        }
+    });
+    let (mut reader, _writer) = connection(std::io::Cursor::new(wire), tokio::io::sink());
+    reader.read_event().await.unwrap();
+    other.abort();
+    let polls = polls.load(Ordering::Relaxed);
+    assert!(
+        polls >= usize::from(RECTANGLES),
+        "another task ran {polls} times during {RECTANGLES} rectangles"
+    );
 }

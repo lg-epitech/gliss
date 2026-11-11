@@ -119,7 +119,10 @@ async fn qemu_audio_waits_for_capability_and_sets_format_before_enabling() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     writer.set_audio(true).await.unwrap();
     assert!(matches!(
         timeout(Duration::from_secs(2), audio.recv())
@@ -167,7 +170,10 @@ async fn stalled_audio_consumer_does_not_block_display_events_or_input() {
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     writer.set_audio(true).await.unwrap();
     assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
     assert!(matches!(
@@ -385,7 +391,10 @@ async fn refresh_hold_repeats_the_audio_format_only_after_the_server_confirms_au
         .await
         .unwrap()
         .unwrap();
-    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     writer.hold_refresh().await.unwrap();
     writer.hold_refresh().await.unwrap();
     writer
@@ -516,7 +525,10 @@ async fn desktop_resize_waits_for_capability_preserves_screen_identity_and_repor
             .is_err()
     );
     writer.request_update(false, 2, 1).await.unwrap();
-    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     assert!(writer.supports_resize());
     writer
         .send_input(&Input::Resize {
@@ -530,10 +542,11 @@ async fn desktop_resize_waits_for_capability_preserves_screen_identity_and_repor
         event(&mut reader).await.unwrap(),
         Event::ResizeResult { status: 1, .. }
     ));
-    let Event::Frame(rejected) = event(&mut reader).await.unwrap() else {
-        panic!("frame expected")
-    };
-    assert_eq!((rejected.width, rejected.height), (2, 1));
+    // A rejected request leaves the desktop as it was.
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     assert!(matches!(
         event(&mut reader).await.unwrap(),
         Event::ResizeResult {
@@ -603,10 +616,10 @@ async fn cursor_mask_desktop_size_clipboard_bell_and_empty_updates_are_independe
     );
     assert!(matches!(event(&mut reader).await.unwrap(), Event::Bell));
     assert!(matches!(event(&mut reader).await.unwrap(), Event::Clipboard(text) if text == "é\n"));
-    let Event::Frame(empty_update) = event(&mut reader).await.unwrap() else {
-        panic!("frame expected")
-    };
-    assert_eq!(empty_update, frame);
+    assert!(matches!(
+        event(&mut reader).await.unwrap(),
+        Event::Unchanged
+    ));
     peer.await.unwrap();
 }
 
@@ -656,7 +669,10 @@ async fn none_authentication_negotiates_all_published_versions() {
         let (mut reader, _writer, info) = connect(&address.to_string(), None).await.unwrap();
         assert_eq!(info.protocol_version, (3, minor));
         assert_eq!(info.name, "test");
-        assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+        assert!(matches!(
+            event(&mut reader).await.unwrap(),
+            Event::Unchanged
+        ));
         peer.await.unwrap();
     }
 }
@@ -1092,4 +1108,163 @@ async fn inputs_arrive_in_order_and_dropping_both_handles_closes_the_connection(
     drop(reader);
     drop(writer);
     peer.await.unwrap();
+}
+
+/// A peer that completes the handshake for a `width`x`height` desktop, then sends `bytes`.
+async fn scripted(
+    width: u16,
+    height: u16,
+    bytes: Vec<u8>,
+) -> (gliss_rfb::RfbReader, gliss_rfb::RfbWriter) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, width, height).await;
+        stream.write_all(&bytes).await.unwrap();
+        // Stay open: the client must not mistake the end of the script for a failure.
+        let _ = stream.read_u8().await;
+    });
+    let (reader, writer, _) = connect(&address.to_string(), None).await.unwrap();
+    (reader, writer)
+}
+
+fn rectangle_header(x: u16, y: u16, width: u16, height: u16, encoding: i32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for value in [x, y, width, height] {
+        bytes.extend_from_slice(&value.to_be_bytes());
+    }
+    bytes.extend_from_slice(&encoding.to_be_bytes());
+    bytes
+}
+
+fn cursor_rectangle(width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = rectangle_header(0, 0, width, height, -239);
+    bytes.resize(
+        bytes.len() + usize::from(width) * usize::from(height) * 4,
+        7,
+    );
+    bytes.resize(
+        bytes.len() + usize::from(width).div_ceil(8) * usize::from(height),
+        0xff,
+    );
+    bytes
+}
+
+fn extended_size_rectangle(reason: u16, width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = rectangle_header(reason, 0, width, height, -308);
+    bytes.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 0]);
+    bytes.extend_from_slice(&width.to_be_bytes());
+    bytes.extend_from_slice(&height.to_be_bytes());
+    bytes.extend_from_slice(&[0, 0, 0, 0]);
+    bytes
+}
+
+#[tokio::test]
+async fn an_update_that_changes_no_pixel_reports_no_frame() {
+    let mut script = Vec::new();
+    // No rectangle at all.
+    script.extend_from_slice(&[0, 0, 0, 0]);
+    // A cursor shape only.
+    script.extend_from_slice(&[0, 0, 0, 1]);
+    script.extend(cursor_rectangle(1, 1));
+    // The audio acknowledgement only.
+    script.extend_from_slice(&[0, 0, 0, 1]);
+    script.extend(rectangle_header(0, 0, 2, 1, -259));
+    // A layout report for the size the desktop already has, and an empty CopyRect.
+    script.extend_from_slice(&[0, 0, 0, 2]);
+    script.extend(extended_size_rectangle(0, 2, 1));
+    script.extend(rectangle_header(0, 0, 0, 1, 1));
+    script.extend_from_slice(&[0, 0, 0, 0]);
+    // One pixel.
+    script.extend_from_slice(&[0, 0, 0, 1]);
+    script.extend(rectangle_header(1, 0, 1, 1, 0));
+    script.extend_from_slice(&[1, 2, 3, 0]);
+    let (mut reader, _writer) = scripted(2, 1, script).await;
+    let mut seen = Vec::new();
+    let frame = loop {
+        match event(&mut reader).await.unwrap() {
+            Event::Frame(frame) => break frame,
+            Event::Unchanged => seen.push("unchanged"),
+            Event::Cursor(_) => seen.push("cursor"),
+            other => panic!("unexpected {other:?}"),
+        }
+    };
+    // Each update still ends with an event: it answered an update request.
+    assert_eq!(
+        seen,
+        ["unchanged", "cursor", "unchanged", "unchanged", "unchanged"]
+    );
+    assert_eq!(frame.pixels, [0, 0, 0, 255, 1, 2, 3, 255]);
+}
+
+fn copy_rectangles(count: u16, width: u16, height: u16) -> Vec<u8> {
+    let mut bytes = vec![0, 0];
+    bytes.extend_from_slice(&count.to_be_bytes());
+    for _ in 0..count {
+        bytes.extend(rectangle_header(0, 0, width, height, 1));
+        bytes.extend_from_slice(&[0, 0, 0, 0]);
+    }
+    bytes
+}
+
+#[tokio::test]
+async fn an_update_may_write_or_move_four_times_the_frame_area_and_no_more() {
+    // Four whole-frame copies are the budget of a 4x4 desktop.
+    let (mut reader, _writer) = scripted(4, 4, copy_rectangles(4, 4, 4)).await;
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    for script in [
+        copy_rectangles(5, 4, 4),
+        // Raw pixels count too: four copies and one more pixel.
+        {
+            let mut script = copy_rectangles(5, 4, 4);
+            script[3] = 5;
+            script.truncate(4 + 4 * 16);
+            script.extend(rectangle_header(0, 0, 1, 1, 0));
+            script.extend_from_slice(&[1, 2, 3, 0]);
+            script
+        },
+        // The 16-byte rectangles of the review: 65535 whole-frame copies.
+        copy_rectangles(u16::MAX, 4, 4),
+    ] {
+        let (mut reader, _writer) = scripted(4, 4, script).await;
+        let error = event(&mut reader).await.unwrap_err().to_string();
+        assert!(error.contains("pixel budget"), "{error}");
+    }
+}
+
+#[tokio::test]
+async fn an_update_changes_the_desktop_size_at_most_once() {
+    let update = |rectangles: &[Vec<u8>]| {
+        let mut bytes = vec![0, 0, 0, rectangles.len() as u8];
+        for rectangle in rectangles {
+            bytes.extend_from_slice(rectangle);
+        }
+        bytes
+    };
+    // Repeating the new size allocates nothing and is accepted.
+    let script = update(&[
+        extended_size_rectangle(0, 4, 2),
+        extended_size_rectangle(0, 4, 2),
+        rectangle_header(0, 0, 4, 2, -223),
+    ]);
+    let (mut reader, _writer) = scripted(2, 1, script).await;
+    let Event::Frame(frame) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    assert_eq!((frame.width, frame.height), (4, 2));
+    for script in [
+        update(&[
+            extended_size_rectangle(0, 4, 2),
+            extended_size_rectangle(0, 2, 1),
+        ]),
+        update(&[
+            extended_size_rectangle(0, 4, 2),
+            rectangle_header(0, 0, 2, 1, -223),
+        ]),
+    ] {
+        let (mut reader, _writer) = scripted(2, 1, script).await;
+        let error = event(&mut reader).await.unwrap_err().to_string();
+        assert!(error.contains("size more than once"), "{error}");
+    }
 }
