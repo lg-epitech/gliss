@@ -10,5 +10,3 @@ These helpers require no prepared guest, KVM state, research directory or retain
 `target/release/gliss-server`. Install the pinned Playwright Chromium, or explicitly set `CHROMIUM_PATH`.
 
 `npm test` runs no prepared-VM suite.
-
-The codec fixtures come from `test-support/rust/codec/fixtures.json`.

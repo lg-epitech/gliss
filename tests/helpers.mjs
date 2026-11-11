@@ -29,28 +29,12 @@ export async function freePort(){
   return port;
 }
 
-export function hybridServerArgs(options={}){
-  const base=options.hybridBase===undefined?'global':options.hybridBase;
-  const profile=options.hybridVideoProfile===undefined?'screen':options.hybridVideoProfile;
-  if(!['global','global-cached'].includes(base))throw new Error('Invalid explicit Hybrid base');
-  if(!['screen','camera-scene-on','camera-scene-off'].includes(profile))throw new Error('Invalid explicit Hybrid video profile');
-  if(!['hybrid','hybrid-grid','hybrid-continuity'].includes(options.codec||'deflate')&&(base!=='global'||profile!=='screen'))throw new Error('Nondefault Hybrid options require a Hybrid codec');
-  if(options.hybridMaskGrid!==undefined&&(![16,32].includes(options.hybridMaskGrid)||!['hybrid-grid','hybrid-continuity'].includes(options.codec)))throw new Error('Explicit mask grid16/32 requires hybrid-grid or hybrid-continuity');
-  const args=[];
-  if(options.hybridBase!==undefined)args.push('--hybrid-base',base);
-  if(options.hybridVideoProfile!==undefined)args.push('--hybrid-video-profile',profile);
-  if(options.hybridMaskGrid!==undefined)args.push('--hybrid-mask-grid',String(options.hybridMaskGrid));
-  return args;
-}
-
 export async function startServer(options={}){
-  const hybridArgs=hybridServerArgs(options);
   const port=options.port||await freePort();
   const token=randomBytes(24).toString('base64url');
   const url=`http://127.0.0.1:${port}`;
   const binary=serverBinary();
   const args=['--bind',`127.0.0.1:${port}`,'--codec',options.codec||'h264','--workload',options.workload||'static','--fps',String(options.fps||60),'--max-clients',String(options.maxClients||8)];
-  args.push(...hybridArgs);
   if(options.vnc)args.push('--vnc',options.vnc);else args.push('--demo');
   if(options.origin)args.push('--origin',options.origin);
   if(options.sessionTtl)args.push('--session-ttl',String(options.sessionTtl));

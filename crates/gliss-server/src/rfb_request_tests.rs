@@ -1,5 +1,5 @@
 use super::*;
-use crate::{App, Args, Input, Source};
+use crate::{App, Args, Input, Source, VideoTiming};
 use clap::Parser;
 use futures_util::FutureExt;
 use serde_json::json;
@@ -171,10 +171,7 @@ fn app(address: &str, policy: &str) -> App {
     .unwrap();
     App {
         args,
-        mode: None,
-        hybrid_config: gliss_hybrid::HybridConfig::default(),
-        hybrid_mask_grid: None,
-        video_timing: None,
+        video_timing: VideoTiming::new(10, 10, 3600).unwrap(),
         tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
         worker_shutdown: watch::channel(false).0,
         origins: Vec::new(),
