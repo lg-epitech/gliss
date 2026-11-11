@@ -643,10 +643,13 @@ fn authorized_until(app: &App, headers: &HeaderMap) -> Option<u64> {
     if expiry <= now() || expiry > now() + app.args.session_ttl || nonce.len() != 32 {
         return None;
     }
-    let signature = hex::decode(signature).ok()?;
     let mut mac = Hmac::<Sha256>::new_from_slice(&app.cookie_key).unwrap();
     mac.update(payload.as_bytes());
-    mac.verify_slice(&signature).is_ok().then_some(expiry)
+    // Compared as the text that was issued. Decoding the hex first would
+    // accept the same signature with any of its letters in upper case, so
+    // one session would have thousands of valid cookies.
+    let issued = hex::encode(mac.finalize().into_bytes());
+    bool::from(issued.as_bytes().ct_eq(signature.as_bytes())).then_some(expiry)
 }
 
 /// A login body is `{"token":"..."}` and a key is something a person pastes.
@@ -1445,6 +1448,9 @@ impl StreamEncoder {
             .encode(frame, sequence, input_id)
     }
 }
+
+#[cfg(test)]
+mod fuzz;
 
 #[cfg(test)]
 mod test_support;
