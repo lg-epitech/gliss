@@ -16,6 +16,8 @@ function* nalUnits(bytes) {
     const prefix = startCode(bytes, pos);
     if (!prefix || pos + prefix >= bytes.length || ++count > 4096) throw new Error('Invalid Annex B access unit');
     const begin = pos + prefix;
+    // A start code right behind another holds no unit. Read as one, it would hide the unit after it.
+    if (startCode(bytes, begin)) throw new Error('Invalid Annex B access unit');
     let end = begin + 1;
     while (end < bytes.length && !startCode(bytes, end)) end++;
     const nal = bytes.subarray(begin, end);
