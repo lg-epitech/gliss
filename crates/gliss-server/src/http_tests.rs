@@ -254,6 +254,44 @@ async fn a_stream_outlives_every_http_timeout() {
 }
 
 #[tokio::test]
+async fn failed_logins_at_one_address_do_not_lock_out_another() {
+    let app = app(&["--demo"]);
+    let server = serve(&app, limits(16, WAIT)).await;
+    let mut refused = 0;
+    for _ in 0..40 {
+        match login("127.0.0.1", server, "wrong").await.0 {
+            401 => assert_eq!(
+                refused, 0,
+                "a guess was checked after the address was limited"
+            ),
+            429 => refused += 1,
+            other => panic!("unexpected status {other}"),
+        }
+    }
+    // Guessing stays limited at the address that guesses.
+    assert_eq!(refused, 10);
+    assert_eq!(login("127.0.0.1", server, TOKEN).await.0, 429);
+    // Another address logs in as if nothing had happened.
+    let (code, cookie) = login("127.0.0.2", server, TOKEN).await;
+    assert_eq!(code, 200);
+    assert!(cookie.unwrap().starts_with("gliss_session="));
+}
+
+#[tokio::test]
+async fn successful_logins_use_none_of_the_allowance() {
+    let app = app(&["--demo"]);
+    let server = serve(&app, limits(16, WAIT)).await;
+    for _ in 0..40 {
+        assert_eq!(login("127.0.0.1", server, TOKEN).await.0, 200);
+    }
+    // The whole allowance of failures is still there afterwards.
+    for _ in 0..30 {
+        assert_eq!(login("127.0.0.1", server, "wrong").await.0, 401);
+    }
+    assert_eq!(login("127.0.0.1", server, "wrong").await.0, 429);
+}
+
+#[tokio::test]
 async fn the_origin_and_the_allowance_are_checked_before_a_login_body_is_read() {
     let app = app(&["--demo"]);
     let server = serve(&app, limits(16, WAIT)).await;

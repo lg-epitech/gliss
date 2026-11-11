@@ -3,6 +3,7 @@ mod audio_adpcm;
 mod demo;
 mod held;
 mod http;
+mod logins;
 mod notices;
 mod pacer;
 mod profiling;
@@ -15,7 +16,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{
-        DefaultBodyLimit, State, WebSocketUpgrade,
+        ConnectInfo, DefaultBodyLimit, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
     http::{HeaderMap, StatusCode, header},
@@ -34,7 +35,7 @@ use sha2::{Digest, Sha256};
 use std::{
     net::SocketAddr,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -159,7 +160,7 @@ struct App {
     cookie_key: [u8; 32],
     clients: Arc<Semaphore>,
     encoders: Arc<Semaphore>,
-    login_attempts: Mutex<(Instant, u32)>,
+    logins: logins::Logins,
     login_body_timeout: Duration,
     bytes: AtomicU64,
     frames: AtomicU64,
@@ -178,7 +179,7 @@ impl App {
             cookie_key: rand::random(),
             clients: Arc::new(Semaphore::new(args.max_clients)),
             encoders: Arc::new(Semaphore::new(2)),
-            login_attempts: Mutex::new((Instant::now(), 0)),
+            logins: logins::Logins::default(),
             login_body_timeout: LOGIN_BODY_TIMEOUT,
             bytes: AtomicU64::new(0),
             frames: AtomicU64::new(0),
@@ -670,21 +671,19 @@ fn is_json(headers: &HeaderMap) -> bool {
         })
 }
 
-async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
+async fn login(
+    State(app): State<Arc<App>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
     // Everything that needs no body comes first: a request that is refused
     // anyway cannot make the server wait for one.
     if !origin_allowed(&app, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    {
-        let mut rate = app.login_attempts.lock().unwrap();
-        if rate.0.elapsed() > Duration::from_secs(60) {
-            *rate = (Instant::now(), 0);
-        }
-        if rate.1 >= 30 {
-            return StatusCode::TOO_MANY_REQUESTS.into_response();
-        }
-        rate.1 += 1;
+    if !app.logins.attempt(peer.ip(), Instant::now()) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     if !is_json(&headers) {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
@@ -713,6 +712,7 @@ async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> R
     ))) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    app.logins.succeeded(peer.ip());
     let secure = if app.origins[0].starts_with("https://") {
         "; Secure"
     } else {
