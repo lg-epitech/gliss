@@ -87,6 +87,11 @@ const ENCODINGS: [i32; 7] = [0, 1, -239, -223, -308, clipboard::ENCODING, audio:
 const RAW_READ_BYTES: usize = 256 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
+/// Pixels one framebuffer update may write or move, as a multiple of the frame
+/// area. A server draws each pixel once and may scroll the frame first, which
+/// is twice the area; four leaves room for overlapping rectangles. Without a
+/// bound, 16-byte CopyRect rectangles each move a whole frame.
+const UPDATE_AREA_BUDGET: usize = 4;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a write to the server may make no progress. A server that reads
 /// at all takes a 10-byte message at once; one that has stopped reading would
@@ -112,7 +117,11 @@ pub struct Cursor {
 
 #[derive(Clone, Debug)]
 pub enum Event {
+    /// A framebuffer update that changed pixels or the size.
     Frame(Frame),
+    /// A framebuffer update that changed neither. It still answers an update
+    /// request, but there is no new picture to copy or encode.
+    Unchanged,
     Clipboard(String),
     Cursor(Cursor),
     Bell,
@@ -580,6 +589,58 @@ fn dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
+/// What one framebuffer update has done so far, and what it may still do.
+struct Update {
+    /// Whether a pixel or the size changed.
+    changed: bool,
+    resized: bool,
+    /// Pixels the remaining rectangles may write or move.
+    budget: usize,
+}
+
+impl Update {
+    fn new(frame: &Frame) -> Self {
+        Self {
+            changed: false,
+            resized: false,
+            budget: Self::budget(frame),
+        }
+    }
+
+    fn budget(frame: &Frame) -> usize {
+        usize::from(frame.width) * usize::from(frame.height) * UPDATE_AREA_BUDGET
+    }
+
+    /// Account for a rectangle that writes or moves `width`x`height` pixels.
+    fn draws(&mut self, width: u16, height: u16) -> Result<()> {
+        let pixels = usize::from(width) * usize::from(height);
+        self.budget = self
+            .budget
+            .checked_sub(pixels)
+            .context("RFB update exceeds its pixel budget")?;
+        self.changed |= pixels > 0;
+        Ok(())
+    }
+
+    /// Replace the frame when the size differs. Each replacement allocates a
+    /// whole frame, so an update gets one.
+    fn resizes(&mut self, frame: &mut Frame, width: u16, height: u16) -> Result<()> {
+        if (width, height) == (frame.width, frame.height) {
+            return Ok(());
+        }
+        ensure!(
+            !self.resized,
+            "RFB update changes the desktop size more than once"
+        );
+        *frame = Frame::new(width, height).context("invalid RFB resize")?;
+        self.resized = true;
+        self.changed = true;
+        // The rectangles that follow draw the new desktop.
+        self.budget = Self::budget(frame);
+        Ok(())
+    }
+}
+
 /// The framebuffer a connection decodes into and the byte order it arrives in.
 struct Surface {
     frame: Frame,
@@ -604,6 +665,7 @@ async fn decode<R: AsyncRead + Unpin>(
             0 => {
                 read.read_u8().await?;
                 let count = read.read_u16().await?;
+                let mut update = Update::new(&frame);
                 for rectangle_index in 0..count {
                     let x = read.read_u16().await?;
                     let y = read.read_u16().await?;
@@ -616,6 +678,7 @@ async fn decode<R: AsyncRead + Unpin>(
                         }
                         0 => {
                             bounds(&frame, x, y, width, height)?;
+                            update.draws(width, height)?;
                             let stride = usize::from(frame.width) * 4;
                             let row_bytes = usize::from(width) * 4;
                             if row_bytes == stride {
@@ -644,6 +707,7 @@ async fn decode<R: AsyncRead + Unpin>(
                             let source_x = read.read_u16().await?;
                             let source_y = read.read_u16().await?;
                             bounds(&frame, source_x, source_y, width, height)?;
+                            update.draws(width, height)?;
                             let stride = usize::from(frame.width) * 4;
                             let row_bytes = usize::from(width) * 4;
                             // Bottom-up copying handles vertical overlap; copy_within handles horizontal overlap.
@@ -706,9 +770,7 @@ async fn decode<R: AsyncRead + Unpin>(
                             );
                             ensure!(x == 0 && y == 0, "invalid RFB DesktopSize origin");
                             dimensions(width, height)?;
-                            if (width, height) != (frame.width, frame.height) {
-                                frame = Frame::new(width, height).context("invalid RFB resize")?;
-                            }
+                            update.resizes(&mut frame, width, height)?;
                         }
                         -308 => {
                             let count = read.read_u8().await?;
@@ -754,10 +816,7 @@ async fn decode<R: AsyncRead + Unpin>(
                                     .lock()
                                     .map_err(|_| anyhow::anyhow!("RFB layout lock poisoned"))? =
                                     Some(screens[0].0);
-                                if (width, height) != (frame.width, frame.height) {
-                                    frame =
-                                        Frame::new(width, height).context("invalid RFB resize")?;
-                                }
+                                update.resizes(&mut frame, width, height)?;
                             }
                             if x == 1 {
                                 events
@@ -772,9 +831,20 @@ async fn decode<R: AsyncRead + Unpin>(
                         }
                         other => bail!("unsupported RFB encoding {other}"),
                     }
+                    // A rectangle can cost a whole frame of copying and its
+                    // bytes may all be buffered already, so no read would
+                    // wait: other tasks on this worker get their turn here.
+                    tokio::task::yield_now().await;
                 }
+                // Copying the frame is the most expensive step of an update
+                // and starts an encode downstream: only a new picture pays it.
+                let event = if update.changed {
+                    Event::Frame(frame.clone())
+                } else {
+                    Event::Unchanged
+                };
                 events
-                    .send(Ok(Event::Frame(frame.clone())))
+                    .send(Ok(event))
                     .await
                     .context("RFB receiver dropped")?;
             }

@@ -274,12 +274,10 @@ async fn real_actor_waits_for_completion_and_resize_still_forces_full_refresh() 
         let (mut source, mut peer) = actor(policy).await;
         assert_eq!(message(&mut peer, 10).await, request(false, 16, 16));
         no_message(&mut peer).await; // Pending prevents duplicates after late ticks.
-        peer.write_all(&[0, 0, 0, 0]).await.unwrap(); // Empty completion still counts.
-        timeout(Duration::from_secs(2), source.frames.changed())
-            .await
-            .unwrap()
-            .unwrap();
+        // An empty completion still counts, though it publishes no frame.
+        peer.write_all(&[0, 0, 0, 0]).await.unwrap();
         assert_eq!(message(&mut peer, 10).await, request(true, 16, 16));
+        assert!(!source.frames.has_changed().unwrap());
         no_message(&mut peer).await;
         let mut resized = vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 20, 0, 12];
         resized.extend_from_slice(&(-223i32).to_be_bytes());

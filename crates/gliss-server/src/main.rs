@@ -162,6 +162,27 @@ struct App {
     started: Instant,
 }
 
+impl App {
+    /// `args` must already be validated.
+    fn new(args: Args, video_timing: VideoTiming, origins: Vec<String>) -> Self {
+        let (worker_shutdown, _) = watch::channel(false);
+        Self {
+            tcp_listener: tcp_listener::SocketPolicy::new(args.tcp_nodelay),
+            video_timing,
+            worker_shutdown,
+            origins,
+            cookie_key: rand::random(),
+            clients: Arc::new(Semaphore::new(args.max_clients)),
+            encoders: Arc::new(Semaphore::new(2)),
+            login_attempts: Mutex::new((Instant::now(), 0)),
+            bytes: AtomicU64::new(0),
+            frames: AtomicU64::new(0),
+            started: Instant::now(),
+            args,
+        }
+    }
+}
+
 /// Browser modules served at `/<path>`; `--export-web` writes the same files.
 const WEB_ASSETS: &[(&str, &str, &str)] = &[
     (
@@ -260,23 +281,8 @@ async fn run(args: Args) -> Result<()> {
         ],
     };
     let bind = args.bind;
-    let max_clients = args.max_clients;
-    let (worker_shutdown, _) = watch::channel(false);
-    let tcp_listener = tcp_listener::SocketPolicy::new(args.tcp_nodelay);
-    let app = Arc::new(App {
-        tcp_listener: tcp_listener.clone(),
-        args,
-        video_timing,
-        worker_shutdown,
-        origins,
-        cookie_key: rand::random(),
-        clients: Arc::new(Semaphore::new(max_clients)),
-        encoders: Arc::new(Semaphore::new(2)),
-        login_attempts: Mutex::new((Instant::now(), 0)),
-        bytes: AtomicU64::new(0),
-        frames: AtomicU64::new(0),
-        started: Instant::now(),
-    });
+    let app = Arc::new(App::new(args, video_timing, origins));
+    let tcp_listener = app.tcp_listener.clone();
     let mut router = Router::new().route(
         "/",
         get(|| async { Html(include_str!("../../../web/index.html")) }),
@@ -815,6 +821,14 @@ async fn source(app: &App) -> Result<Source> {
                         let forwarded_input_id = reader_id.load(Ordering::Acquire);
                         if frame_tx.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
                     }
+                    Event::Unchanged => {
+                        // The request was answered, so the next one is due and the
+                        // server is still active, but there is no picture to
+                        // publish and nothing to encode.
+                        reader_pending.store(false, Ordering::Release);
+                        if let Some(completion) = &reader_completion { completion.notify_one(); }
+                        reader_display_changed.notify_one();
+                    }
                     Event::Clipboard(text) => { let _ = reader_events.try_send(json!({"type":"clipboard","text":text})); }
                     Event::Cursor(cursor) => { let _ = reader_events.try_send(json!({"type":"cursor","width":cursor.width,"height":cursor.height,"hotspot_x":cursor.hotspot_x,"hotspot_y":cursor.hotspot_y,"pixels":cursor.pixels})); }
                     Event::Bell => { let _ = reader_events.try_send(json!({"type":"bell"})); }
@@ -1241,3 +1255,9 @@ impl StreamEncoder {
             .encode(frame, sequence, input_id)
     }
 }
+
+#[cfg(test)]
+mod test_support;
+
+#[cfg(test)]
+mod source_tests;
