@@ -2,7 +2,7 @@
 import { GlissClient } from './client.js';
 
 const $=id=>document.getElementById(id);
-let cliptext='';let sourceType='';
+let cliptext='';let sourceType='';let displayError=false;
 const client=new GlissClient($('screen'),text=>$('status').textContent=text,event=>{
   if(event.type==='hello')sourceType=event.source;
   if(event.type==='audio_state'){
@@ -12,6 +12,8 @@ const client=new GlissClient($('screen'),text=>$('status').textContent=text,even
     $('sound').title=event.message||(!event.available?'This VM has no audio output.':'Play VM audio');
   }
   if(event.type==='frame'){
+    // An error about the display mode ends with the first frame after it: the picture is back.
+    if(displayError){displayError=false;$('status').textContent='Connected';}
     $('resolution').textContent=`${event.frame.width} × ${event.frame.height}`;
     $('traffic').textContent=`${(client.metrics.bytes/1048576).toFixed(2)} MiB received`;
     const ts=client.metrics.presentTimes;const tail=ts.slice(-60);const fps=tail.length>1?(tail.length-1)*1000/(tail.at(-1)-tail[0]):0;
@@ -24,6 +26,7 @@ const client=new GlissClient($('screen'),text=>$('status').textContent=text,even
     if(event.width<=128&&event.height<=128&&event.pixels.length===event.width*event.height*4){const c=document.createElement('canvas');c.width=event.width;c.height=event.height;c.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(event.pixels),c.width,c.height),0,0);$('screen').style.cursor=`url(${c.toDataURL()}) ${event.hotspot_x} ${event.hotspot_y}, default`;}
   }
   if(event.type==='error'||event.type==='input_error')$('status').textContent=event.message;
+  if(event.type==='error')displayError=true;
   if(event.type==='resize_result'&&event.status!==0)$('status').textContent='The VM declined the desktop size change.';
 });
 window.gliss=client;

@@ -12,7 +12,7 @@ class Reader {
 }
 
 export async function startRfb({extendedClipboard=false,name='fixture'}={}){
-  const inputs=[];const sockets=new Set();const waiters=[];
+  const inputs=[];const sockets=new Set();const waiters=[];const resizers=new Set();
   const extended=(flags,data=Buffer.alloc(0))=>Buffer.concat([Buffer.from([3,0,0,0]),integer(-(4+data.length)),integer(flags),data]);
   let guestText='';
   const record=input=>{inputs.push(input);for(const waiter of [...waiters])if(waiter.predicate(inputs)){clearTimeout(waiter.timer);waiters.splice(waiters.indexOf(waiter),1);waiter.resolve(inputs);}};
@@ -24,8 +24,10 @@ export async function startRfb({extendedClipboard=false,name='fixture'}={}){
       socket.write(Buffer.from([1,1]));await reader.read(1);socket.write(integer(0));await reader.read(1);
       const format=Buffer.from([32,24,0,1,0,255,0,255,0,255,0,8,16,0,0,0]);
       socket.write(Buffer.concat([word(96),word(64),format,integer(Buffer.byteLength(name)),Buffer.from(name)]));
-      let color=[12,34,56,0],pending=false,dirty=true;
-      const update=()=>{if(!pending||!dirty)return;const pixels=Buffer.alloc(96*64*4);for(let i=0;i<pixels.length;i+=4)pixels.set(color,i);socket.write(Buffer.concat([Buffer.from([0,0]),word(1),word(0),word(0),word(96),word(64),integer(0),pixels]));pending=false;dirty=false;};
+      let color=[12,34,56,0],pending=false,dirty=true,width=96,height=64,resized=false;
+      // A new size is announced alone, as a DesktopSize rectangle; its pixels follow the next request.
+      const update=()=>{if(!pending||!dirty)return;pending=false;if(resized){resized=false;socket.write(Buffer.concat([Buffer.from([0,0]),word(1),word(0),word(0),word(width),word(height),integer(-223)]));return;}const pixels=Buffer.alloc(width*height*4);for(let i=0;i<pixels.length;i+=4)pixels.set(color,i);socket.write(Buffer.concat([Buffer.from([0,0]),word(1),word(0),word(0),word(width),word(height),integer(0),pixels]));dirty=false;};
+      const resize=(w,h)=>{width=w;height=h;resized=true;dirty=true;update();};resizers.add(resize);socket.on('close',()=>resizers.delete(resize));
       while(!socket.destroyed){
         const type=(await reader.read(1))[0];
         if(type===0)await reader.read(19);
@@ -49,5 +51,5 @@ export async function startRfb({extendedClipboard=false,name='fixture'}={}){
     })().catch(()=>socket.destroy());
   });
   server.listen(0,'127.0.0.1');await once(server,'listening');
-  return{sendClipboard:text=>{guestText=text;for(const socket of sockets)socket.write(extended(0x08000001));},address:`127.0.0.1:${server.address().port}`,inputs,waitFor:(predicate,timeout=5000)=>{if(predicate(inputs))return Promise.resolve(inputs);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{waiters.splice(waiters.indexOf(waiter),1);reject(new Error(`Input wait expired; received ${inputs.length} messages`));},timeout)};waiters.push(waiter);});},stop:async()=>{for(const socket of sockets)socket.destroy();for(const waiter of waiters){clearTimeout(waiter.timer);waiter.reject(new Error('Fixture stopped'));}await new Promise(resolve=>server.close(resolve));}};
+  return{resize:(width,height)=>{for(const resize of resizers)resize(width,height);},sendClipboard:text=>{guestText=text;for(const socket of sockets)socket.write(extended(0x08000001));},address:`127.0.0.1:${server.address().port}`,inputs,waitFor:(predicate,timeout=5000)=>{if(predicate(inputs))return Promise.resolve(inputs);return new Promise((resolve,reject)=>{const waiter={predicate,resolve,reject,timer:setTimeout(()=>{waiters.splice(waiters.indexOf(waiter),1);reject(new Error(`Input wait expired; received ${inputs.length} messages`));},timeout)};waiters.push(waiter);});},stop:async()=>{for(const socket of sockets)socket.destroy();for(const waiter of waiters){clearTimeout(waiter.timer);waiter.reject(new Error('Fixture stopped'));}await new Promise(resolve=>server.close(resolve));}};
 }
