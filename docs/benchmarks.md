@@ -51,6 +51,13 @@ Loss drops every 100th UDP datagram. Locally, Gliss used 13.5–14.6% of one ser
 
 An earlier moving-desktop cohort on a kernel netem link (20 ms delay, 5 ms jitter, 0.5% loss, 20 Mbit/s) also ran Guacamole. Gliss full-frame H.264 passed both impaired trials at 0.44–0.50 Mbit/s. Guacamole failed both on drag restoration, using 4.1–4.3 Mbit/s.
 
+## Distribox path on a real QEMU guest
+
+The [Distribox path notes](distribox-path.md) measure the WebSocket H.264 path
+with Distribox's flags against a real QEMU guest: input-to-paint latency, frame
+rate and cadence during motion, CPU per painted frame and bitrate, before and
+after the changes that pace Gliss to QEMU's VNC server.
+
 ## Data and reproduction
 
 - [`benchmarks/reference.json`](../benchmarks/reference.json) holds the terminal and kernel-loss measurements. `python3 benchmarks/verify.py` recomputes the terminal table and exclusion counts from it.

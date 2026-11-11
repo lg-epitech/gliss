@@ -6,6 +6,8 @@ Run `python3 -B benchmarks/verify.py` from the repository root to recompute the 
 
 [motion/](motion/) holds the per-run results of the moving-desktop comparison between Gliss all-IDR video and the WebRTC baseline, including failed runs.
 
+[distribox-path-2026-11-11.json.gz](distribox-path-2026-11-11.json.gz) holds the real-QEMU comparison described in [the Distribox path notes](../docs/distribox-path.md): every raw sample of the final three-build run, the per-step ablation summaries, the hill-climb session record and its evaluator. Inspect it with `gzip -dc benchmarks/distribox-path-2026-11-11.json.gz | python3 -m json.tool | less`.
+
 The `codec-bench` executable generates deterministic synthetic frames, verifies decoded pixels and records codec CPU time and bytes. It creates its selected output parent and replaces the output file. This is a component measurement, separate from input-to-browser latency, guest capture, network behavior or a Guacamole comparison.
 
 ```sh
