@@ -1,6 +1,6 @@
 # H.264 desktop video
 
-This crate encodes the desktop stream: software H.264 through OpenH264, decoded in the browser with WebCodecs and carried over WebSocket. It is a software video path, with no WebRTC signaling/media implementation.
+This crate encodes the desktop stream: software H.264 through OpenH264, decoded in the browser with WebCodecs and carried over WebSocket.
 
 `openh264 = 0.9.8` builds bundled Cisco OpenH264 2.6.0 source through `openh264-sys2`; runtime encoding uses one native thread and no GPU library. The current Rust API was verified against the [maintainer's encoder documentation](https://docs.rs/openh264/0.9.8/openh264/encoder/struct.Encoder.html) and fetched crate source. Source builds and [Cisco's supported features](https://github.com/cisco/openh264/tree/v2.6.0) make native software decoding available for tests as well.
 
@@ -54,7 +54,7 @@ try {
 }
 ```
 
-The result is `{ width, height, videoFrame, sequence, inputId, keyframe, tiles: 1, bytes }`. Promises resolve on the output `VideoFrame` matched by the chunk timestamp/sequence. No flush is required per frame. Pending work is bounded to two frames, output has a five-second deadline, delta sequences must be contiguous, and resize/reconfiguration requires a drained queue and an IDR. Reset/close reject pending work and close late outputs. The caller owns returned frames and must close them after drawing.
+The result carries `width`, `height`, `videoFrame`, `sequence`, `inputId`, `keyframe` and `bytes`. Promises resolve on the output `VideoFrame` matched by the chunk timestamp/sequence. No flush is required per frame. Pending work is bounded to two frames, output has a five-second deadline, delta sequences must be contiguous, and resize/reconfiguration requires a drained queue and an IDR. Reset/close reject pending work and close late outputs. The caller owns returned frames and must close them after drawing.
 
 ## Validation
 

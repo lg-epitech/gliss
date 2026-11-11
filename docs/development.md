@@ -1,14 +1,11 @@
 # Development
 
-Run these commands from the repository root on Linux. The release toolchain is Rust 1.98.0 with rustfmt and Clippy, Node.js 24.10.0 with npm, and Python 3.14. Keep Cargo.lock and package-lock.json in place.
+Run these commands from the repository root on Linux. The toolchain is Rust 1.98.0 with rustfmt and Clippy, which `rust-toolchain.toml` selects, and Node.js 24.10.0 with npm. Keep Cargo.lock and package-lock.json in place.
 
-Install a C/C++ compiler, linker, make, NASM and CMake. The workspace builds OpenH264 and Opus from bundled source; no installed FFmpeg, OpenH264 or Opus library is needed. On Debian or Ubuntu, install `build-essential nasm cmake`; Python virtual environments require the matching Python venv package.
+Install a C/C++ compiler, linker, make, NASM and CMake. The workspace builds OpenH264 and Opus from bundled source; no installed FFmpeg, OpenH264 or Opus library is needed. On Debian or Ubuntu, install `build-essential nasm cmake`.
 
 ```sh
 rustup toolchain install 1.98.0 --profile minimal --component rustfmt --component clippy
-rustup override set 1.98.0
-python3.14 -m venv .venv
-.venv/bin/python -m pip install -r integration/distribox/prototype/requirements.txt
 npm ci
 npx playwright install --with-deps chromium
 ```
@@ -26,57 +23,13 @@ cargo clippy --locked --workspace --all-targets -j 2 -- -D warnings
 cargo build --locked --release --workspace -j 2
 export GLISS_BINARY="$PWD/target/release/gliss-server"
 npm test
-npm run test:vendor
 ```
 
-`GLISS_BINARY` selects the freshly built executable. The public browser helper otherwise uses `target/release/gliss-server` in this checkout. The Linux native-FD test uses an owned mock RFB peer and requires Python, `/proc` and pidfds; it needs no prepared VM. Codec and tile interoperability fixtures are retained under [test-support](../test-support/).
+`GLISS_BINARY` selects the server the browser tests start and must be an absolute path. Without it they use `target/release/gliss-server` in this checkout.
 
-`npm test` runs the portable `tests/*.test.mjs` suite and the bounded inflater contracts serially. The suite needs no VM; it does not cover real QEMU or D-Bus guest integration. `test:vendor` runs the inflater contracts separately, including malformed-input and provenance checks.
+`npm test` runs the `tests/*.test.mjs` suite serially. Its browser cases drive headless Chromium against the release server, fed by the `--demo` source or by a [mock RFB peer](../tests/mock-rfb.mjs). The suite needs no VM and does not cover a real QEMU guest; the two smoke tests and the benchmark below do.
 
-## Reference gateway
-
-The adapter unit tests require no native worker or browser:
-
-```sh
-.venv/bin/python -B -m unittest discover -s tests/integration-adapter -v
-.venv/bin/python -B -m unittest \
-  integration.distribox.prototype.tests.test_codec_presets \
-  integration.distribox.prototype.tests.test_gateway.SchemaTests -v
-node --test integration/distribox/prototype/tests/viewer-media.test.mjs
-```
-
-After the release build, run the owned-peer integration cases sequentially:
-
-```sh
-export GLISS_BINARY="$PWD/target/release/gliss-server"
-export GLISS_PROTOTYPE_PYTHON="$PWD/.venv/bin/python"
-.venv/bin/python -B -m unittest discover -s integration/distribox/prototype/tests -v
-node --test --test-concurrency=1 integration/distribox/prototype/tests/browser.test.mjs
-node --test --test-concurrency=1 integration/distribox/prototype/tests/browser-glh4.test.mjs
-```
-
-Without `GLISS_BINARY`, some Python native cases and the lossless browser case skip; those skips do not establish integration correctness. The GLH4 browser case fails without the explicit executable. These tests use fresh mock RFB peers, not real VM attachment. See the [prototype guide](../integration/distribox/prototype/README.md) for the precise coverage.
-
-## Benchmarks
-
-The verifier recomputes the published terminal table and exclusion counts from the retained measurement extract. It does not rerun the historical experiments:
-
-```sh
-python3.14 -B benchmarks/verify.py
-```
-
-The component benchmark generates deterministic synthetic frames and checks decoded pixels while measuring codec CPU time and bytes. It replaces the selected output file if it exists:
-
-```sh
-cargo run --locked --release -j 2 -p gliss-codec --bin codec-bench -- \
-  --repetitions 3 --output output.json
-```
-
-Its output is a local component measurement, not a live desktop, browser latency or network comparison. See [benchmarks](benchmarks.md) for the published results and their limits.
-
-The opt-in [lossless browser benchmark](browser-performance.md) compares client
-and decoder revisions using identical packets, Canvas pixels, ACKs and CPU
-counters. It needs Chromium and npm dependencies, but no native build or VM.
+Two more checks run on their own: the [video crate](../crates/gliss-video/README.md#validation) has decoder tests and a browser decode probe, and [verification/frame-ownership](../verification/frame-ownership/README.md) holds a Lean model of decoded-frame ownership in the client.
 
 ## Real QEMU audio smoke
 
@@ -84,8 +37,8 @@ This opt-in test boots a temporary diskless Linux guest with an output-only HDA
 device. Its ALSA player generates different tones on the left and right channels.
 The test checks those tones at the browser's actual Web Audio output after QEMU
 VNC capture, Gliss Opus encoding and native browser decoding; it repeats with the
-PCM fallback. It also checks wire bitrate, bounded queues, video decoding and
-mute cleanup. It runs outside the portable `npm test` suite.
+IMA ADPCM fallback. It also checks wire bitrate, bounded queues, video decoding
+and mute cleanup. It runs outside the portable `npm test` suite.
 
 ```sh
 export GLISS_BINARY="$PWD/target/release/gliss-server"
@@ -104,23 +57,6 @@ The fixture creates no disk images or libvirt definitions and requires no host
 audio daemon. It removes its temporary initramfs and stops its own QEMU and
 Gliss processes on completion. The measured bitrate and playback queues describe
 this local tone test; they do not establish WAN latency or music quality.
-
-The cross-repository smoke also exercises Distribox's real React sound button,
-backend process startup, exported browser modules and WebSocket relay for local
-credential and slave VM access:
-
-```sh
-export DISTRIBOX_ROOT=/absolute/path/to/Distribox
-export DISTRIBOX_PYTHON=/absolute/path/to/Distribox/backend/venv/bin/python
-node --test integration/distribox/audio-client.test.mjs
-```
-
-Install the frontend dependencies in that Distribox checkout and the backend
-requirements, including the audio-capable Gliss wheel, in its Python environment
-first. This test uses the wheel's actual executable and embedded web assets. It
-stubs authentication/database lookups and VM discovery to target only its own
-disposable QEMU guest; it does not validate deployed credentials, networks or VM
-provisioning. VM-id access is entered through client navigation after hydration.
 
 ## Real QEMU clipboard smoke
 
@@ -170,44 +106,36 @@ what it measures and its limits.
 
 For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).
 
-WebSocket `--codec h264` defaults to a keyframe every 3600 encoded frames, two
-minutes at 30 FPS and the longest interval the encoder accepts. The stream is
-reliable and the client asks for a keyframe after a decode error, so a periodic
-keyframe only costs a burst of bytes and resets the picture to a coarser
-quality. New sessions, resyncs and resizes still force an immediate keyframe.
-`--video-intra-period 240` restores the previous interval at 30 FPS. Datagram
-and public encoder-library defaults are unchanged.
+The stream sends a keyframe every 3600 encoded frames, two minutes at 30 FPS
+and the longest interval the encoder accepts. The stream is reliable and the
+client asks for a keyframe after a decode error, so a periodic keyframe only
+costs a burst of bytes and resets the picture to a coarser quality. New
+sessions, resyncs and resizes still force an immediate keyframe.
+`--video-intra-period N` sets another interval, from 1 to 3600 frames.
 
-The WebSocket audio player prefers Opus, with advertised IMA ADPCM and PCM
-fallbacks. The [audio wire format](audio-wire.md) describes codec negotiation,
-payload bounds and freshness limits.
+The audio player prefers Opus, with advertised IMA ADPCM and PCM fallbacks. The
+[audio wire format](audio-wire.md) describes codec negotiation, payload bounds
+and freshness limits.
 
 `--audio-packet-ms 20|40` selects a fixed packet duration before opening the
 source. Omission keeps 20 ms. Longer packets reduce packet/header overhead and
 increase assembly delay; they leave less time within the same 100 ms ingress-age
-budget. `hello.audio_packet_ms` and the authenticated HTTP `/stats` response
+budget. `hello.audio_packet_ms` and the authenticated `/api/stats` response
 report the selection.
 
-With `--stream-stats`, the existing diagnostics include `audio.packet_ms` and
-`audio.counters`. They count emitted packets/frames/bytes, stale raw or partial
-audio, pending resets, raw/writer broadcast lag, encoder errors and writer age
-rejections. Counts are cumulative per source, and each field is sampled
-independently. Raw data arriving while audio is disabled is uncounted. Pending
-resets combine stale-input, capture, subscription and lag resets. Emission is
-not proof of delivery; a pre-write age check cannot expire bytes already in TCP.
+With `--stream-stats`, the server sends a `stream_stats` message every second.
+It includes `audio.packet_ms` and `audio.counters`, which count emitted
+packets/frames/bytes, stale raw or partial audio, pending resets, raw/writer
+broadcast lag, encoder errors and writer age rejections. Counts are cumulative
+per viewer connection, and each field is sampled independently. Raw data
+arriving while audio is disabled is uncounted. Pending resets combine
+stale-input, capture, subscription and lag resets. Emission is not proof of
+delivery; a pre-write age check cannot expire bytes already in TCP.
 
 Accepted HTTP/WebSocket sockets enable `TCP_NODELAY` by default.
 `--tcp-nodelay false` restores coalescing. The selected option is read back
 before HTTP uses each accepted socket; `hello.tcp_listener` reports verification
 counts. This setting does not remove congestion or retransmission delays.
-
-WebSocket H.264 also accepts `--video-qp-min MIN --video-qp-max MAX` and
-`--video-frame-skip true`. QP bounds must be supplied together with
-`1 <= MIN <= MAX <= 51`; omission preserves encoder defaults. More quantization
-trades image fidelity for smaller pictures. Frame skipping permits the encoder
-to omit pictures to meet its rate target, reducing update cadence. Neither is a
-hard bandwidth cap. Both options reject datagram mode and benchmark capture.
-See the [video crate](../crates/gliss-video/README.md) for API and metadata details.
 
 ## Releasing
 
