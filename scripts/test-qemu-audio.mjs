@@ -10,16 +10,17 @@ import assert from 'node:assert/strict';
 import {startServer, launchBrowser, loginPage} from '../tests/helpers.mjs';
 import {startAudioVm} from '../test-support/qemu-audio/fixture.mjs';
 
-test('real QEMU HDA → VNC → Gliss → browser: stereo Opus/PCM, bounded playback and mute', {timeout: 90000}, async t => {
+test('real QEMU HDA → VNC → Gliss → browser: stereo Opus/ADPCM, bounded playback and mute', {timeout: 90000}, async t => {
   const vm = await startAudioVm(t);
   const server = await startServer({vnc: vm.vnc, codec: 'h264', fps: 30,
     h264Bitrate: 2000000, inFlightFrames: 4});
   t.after(server.stop);
   const browser = await launchBrowser();t.after(() => browser.close());
-  for (const codec of ['opus', 'pcm']) {
+  // Without WebCodecs audio decoding the client falls back to IMA ADPCM.
+  for (const codec of ['opus', 'ima-adpcm']) {
     const page = await browser.newPage(), errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    if (codec === 'pcm') await page.addInitScript(() => {window.AudioDecoder = undefined;});
+    if (codec === 'ima-adpcm') await page.addInitScript(() => {window.AudioDecoder = undefined;});
     await loginPage(page, server);
     await page.waitForFunction(() => window.gliss.audio.available);
     await page.evaluate(() => {
@@ -70,7 +71,7 @@ test('real QEMU HDA → VNC → Gliss → browser: stereo Opus/PCM, bounded play
     assert.ok(Math.abs(result.signal[0].hz - 440) < 35, JSON.stringify(result));
     assert.ok(Math.abs(result.signal[1].hz - 880) < 35, JSON.stringify(result));
     if (codec === 'opus') assert.ok(bitrate < 160000, `Opus bitrate ${bitrate}`);
-    else assert.ok(bitrate < 1600000, `PCM bitrate ${bitrate}`);
+    else assert.ok(bitrate < 500000, `ADPCM bitrate ${bitrate}`);
     await page.click('#test-audio');await page.evaluate(() => window.soundRequest);
     const muted = await page.evaluate(() => window.gliss.audio.snapshot());
     assert.equal(muted.contextState, 'closed');assert.equal(muted.sources, 0);assert.equal(muted.enabled, false);
