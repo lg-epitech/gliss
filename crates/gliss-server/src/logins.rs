@@ -99,6 +99,10 @@ impl Logins {
 }
 
 #[cfg(test)]
+#[path = "fuzz/logins.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

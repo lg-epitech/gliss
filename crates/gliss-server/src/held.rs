@@ -70,6 +70,10 @@ impl Held {
 }
 
 #[cfg(test)]
+#[path = "fuzz/held.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
