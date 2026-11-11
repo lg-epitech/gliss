@@ -38,19 +38,28 @@ export class GlissClient {
       // Audio must keep running when video waits for a decoder or animation frame.
       if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
       const profiling=this.profiler,receivedAt=profiling?performance.now():null;
-      if(profiling&&typeof event.data!=='string')profiling.received(event.data.byteLength,receivedAt);
-      let textMessage,textError;
+      const failed=error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}};
       if(typeof event.data==='string'){
-        try{textMessage=JSON.parse(event.data);profiling?.control(textMessage,receivedAt);if(textMessage?.type==='audio_status'){this.audio.status(textMessage);this.onEvent(textMessage);return;}if(textMessage?.type==='pong'){this.onEvent(textMessage);return;}}catch(error){textError=error;}
+        // Two messages are about the picture and wait their turn among the frames: hello describes
+        // the frames after it, and error says the picture stopped. Every other message is handled
+        // now. Behind a frame that waits to be painted in a hidden tab, the guest's cursors and
+        // clipboards would otherwise pile up for as long as the tab stays hidden.
+        let message;
+        try{
+          message=JSON.parse(event.data);profiling?.control(message,receivedAt);
+          if(message.type==='audio_status')this.audio.status(message);
+          if(message.type!=='hello'&&message.type!=='error'){this.onEvent(message);return;}
+        }catch(error){failed(error);return;}
+        this.chain=this.chain.then(()=>{
+          if(epoch!==this.epoch)return;
+          if(message.type==='hello')this.codec=message.codec;
+          this.onEvent(message);
+        }).catch(failed);
+        return;
       }
+      if(profiling)profiling.received(event.data.byteLength,receivedAt);
       this.chain=this.chain.then(async()=>{
       if(epoch!==this.epoch)return;
-      if(typeof event.data==='string'){
-        if(textError)throw textError;
-        const message=textMessage;
-        if(message.type==='hello')this.codec=message.codec;
-        this.onEvent(message);return;
-      }
       const started=performance.now();let ownedVideoFrame=null;
       try {
         const frame=await decoder.decode(event.data);
@@ -94,7 +103,7 @@ export class GlissClient {
         this.onStatus(`Display recovery: ${error.message}`);
         if(socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({type:'resync'}));
       }finally{ownedVideoFrame?.close();}
-    }).catch(error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}});};
+    }).catch(failed);};
   }
   send(input,{pixelEcho=false}={}) {
     if(this.socket?.readyState!==WebSocket.OPEN)return 0;
