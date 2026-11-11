@@ -443,13 +443,16 @@ async fn real_actor_serializes_input_and_releases_held_inputs_while_pending() {
 
 #[tokio::test]
 async fn real_actor_disconnect_reports_error_and_pending_wait_cancels() {
-    let (mut source, mut peer) = actor("eager").await;
+    let (source, mut peer) = actor("eager").await;
     assert_eq!(message(&mut peer, 10).await, request(false, 16, 16));
     peer.shutdown().await.unwrap();
-    let event = timeout(Duration::from_secs(2), source.events.recv())
+    let notice = timeout(Duration::from_secs(2), source.notices.next())
         .await
-        .unwrap()
         .unwrap();
-    assert_eq!(event["type"], "error");
+    assert!(notice.last);
+    assert_eq!(
+        notice.text,
+        r#"{"message":"The VM display disconnected.","type":"error"}"#
+    );
     stop(source, peer).await;
 }

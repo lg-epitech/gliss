@@ -1,6 +1,7 @@
 mod audio;
 mod audio_adpcm;
 mod demo;
+mod notices;
 mod pacer;
 mod profiling;
 mod rfb_request;
@@ -749,7 +750,7 @@ struct Source {
     audio_counters: Arc<audio::Counters>,
     frames: watch::Receiver<Option<Captured>>,
     input: mpsc::Sender<Input>,
-    events: mpsc::Receiver<serde_json::Value>,
+    notices: Arc<notices::Notices>,
     shutdown: Option<oneshot::Receiver<()>>,
     _tasks: JoinSet<()>,
 }
@@ -757,7 +758,7 @@ struct Source {
 async fn source(app: &App) -> Result<Source> {
     let (frame_tx, frames) = watch::channel(None);
     let (input, mut input_rx) = mpsc::channel::<Input>(128);
-    let (event_tx, events) = mpsc::channel(16);
+    let notices = Arc::new(notices::Notices::default());
     let (audio, mut audio_requests, audio_status) = audio::channel();
     let audio_config = audio::EncodeConfig::new(app.args.audio_packet_ms);
     let audio_counters = audio_config.counters.clone();
@@ -805,34 +806,60 @@ async fn source(app: &App) -> Result<Source> {
         let reader_size = dimensions.clone();
         let reader_pending = pending.clone();
         let reader_refresh = refresh.clone();
-        let reader_events = event_tx.clone();
+        let reader_notices = notices.clone();
+        let input_notices = notices.clone();
         let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
             loop {
-                let event = match reader.read_event().await { Ok(event) => event, Err(_) => { let _ = reader_events.send(json!({"type":"error","message":"The VM display disconnected."})).await; break; } };
+                let event = match reader.read_event().await {
+                    Ok(event) => event,
+                    Err(_) => {
+                        reader_notices.failed("The VM display disconnected.");
+                        break;
+                    }
+                };
                 match event {
                     Event::Frame(frame) => {
                         let size = (u32::from(frame.width) << 16) | u32::from(frame.height);
-                        if reader_size.swap(size, Ordering::AcqRel) != size { reader_refresh.store(true, Ordering::Release); }
+                        if reader_size.swap(size, Ordering::AcqRel) != size {
+                            reader_refresh.store(true, Ordering::Release);
+                        }
                         reader_pending.store(false, Ordering::Release);
-                        if let Some(completion) = &reader_completion { completion.notify_one(); }
+                        if let Some(completion) = &reader_completion {
+                            completion.notify_one();
+                        }
                         reader_display_changed.notify_one();
                         let frame = Arc::new(frame);
                         let forwarded_input_id = reader_id.load(Ordering::Acquire);
-                        if frame_tx.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
+                        if frame_tx
+                            .send(Some(Captured {
+                                frame,
+                                forwarded_input_id,
+                                published_at: profile_capture.then(Instant::now),
+                            }))
+                            .is_err()
+                        {
+                            break;
+                        }
                     }
                     Event::Unchanged => {
                         // The request was answered, so the next one is due and the
                         // server is still active, but there is no picture to
                         // publish and nothing to encode.
                         reader_pending.store(false, Ordering::Release);
-                        if let Some(completion) = &reader_completion { completion.notify_one(); }
+                        if let Some(completion) = &reader_completion {
+                            completion.notify_one();
+                        }
                         reader_display_changed.notify_one();
                     }
-                    Event::Clipboard(text) => { let _ = reader_events.try_send(json!({"type":"clipboard","text":text})); }
-                    Event::Cursor(cursor) => { let _ = reader_events.try_send(json!({"type":"cursor","width":cursor.width,"height":cursor.height,"hotspot_x":cursor.hotspot_x,"hotspot_y":cursor.hotspot_y,"pixels":cursor.pixels})); }
-                    Event::Bell => { let _ = reader_events.try_send(json!({"type":"bell"})); }
-                    Event::ResizeResult { width, height, status } => { let _ = reader_events.try_send(json!({"type":"resize_result","width":width,"height":height,"status":status})); }
+                    Event::Clipboard(text) => reader_notices.clipboard(text),
+                    Event::Cursor(cursor) => reader_notices.cursor(cursor),
+                    Event::Bell => reader_notices.bell(),
+                    Event::ResizeResult {
+                        width,
+                        height,
+                        status,
+                    } => reader_notices.resize_result(width, height, status),
                 }
             }
         });
@@ -866,7 +893,7 @@ async fn source(app: &App) -> Result<Source> {
                         let Some(command) = command else { break; };
                         if let Input::Key { keysym, down, .. } = &command { if *down { keys.insert(*keysym); } else { keys.remove(keysym); } }
                         if let Input::Pointer { x, y, buttons, .. } = &command { pointer = Some((*x, *y, *buttons)); }
-                        if let Err(error) = writer.send_input(&command).await { let _ = event_tx.try_send(json!({"type":"input_error","message":error.to_string()})); }
+                        if let Err(error) = writer.send_input(&command).await { input_notices.input_error(error.to_string()); }
                         else { input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
                     }
                     _ = display_changed.notified() => {
@@ -906,7 +933,7 @@ async fn source(app: &App) -> Result<Source> {
         audio_counters,
         frames,
         input,
-        events,
+        notices,
         shutdown,
         _tasks: tasks,
     })
@@ -951,7 +978,6 @@ struct MediaPacket {
 
 struct ControlPacket {
     message: Message,
-    flushed: Option<oneshot::Sender<()>>,
 }
 
 struct WriteComplete {
@@ -991,6 +1017,9 @@ fn replace_latest(
     *latest = capture;
 }
 
+/// How long the browser gets to take the event that ends its session.
+const LAST_NOTICE_WRITE: Duration = Duration::from_secs(2);
+
 /// The clock of a session's deadlines. It is tokio's, which a test can pause,
 /// so that every deadline of a session moves with the same clock.
 fn session_now() -> Instant {
@@ -1023,6 +1052,7 @@ where
     let mut audio_status = source.audio.status.clone();
     let mut audio_packets = source.audio.packets.subscribe();
     let writer_audio_counters = source.audio_counters.clone();
+    let notices = source.notices.clone();
     // This task forwards input independently of semaphore waits, encoding and writes.
     // Dropping the session's JoinSet aborts it and releases its input sender clone.
     io_tasks.spawn(async move {
@@ -1090,7 +1120,18 @@ where
                 }
                 Some(control) = controls.recv() => {
                     tokio::time::timeout(Duration::from_secs(10), sink.send(control.message)).await.context("control write timed out")??;
-                    if let Some(flushed) = control.flushed { let _ = flushed.send(()); }
+                    continue;
+                }
+                // Taken only when it can be written next, so a browser that reads
+                // slowly holds back one event here and the newest of each kind behind it.
+                notice = notices.next() => {
+                    let message = Message::Text(notice.text.into());
+                    if notice.last {
+                        // The display is gone: the session ends whether or not the browser reads this.
+                        let _ = tokio::time::timeout(LAST_NOTICE_WRITE, sink.send(message)).await;
+                        return Ok(());
+                    }
+                    tokio::time::timeout(Duration::from_secs(10), sink.send(message)).await.context("event write timed out")??;
                     continue;
                 }
                 Some(packet) = media.recv() => packet,
@@ -1124,6 +1165,7 @@ where
     let mut eligible = tokio::time::Instant::now();
     let mut telemetry = tokio::time::interval(Duration::from_secs(1));
     telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut source_ended = None::<tokio::time::Instant>;
     loop {
         if window.resyncing() && writer_jobs == 0 && encoder_jobs.is_empty() {
             // Old queued writes have been skipped, an already-started write finished,
@@ -1170,7 +1212,7 @@ where
                         generation.store(window.generation(), Ordering::Release);
                         if waiting.take().is_some() { window.discarded_encode(); }
                     }
-                    StreamCommand::Reply(message) => { control_tx.try_send(ControlPacket { message, flushed: None }).context("bounded control writer queue full or closed")?; }
+                    StreamCommand::Reply(message) => { control_tx.try_send(ControlPacket { message }).context("bounded control writer queue full or closed")?; }
                 }
             }
             Some(completed) = writes.recv() => {
@@ -1192,17 +1234,18 @@ where
                     waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: completed.packet?, blocked_since: None });
                 }
             }
-            changed = source.frames.changed() => {
-                if changed.is_err() { break; }
+            changed = source.frames.changed(), if source_ended.is_none() => {
+                if changed.is_err() {
+                    // The source says why before it stops, and the writer ends the
+                    // session once the browser has that. This bound is for a writer
+                    // that is still held up by an earlier message.
+                    source_ended = Some(tokio::time::Instant::now() + LAST_NOTICE_WRITE);
+                    continue;
+                }
                 replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
                 eligible = pacer.eligible();
             }
-            Some(event) = source.events.recv() => {
-                let failed = event.get("type").and_then(|value| value.as_str()) == Some("error");
-                let (flushed, done) = if failed { let (tx, rx) = oneshot::channel(); (Some(tx), Some(rx)) } else { (None, None) };
-                control_tx.try_send(ControlPacket { message: Message::Text(event.to_string().into()), flushed }).context("bounded control writer queue full or closed")?;
-                if let Some(done) = done { let _ = tokio::time::timeout(Duration::from_secs(2), done).await; break; }
-            }
+            _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,
             _ = tokio::time::sleep_until(eligible), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
                 pacer.started();
                 let captured = latest.take().unwrap();
@@ -1235,7 +1278,7 @@ where
                 stats["writer_jobs"] = json!(writer_jobs);
                 stats["audio"] = json!({"packet_ms":app.args.audio_packet_ms.millis(),"counters":source.audio_counters.snapshot()});
                 // Diagnostics never block input/media and have no unbounded history.
-                let _ = control_tx.try_send(ControlPacket { message: Message::Text(stats.to_string().into()), flushed: None });
+                let _ = control_tx.try_send(ControlPacket { message: Message::Text(stats.to_string().into()) });
             }
             _ = tokio::time::sleep_until(sleep_deadline), if deadline.is_some() => { bail!("browser did not acknowledge oldest frame within 10s"); }
         }
@@ -1278,3 +1321,6 @@ mod test_support;
 
 #[cfg(test)]
 mod source_tests;
+
+#[cfg(test)]
+mod viewer_tests;
