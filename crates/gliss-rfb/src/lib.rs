@@ -97,6 +97,9 @@ pub const MAX_CURSOR_SIDE: u16 = 128;
 /// is twice the area; four leaves room for overlapping rectangles. Without a
 /// bound, 16-byte CopyRect rectangles each move a whole frame.
 const UPDATE_AREA_BUDGET: usize = 4;
+/// Most characters of server text kept in an error message. A refusal reason
+/// is one sentence; the protocol allows 64 KiB of it.
+const MAX_REPORTED_TEXT: usize = 256;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a write to the server may make no progress. A server that reads
 /// at all takes a 10-byte message at once; one that has stopped reading would
@@ -326,6 +329,26 @@ async fn read_text<R: AsyncRead + Unpin>(stream: &mut R, max: usize) -> Result<S
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Server text made safe to put in an error message, which ends up in a log.
+///
+/// Control characters and line separators are written as escapes, so the text
+/// stays on the line it is reported on, and the length is bounded.
+fn reported(text: &str) -> String {
+    let mut safe = String::new();
+    for (index, character) in text.chars().enumerate() {
+        if index == MAX_REPORTED_TEXT {
+            safe.push_str("...");
+            break;
+        }
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            safe.extend(character.escape_default());
+        } else {
+            safe.push(character);
+        }
+    }
+    safe
+}
+
 async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     minor: u8,
@@ -338,7 +361,7 @@ async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
         if count == 0 {
             bail!(
                 "RFB server refused connection: {}",
-                read_text(stream, MAX_TEXT).await?
+                reported(&read_text(stream, MAX_TEXT).await?)
             );
         }
         let mut types = vec![0; usize::from(count)];
@@ -358,7 +381,7 @@ async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
     if security == 0 {
         bail!(
             "RFB server refused connection: {}",
-            read_text(stream, MAX_TEXT).await?
+            reported(&read_text(stream, MAX_TEXT).await?)
         );
     }
     ensure!(
@@ -386,7 +409,7 @@ async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
             if minor == 8 {
                 bail!(
                     "RFB authentication failed: {}",
-                    read_text(stream, MAX_TEXT).await?
+                    reported(&read_text(stream, MAX_TEXT).await?)
                 );
             }
             bail!("RFB authentication failed (status {status})");
