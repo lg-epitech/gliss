@@ -260,3 +260,68 @@ async fn a_display_mode_h264_cannot_encode_pauses_the_picture_and_keeps_the_sess
     assert_eq!((again.width, again.height), (66, 50));
     assert!(!viewer.session.is_finished());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_browser_that_never_acknowledges_cannot_stay_by_asking_for_keyframes() {
+    let mut viewer = Viewer::connect(&[]).greeted().await;
+    viewer.show(64, 48);
+    let first = viewer.media().await;
+    assert!(first.keyframe);
+    let started = tokio::time::Instant::now();
+    // It reads every frame, acknowledges none, and resyncs every three seconds.
+    let mut keyframes = 1;
+    loop {
+        tokio::select! {
+            message = viewer.from_server.recv() => match message {
+                Some(Message::Binary(_)) => keyframes += 1,
+                Some(other) => panic!("unexpected {other:?}"),
+                None => break,
+            },
+            _ = tokio::time::sleep(Duration::from_secs(3)) => {
+                let resync = json!({"type":"resync"}).to_string();
+                let _ = viewer.to_server.send(Ok(Message::Text(resync.into()))).await;
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "still connected after a minute and {keyframes} keyframes"
+        );
+    }
+    let ended = viewer.session.await.unwrap().unwrap_err().to_string();
+    assert!(ended.contains("did not acknowledge"), "{ended}");
+    // Ten seconds from the first frame, whatever was asked for since.
+    assert_eq!(started.elapsed(), scheduler::ACK_TIMEOUT);
+    assert_eq!(keyframes, 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn keyframes_on_request_start_at_most_four_times_a_second() {
+    let mut viewer = Viewer::connect(&[]).greeted().await;
+    viewer.show(64, 48);
+    let first = viewer.media().await;
+    viewer
+        .say(json!({"type":"ack","sequence":first.sequence}))
+        .await;
+    // A well-behaved browser except for this: a resync every 20 ms for two seconds.
+    let mut keyframes = 0;
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
+    for _ in 0..100 {
+        tick.tick().await;
+        viewer.say(json!({"type":"resync"})).await;
+        while let Ok(Some(message)) =
+            tokio::time::timeout(Duration::from_millis(10), viewer.from_server.recv()).await
+        {
+            let Message::Binary(bytes) = message else {
+                panic!("unexpected {message:?}")
+            };
+            let packet = gliss_video::parse_packet(&bytes).unwrap();
+            keyframes += u32::from(packet.keyframe);
+            viewer
+                .say(json!({"type":"ack","sequence":packet.sequence}))
+                .await;
+        }
+    }
+    // The first at once, then one per 250 ms.
+    assert!((2..=9).contains(&keyframes), "{keyframes} keyframes");
+    assert!(!viewer.session.is_finished());
+}
