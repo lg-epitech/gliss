@@ -1,6 +1,6 @@
 # Gliss
 
-Streams a VM's desktop to the browser. A Rust server captures the display and audio of a QEMU VM over VNC, encodes H.264 on the CPU, sends it over a WebSocket and forwards keyboard and mouse input back. It needs no GPU, guest agent or browser plugin. Alpha quality. The code and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
+Streams a VM's desktop to the browser. A Rust server captures the display and audio of a QEMU VM over VNC, encodes H.264 on the CPU, sends it over a WebSocket and forwards keyboard and mouse input back. It needs no GPU, guest agent or browser plugin. Beta quality. The code and docs were written entirely by AI agents. Laurent Gonzalez provided the infrastructure and oversaw the work.
 
 | 1920×1080 QEMU guest, CPU only, 30 fps cap | Result |
 | --- | ---: |

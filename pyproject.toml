@@ -18,7 +18,7 @@ license-files = [
 requires-python = ">=3.8"
 keywords = ["vnc", "rfb", "remote-desktop", "websocket", "h264", "streaming", "qemu"]
 classifiers = [
-  "Development Status :: 3 - Alpha",
+  "Development Status :: 4 - Beta",
   "Environment :: Web Environment",
   "Intended Audience :: System Administrators",
   "Operating System :: POSIX :: Linux",
