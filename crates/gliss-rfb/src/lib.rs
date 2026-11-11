@@ -5,11 +5,6 @@
 
 pub mod audio;
 mod clipboard;
-mod teardown;
-pub use teardown::{
-    DRAIN_SCRATCH_BYTES, DrainReport, DrainTermination, MAX_DRAIN_BYTES, MAX_DRAIN_DURATION,
-    ReaderDrainControl,
-};
 
 use std::{
     sync::{Arc, Mutex},
@@ -131,7 +126,6 @@ pub struct RfbReader {
     events: mpsc::Receiver<Result<Event>>,
     audio: broadcast::Sender<audio::Event>,
     task: JoinHandle<()>,
-    drain: ReaderDrainControl,
 }
 
 /// Messages are serialized by an owned task, even if the caller cancels its wait.
@@ -292,50 +286,24 @@ where
         available: audio_available_tx,
     };
     let read_layout = layout.clone();
-    let (drain_tx, mut drain_rx) = mpsc::channel::<teardown::DrainRequest>(1);
     let read_task = tokio::spawn(async move {
-        let mut read = read;
-        enum Outcome {
-            Decoded(Result<()>),
-            Drain(teardown::DrainRequest),
-        }
-        let outcome = {
-            // Cancellation drops the decode future but retains its borrowed
-            // stream for the terminal drain of that exact same owned half.
-            let decode = decode(
-                &mut read,
-                Surface {
-                    frame,
-                    pixels: pixel_layout,
-                },
-                read_layout,
-                &read_commands,
-                &event_tx,
-                &reader_audio,
-            );
-            tokio::pin!(decode);
-            tokio::select! {
-                biased;
-                Some(request) = drain_rx.recv() => Outcome::Drain(request),
-                result = &mut decode => Outcome::Decoded(result),
-            }
-        };
-        match outcome {
-            Outcome::Decoded(result) => {
-                // Preserve ordinary close-before-error-send behavior.
-                drop(read);
-                if let Err(error) = result {
-                    let _ = event_tx.send(Err(error)).await;
-                }
-            }
-            Outcome::Drain(request) => {
-                let report = teardown::discard(&mut read, request.deadline).await;
-                drop(read);
-                let _ = request.completed.send(report);
-            }
+        let result = decode(
+            read,
+            Surface {
+                frame,
+                pixels: pixel_layout,
+            },
+            read_layout,
+            &read_commands,
+            &event_tx,
+            &reader_audio,
+        )
+        .await;
+        // The read half is closed by now: decoding owned it.
+        if let Err(error) = result {
+            let _ = event_tx.send(Err(error)).await;
         }
     });
-    let drain = ReaderDrainControl::new(drain_tx, read_task.abort_handle());
     let clipboard = clipboard::Clipboard::new(&info.name);
     let write_task = tokio::spawn(write_messages(write, clipboard, command_rx));
     (
@@ -343,7 +311,6 @@ where
             events,
             audio,
             task: read_task,
-            drain,
         },
         RfbWriter {
             commands,
@@ -436,10 +403,6 @@ impl RfbReader {
     /// Audio never waits for a consumer: lagging subscribers lose old samples.
     pub fn audio_events(&self) -> broadcast::Receiver<audio::Event> {
         self.audio.subscribe()
-    }
-
-    pub fn teardown_control(&self) -> ReaderDrainControl {
-        self.drain.clone()
     }
 
     pub async fn read_event(&mut self) -> Result<Event> {
@@ -858,170 +821,5 @@ async fn decode<R: AsyncRead + Unpin>(
             }
             other => bail!("unsupported RFB server message {other}"),
         }
-    }
-}
-
-#[cfg(test)]
-mod teardown_actor_tests {
-    use super::*;
-    use std::{
-        pin::Pin,
-        sync::atomic::{AtomicUsize, Ordering},
-        task::{Context as TaskContext, Poll},
-    };
-    use tokio::{io::ReadBuf, time::Instant};
-
-    struct TrackedRead {
-        inner: tokio::io::DuplexStream,
-        bytes: Arc<AtomicUsize>,
-        dropped: Arc<AtomicUsize>,
-    }
-    impl AsyncRead for TrackedRead {
-        fn poll_read(
-            mut self: Pin<&mut Self>,
-            cx: &mut TaskContext<'_>,
-            output: &mut ReadBuf<'_>,
-        ) -> Poll<std::io::Result<()>> {
-            let before = output.filled().len();
-            let result = Pin::new(&mut self.inner).poll_read(cx, output);
-            self.bytes
-                .fetch_add(output.filled().len() - before, Ordering::SeqCst);
-            result
-        }
-    }
-    impl Drop for TrackedRead {
-        fn drop(&mut self) {
-            self.dropped.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-    type Actor = (
-        RfbReader,
-        RfbWriter,
-        tokio::io::DuplexStream,
-        Arc<AtomicUsize>,
-        Arc<AtomicUsize>,
-    );
-    fn actor() -> Actor {
-        let (inner, peer) = tokio::io::duplex(4096);
-        let bytes = Arc::new(AtomicUsize::new(0));
-        let dropped = Arc::new(AtomicUsize::new(0));
-        let read = TrackedRead {
-            inner,
-            bytes: bytes.clone(),
-            dropped: dropped.clone(),
-        };
-        let info = ServerInfo {
-            width: 16,
-            height: 16,
-            name: "test".into(),
-            protocol_version: (3, 8),
-        };
-        let (reader, writer, _) = start_tasks(
-            read,
-            tokio::io::sink(),
-            Frame::new(16, 16).unwrap(),
-            info,
-            Layout::Rgbx,
-        );
-        (reader, writer, peer, bytes, dropped)
-    }
-    async fn consumed(bytes: &AtomicUsize, wanted: usize) {
-        timeout(Duration::from_secs(1), async {
-            while bytes.load(Ordering::SeqCst) < wanted {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-    }
-    async fn finished(control: &ReaderDrainControl) {
-        timeout(Duration::from_secs(1), async {
-            while !control.is_finished() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn partial_rectangle_cancellation_keeps_the_same_owned_receiver() {
-        let (mut reader, _writer, mut peer, bytes, dropped) = actor();
-        // One raw 1x1 rectangle, interrupted halfway through its pixel.
-        let prefix = [0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0, 7, 8];
-        peer.write_all(&prefix).await.unwrap();
-        consumed(&bytes, prefix.len()).await;
-        let control = reader.teardown_control();
-        let report = control
-            .request(Instant::now() + MAX_DRAIN_DURATION)
-            .unwrap();
-        peer.write_all(&[9, 10, 11, 12, 13]).await.unwrap();
-        peer.shutdown().await.unwrap();
-        let report = timeout(Duration::from_secs(1), report)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(report.termination, DrainTermination::PeerEof);
-        assert_eq!(report.discarded_bytes, 5);
-        assert_eq!(dropped.load(Ordering::SeqCst), 1);
-        assert!(reader.read_event().await.is_err());
-        finished(&control).await;
-    }
-
-    #[tokio::test]
-    async fn terminal_command_bypasses_a_full_decoded_event_queue() {
-        let (mut reader, _writer, mut peer, bytes, dropped) = actor();
-        peer.write_all(&[2, 2, 2]).await.unwrap();
-        consumed(&bytes, 3).await;
-        let control = reader.teardown_control();
-        let report = control
-            .request(Instant::now() + MAX_DRAIN_DURATION)
-            .unwrap();
-        peer.write_all(b"opaque terminal bytes").await.unwrap();
-        peer.shutdown().await.unwrap();
-        let report = timeout(Duration::from_secs(1), report)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(report.termination, DrainTermination::PeerEof);
-        assert_eq!(report.discarded_bytes, 21);
-        assert!(matches!(reader.read_event().await.unwrap(), Event::Bell));
-        assert!(matches!(reader.read_event().await.unwrap(), Event::Bell));
-        assert!(reader.read_event().await.is_err());
-        assert_eq!(dropped.load(Ordering::SeqCst), 1);
-        finished(&control).await;
-    }
-
-    #[tokio::test]
-    async fn one_terminal_request_and_reader_drop_never_orphan_the_stream() {
-        let (reader, _writer, _peer, _bytes, dropped) = actor();
-        let control = reader.teardown_control();
-        let clone = control.clone();
-        let report = control
-            .request(Instant::now() + MAX_DRAIN_DURATION)
-            .unwrap();
-        assert!(clone.request(Instant::now() + MAX_DRAIN_DURATION).is_err());
-        drop(report);
-        drop(reader);
-        finished(&control).await;
-        assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn cancelled_event_wait_preserves_ordinary_decode_progress() {
-        let (mut reader, _writer, mut peer, _bytes, _dropped) = actor();
-        assert!(
-            timeout(Duration::from_millis(1), reader.read_event())
-                .await
-                .is_err()
-        );
-        peer.write_all(&[2]).await.unwrap();
-        assert!(matches!(
-            timeout(Duration::from_secs(1), reader.read_event())
-                .await
-                .unwrap()
-                .unwrap(),
-            Event::Bell
-        ));
     }
 }

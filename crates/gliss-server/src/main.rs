@@ -1,13 +1,11 @@
 mod audio;
 mod audio_adpcm;
-mod benchmark_recorder;
 mod demo;
 mod pacer;
 mod profiling;
 #[cfg(unix)]
 mod rfb_fd;
 mod rfb_request;
-mod rfb_teardown;
 mod scheduler;
 mod shared_capture;
 mod tcp_listener;
@@ -62,15 +60,9 @@ struct Args {
     /// Trusted audio packet duration (20 or 40 ms); does not change the freshness budget.
     #[arg(long, default_value_t = audio::PacketDuration::DEFAULT)]
     audio_packet_ms: audio::PacketDuration,
-    /// Trusted benchmark only: fresh private directory for canonical ROI references.
-    #[arg(long)]
-    benchmark_capture_dir: Option<std::path::PathBuf>,
     /// Fixed upstream target. The browser cannot choose a VNC address.
     #[arg(long, conflicts_with_all = ["demo", "rfb_fd"], required_unless_present_any = ["demo", "rfb_fd", "export_web"])]
     vnc: Option<String>,
-    /// Opt-in single-private-RFB receiver lifetime experiment; default immediate.
-    #[arg(long, value_enum)]
-    rfb_close_policy: Option<rfb_teardown::ClosePolicy>,
     /// When to ask the VNC server for the next update. The FPS cap limits encoding either way.
     #[arg(long, value_enum, default_value = "eager")]
     rfb_request_policy: rfb_request::Policy,
@@ -207,7 +199,6 @@ struct App {
     hybrid_config: gliss_hybrid::HybridConfig,
     hybrid_mask_grid: Option<u16>,
     video_timing: Option<VideoTiming>,
-    benchmark: Option<Arc<benchmark_recorder::Recorder>>,
     tcp_listener: Arc<tcp_listener::SocketPolicy>,
     #[cfg(unix)]
     rfb_fd: Option<rfb_fd::RfbFd>,
@@ -298,8 +289,6 @@ fn main() -> Result<()> {
     if let Some(directory) = &args.export_web {
         return export_web(directory);
     }
-    // Reject unsupported sources before adopting any inherited descriptor.
-    rfb_teardown::validate(&args)?;
     let source_deadline = configured_source_deadline(&args)?;
     // SAFETY: a trusted launcher transfers this one exclusive owner. Adopt before
     // runtime/logging/threads can allocate another descriptor with that number.
@@ -395,19 +384,6 @@ async fn run(
     let hybrid_config = configured_hybrid(&args)?;
     let hybrid_mask_grid = configured_mask_grid(&args)?;
     let video_timing = configured_video_timing(&args)?;
-    if args.benchmark_capture_dir.is_some() {
-        ensure!(
-            args.bind.ip().is_loopback()
-                && args.max_clients == 1
-                && args.vnc.is_some()
-                && args.rfb_fd.is_none()
-                && !args.demo
-                && args.dbus_address.is_none()
-                && !args.shared_dbus
-                && args.codec == "h264",
-            "benchmark capture requires loopback, one client, fixed RFB and H264 base configuration"
-        );
-    }
     if let Some(mode) = mode {
         Encoder::new(mode, args.tile_size)?;
     } else if args.fps > 60 || !(1_000..=50_000_000).contains(&args.h264_bitrate) {
@@ -445,11 +421,6 @@ async fn run(
     };
     let (worker_shutdown, _) = watch::channel(false);
     let tcp_listener = tcp_listener::SocketPolicy::new(args.tcp_nodelay);
-    let benchmark = args
-        .benchmark_capture_dir
-        .clone()
-        .map(benchmark_recorder::Recorder::create)
-        .transpose()?;
     let app = Arc::new(App {
         tcp_listener: tcp_listener.clone(),
         args,
@@ -457,7 +428,6 @@ async fn run(
         hybrid_config,
         hybrid_mask_grid,
         video_timing,
-        benchmark,
         #[cfg(unix)]
         rfb_fd,
         source_deadline,
@@ -542,11 +512,6 @@ async fn run(
             .shutdown()
             .await
             .context("shared capture shutdown")?;
-    }
-    if let Some(recorder) = &app.benchmark {
-        recorder
-            .finish()
-            .context("benchmark evidence writer shutdown")?;
     }
     result?;
     Ok(())
@@ -667,8 +632,8 @@ fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
     let qp = configured_video_qp(args)?;
     if args.video_frame_skip || qp.is_some() {
         ensure!(
-            args.codec == "h264" && args.benchmark_capture_dir.is_none(),
-            "video frame skipping and QP bounds require h264 without native benchmark capture"
+            args.codec == "h264",
+            "video frame skipping and QP bounds require h264"
         );
     }
     if args.codec != "h264" {
@@ -1086,17 +1051,6 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn reference_capture_does_not_change_video_timing() {
-        let mut benchmark = args(&["--codec", "h264", "--fps", "30"]).unwrap();
-        let timing = configured_video_timing(&benchmark).unwrap().unwrap();
-        benchmark.benchmark_capture_dir = Some("unused-capture-directory".into());
-        assert_eq!(
-            configured_video_timing(&benchmark).unwrap().unwrap(),
-            timing
-        );
-    }
-
-    #[test]
     fn default_rates_follow_capture_fps_and_metadata_stays_implicit() {
         for fps in ["15", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
@@ -1205,7 +1159,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn frame_skip_is_opt_in_and_rejects_other_codecs_and_recorders() {
+    fn frame_skip_is_opt_in_and_rejects_other_codecs() {
         let default = args(&["--codec", "h264"]).unwrap();
         assert!(!default.video_frame_skip);
         let enabled = args(&["--codec", "h264", "--video-frame-skip", "true"]).unwrap();
@@ -1218,20 +1172,8 @@ mod video_timing_option_tests {
             )["video_frame_skip"],
             true
         );
-        for extra in [
-            vec!["--codec", "deflate", "--video-frame-skip", "true"],
-            vec![
-                "--codec",
-                "h264",
-                "--video-frame-skip",
-                "true",
-                "--benchmark-capture-dir",
-                "unused-test-directory",
-            ],
-        ] {
-            let rejected = args(&extra).unwrap();
-            assert!(configured_video_timing(&rejected).is_err());
-        }
+        let rejected = args(&["--codec", "deflate", "--video-frame-skip", "true"]).unwrap();
+        assert!(configured_video_timing(&rejected).is_err());
         assert!(args(&["--codec", "h264", "--video-frame-skip", "unknown"]).is_err());
     }
 }
@@ -1432,14 +1374,11 @@ async fn stats(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
     if authorized_until(&app, &headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let mut value = with_stream_metadata(
+    Json(with_stream_metadata(
         json!({"bytes":app.bytes.load(Ordering::Relaxed),"frames":app.frames.load(Ordering::Relaxed),"active_clients":app.args.max_clients-app.clients.available_permits(),"uptime_s":app.started.elapsed().as_secs_f64(),"codec":app.args.codec,"shared_capture":app.shared_capture.as_ref().map(|capture|capture.snapshot())}),
         &app,
-    );
-    if let Some(recorder) = &app.benchmark {
-        value["benchmark_capture"] = recorder.snapshot();
-    }
-    Json(value).into_response()
+    ))
+    .into_response()
 }
 
 async fn upgrade(
@@ -1492,7 +1431,6 @@ struct Source {
 }
 
 async fn source(app: &App) -> Result<Source> {
-    rfb_teardown::validate_source(app)?;
     let (frame_tx, frames) = watch::channel(None);
     let (input, mut input_rx) = mpsc::channel::<Input>(128);
     let (event_tx, events) = mpsc::channel(16);
@@ -1541,7 +1479,6 @@ async fn source(app: &App) -> Result<Source> {
         })
         .await
         .context("VNC connect timeout")??;
-        let teardown_control = reader.teardown_control();
         let raw_audio = reader.audio_events();
         let mut audio_available = writer.audio_available();
         tasks.spawn(audio::encode_with(
@@ -1550,7 +1487,6 @@ async fn source(app: &App) -> Result<Source> {
             audio.packets.clone(),
             audio_config,
         ));
-        let close_policy = app.args.rfb_close_policy.unwrap_or_default();
         let input_id = Arc::new(AtomicU32::new(0));
         let dimensions = Arc::new(AtomicU32::new(
             (u32::from(info.width) << 16) | u32::from(info.height),
@@ -1587,7 +1523,6 @@ async fn source(app: &App) -> Result<Source> {
         let reader_refresh = refresh.clone();
         let reader_events = event_tx.clone();
         let rfb_frames = frame_tx.clone();
-        let recorder = app.benchmark.clone();
         let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
             loop {
@@ -1601,10 +1536,6 @@ async fn source(app: &App) -> Result<Source> {
                         if let Some(changed) = &reader_display_changed { changed.notify_one(); }
                         if !dbus_capture {
                             let frame = Arc::new(frame);
-                            if let Some(recorder) = &recorder && let Err(error) = recorder.capture(&frame) {
-                                let _ = reader_events.try_send(json!({"type":"error","message":format!("Benchmark evidence invalid: {error:#}")}));
-                                break;
-                            }
                             let forwarded_input_id = reader_id.load(Ordering::Acquire);
                             if rfb_frames.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
                         }
@@ -1718,19 +1649,11 @@ async fn source(app: &App) -> Result<Source> {
                 }
             }
             if audio_enabled { let _ = writer.set_audio(false).await; }
-            let release_start = tokio::time::Instant::now();
-            let mut releases = rfb_teardown::Releases::default();
-            for keysym in keys {
-                releases.key_attempts += 1;
-                if writer.send_input(&Input::Key { keysym, down: false, id: 0 }).await.is_ok() {
-                    releases.key_successes += 1;
-                }
-            }
-            if let Some((x, y, buttons)) = pointer && buttons != 0 {
-                releases.pointer_attempted = true;
-                releases.pointer_succeeded = writer.send_input(&Input::Pointer { x, y, buttons: 0, id: 0 }).await.is_ok();
-            }
-            rfb_teardown::finish(close_policy, writer, teardown_control, shutdown_tx, releases, release_start).await;
+            for keysym in keys { let _ = writer.send_input(&Input::Key { keysym, down: false, id: 0 }).await; }
+            if let Some((x, y, buttons)) = pointer && buttons != 0 { let _ = writer.send_input(&Input::Pointer { x, y, buttons: 0, id: 0 }).await; }
+            // The session learns its held input is released before the connection closes.
+            let _ = shutdown_tx.send(());
+            drop(writer);
         });
     }
     Ok(Source {
@@ -2092,9 +2015,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 // Preserve legacy allocation when the opt-in policy is disabled.
                 if !app.args.video_frame_skip { sequence = packet_sequence; }
                 let packet_generation = window.generation();
-                if let Some(recorder) = &app.benchmark {
-                    recorder.associate(recorder.generation(&captured.frame)?, packet_generation, packet_sequence, "GLV1")?;
-                }
                 let permits = app.encoders.clone();
                 let queued = Instant::now();
                 let profile_encode = app.args.stream_stats;
@@ -2268,19 +2188,15 @@ mod video_qp_option_tests {
         ] {
             assert!(parse(&extra).is_err());
         }
-        for extra in [
-            vec!["--codec", "deflate"],
-            vec![
-                "--codec",
-                "h264",
-                "--benchmark-capture-dir",
-                "unused-test-directory",
-            ],
-        ] {
-            let mut args = extra;
-            args.extend(["--video-qp-min", "26", "--video-qp-max", "51"]);
-            assert!(configured_video_timing(&parse(&args).unwrap()).is_err());
-        }
+        let other = [
+            "--codec",
+            "deflate",
+            "--video-qp-min",
+            "26",
+            "--video-qp-max",
+            "51",
+        ];
+        assert!(configured_video_timing(&parse(&other).unwrap()).is_err());
         assert!(
             configured_video_timing(
                 &parse(&[

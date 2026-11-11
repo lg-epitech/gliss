@@ -32,22 +32,18 @@ fn cli_omission_selects_eager_and_every_policy_is_selectable() {
             .rfb_request_policy,
         Policy::Tick
     );
-    assert_eq!(
-        Args::try_parse_from(base.into_iter().chain(["--rfb-request-policy", "ready"]))
-            .unwrap()
-            .rfb_request_policy,
-        Policy::Ready
-    );
-    assert!(
-        Args::try_parse_from(base.into_iter().chain(["--rfb-request-policy", "burst"])).is_err()
-    );
+    for unknown in ["ready", "burst"] {
+        assert!(
+            Args::try_parse_from(base.into_iter().chain(["--rfb-request-policy", unknown]))
+                .is_err()
+        );
+    }
 }
 
 #[test]
 fn eager_spacing_is_25_ms_between_a_fast_cap_and_twice_a_slow_one() {
     let fps = |value: u32| Duration::from_secs(1) / value;
     assert_eq!(Policy::Tick.spacing(fps(30)), None);
-    assert_eq!(Policy::Ready.spacing(fps(30)), Some(fps(30)));
     // Below QEMU's 30 ms timer for every cap from 20 to 40 fps.
     for cap in [20, 24, 30, 34, 40] {
         assert_eq!(
@@ -179,7 +175,6 @@ fn app(address: &str, policy: &str) -> App {
         hybrid_config: gliss_hybrid::HybridConfig::default(),
         hybrid_mask_grid: None,
         video_timing: None,
-        benchmark: None,
         tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
         #[cfg(unix)]
         rfb_fd: None,
@@ -282,7 +277,7 @@ async fn stop(mut source: Source, mut peer: TcpStream) {
 
 #[tokio::test]
 async fn real_actor_waits_for_completion_and_resize_still_forces_full_refresh() {
-    for policy in ["tick", "ready"] {
+    for policy in ["tick", "eager"] {
         let (mut source, mut peer) = actor(policy).await;
         assert_eq!(message(&mut peer, 10).await, request(false, 16, 16));
         no_message(&mut peer).await; // Pending prevents duplicates after late ticks.
@@ -409,7 +404,7 @@ async fn real_actor_holds_refresh_for_a_second_after_activity_and_keeps_requesti
 
 #[tokio::test]
 async fn real_actor_serializes_input_and_releases_held_inputs_while_pending() {
-    let (source, mut peer) = actor("ready").await;
+    let (source, mut peer) = actor("eager").await;
     assert_eq!(message(&mut peer, 10).await, request(false, 16, 16));
     source
         .input
@@ -457,7 +452,7 @@ async fn real_actor_serializes_input_and_releases_held_inputs_while_pending() {
 
 #[tokio::test]
 async fn real_actor_disconnect_reports_error_and_pending_wait_cancels() {
-    let (mut source, mut peer) = actor("ready").await;
+    let (mut source, mut peer) = actor("eager").await;
     assert_eq!(message(&mut peer, 10).await, request(false, 16, 16));
     peer.shutdown().await.unwrap();
     let event = timeout(Duration::from_secs(2), source.events.recv())
