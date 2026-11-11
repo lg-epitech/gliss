@@ -1023,6 +1023,30 @@ fn session_now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
+/// Sets aside a capture H.264 cannot encode and tells the browser, once for
+/// each such display mode. Nothing is cropped or padded to make it fit: the
+/// picture waits, and input keeps flowing so the mode can be changed.
+fn hold_unencodable(
+    latest: &mut Option<Captured>,
+    unencodable: &mut Option<(u16, u16)>,
+    notices: &notices::Notices,
+) {
+    let Some(capture) = latest.as_ref() else {
+        return;
+    };
+    let (width, height) = (capture.frame.width, capture.frame.height);
+    if gliss_video::encodable(width, height) {
+        *unencodable = None;
+        return;
+    }
+    *latest = None;
+    if unencodable.replace((width, height)) != Some((width, height)) {
+        notices.display_error(format!(
+            "The VM display is {width}x{height}. Video needs an even width and height from 16x16 through 3840x2160, so the picture is paused until the VM changes its resolution."
+        ));
+    }
+}
+
 /// Runs one viewer over the two halves of its WebSocket.
 async fn stream_session<Tx, Rx, E>(
     mut sink: Tx,
@@ -1163,6 +1187,8 @@ where
     let mut telemetry = tokio::time::interval(Duration::from_secs(1));
     telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut source_ended = None::<tokio::time::Instant>;
+    // The display mode that is being held back, if the current one cannot be encoded.
+    let mut unencodable = None::<(u16, u16)>;
     loop {
         if window.resyncing() && writer_jobs == 0 && encoder_jobs.is_empty() {
             // Old queued writes have been skipped, an already-started write finished,
@@ -1173,6 +1199,7 @@ where
                 .reset();
             window.finish_resync()?;
             replace_latest(&mut latest, source.frames.borrow().clone(), &mut window);
+            hold_unencodable(&mut latest, &mut unencodable, &source.notices);
             eligible = pacer.eligible();
         }
         if waiting
@@ -1240,6 +1267,7 @@ where
                     continue;
                 }
                 replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
+                hold_unencodable(&mut latest, &mut unencodable, &source.notices);
                 eligible = pacer.eligible();
             }
             _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,

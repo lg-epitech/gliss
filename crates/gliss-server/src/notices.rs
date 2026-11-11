@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 #[derive(Default)]
 struct Pending {
     failure: Option<&'static str>,
+    display_error: Option<String>,
     input_error: Option<String>,
     resize_result: Option<(u16, u16, u16)>,
     bell: bool,
@@ -70,6 +71,11 @@ impl Notices {
         self.post(|pending| pending.input_error = Some(message));
     }
 
+    /// The display cannot be shown for now; the session goes on.
+    pub fn display_error(&self, message: String) {
+        self.post(|pending| pending.display_error = Some(message));
+    }
+
     /// The display is gone for good.
     pub fn failed(&self, message: &'static str) {
         self.post(|pending| pending.failure = Some(message));
@@ -94,6 +100,8 @@ impl Notices {
                 text: json!({"type":"error","message":message}).to_string(),
                 last: true,
             });
+        } else if let Some(message) = pending.display_error.take() {
+            json!({"type":"error","message":message}).to_string()
         } else if let Some(message) = pending.input_error.take() {
             json!({"type":"input_error","message":message}).to_string()
         } else if let Some((width, height, status)) = pending.resize_result.take() {
@@ -184,6 +192,7 @@ mod tests {
             notices.bell();
             notices.resize_result(640, 480, round);
             notices.input_error(format!("input {round}"));
+            notices.display_error(format!("display {round}"));
         }
         assert_eq!(pending_bytes(&notices), 128 * 128 * 4 + "copy 999".len());
         let mut sent = Vec::new();
@@ -194,6 +203,7 @@ mod tests {
         assert_eq!(
             sent,
             [
+                r#"{"message":"display 999","type":"error"}"#.to_owned(),
                 r#"{"message":"input 999","type":"input_error"}"#.to_owned(),
                 r#"{"height":480,"status":999,"type":"resize_result","width":640}"#.to_owned(),
                 r#"{"type":"bell"}"#.to_owned(),
