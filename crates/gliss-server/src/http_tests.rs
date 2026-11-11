@@ -2,7 +2,8 @@
 //!
 //! Timeouts are shortened so that a stalled peer is cut quickly, and every
 //! wait for the server to act is generous: a slow machine makes these tests
-//! slower, never wrong.
+//! slower, never wrong. A request that a server with a shortened timeout has
+//! to answer is written before that server starts, for the same reason.
 use super::test_support::{TOKEN, app};
 use super::*;
 use tokio::{
@@ -24,19 +25,41 @@ fn limits(connections: usize, stall: Duration) -> http::Limits {
 
 const SHORT: Duration = Duration::from_millis(300);
 
-async fn serve_router(router: Router, app: &App, limits: http::Limits) -> SocketAddr {
+/// A listening socket that nothing serves yet.
+async fn listen(app: &App) -> (tcp_listener::VerifiedListener, SocketAddr) {
     let listener = tcp_listener::VerifiedListener::new(
         TcpListener::bind("127.0.0.1:0").await.unwrap(),
         app.tcp_listener.clone(),
     );
     let address = axum::serve::Listener::local_addr(&listener).unwrap();
+    (listener, address)
+}
+
+fn start(listener: tcp_listener::VerifiedListener, router: Router, limits: http::Limits) {
     tokio::spawn(http::serve(
         listener,
         router,
         limits,
         std::future::pending(),
     ));
+}
+
+async fn serve_router(router: Router, app: &App, limits: http::Limits) -> SocketAddr {
+    let (listener, address) = listen(app).await;
+    start(listener, router, limits);
     address
+}
+
+/// Connects to a socket from [`listen`] and writes `request`. The kernel
+/// completes the connection and keeps the bytes, so the request is whole when
+/// the server accepts the connection and starts counting. Sent to a running
+/// server, it would have to arrive within the server's timeout for a request
+/// head, and a machine that holds this task up for that long between
+/// connecting and writing would fail the test.
+async fn sent_ahead(server: SocketAddr, request: &[u8]) -> TcpStream {
+    let mut stream = TcpStream::connect(server).await.unwrap();
+    stream.write_all(request).await.unwrap();
+    stream
 }
 
 async fn serve(app: &Arc<App>, limits: http::Limits) -> SocketAddr {
@@ -81,14 +104,13 @@ fn login_head(origin: &str, length: usize) -> String {
     )
 }
 
-/// One login on its own connection; returns the status and the session cookie.
-async fn login(source: &str, server: SocketAddr, token: &str) -> (u16, Option<String>) {
+fn login_request(token: &str) -> String {
     let body = json!({ "token": token }).to_string();
-    let mut stream = connect_from(source, server).await;
-    stream
-        .write_all(format!("{}{body}", login_head(ORIGIN, body.len())).as_bytes())
-        .await
-        .unwrap();
+    format!("{}{body}", login_head(ORIGIN, body.len()))
+}
+
+/// The status of the answer to a login and the session cookie it set.
+async fn login_answer(mut stream: TcpStream) -> (u16, Option<String>) {
     // The request asks for the connection to be closed after the response.
     let response = until_closed(&mut stream).await;
     let cookie = response
@@ -96,6 +118,16 @@ async fn login(source: &str, server: SocketAddr, token: &str) -> (u16, Option<St
         .find_map(|line| line.strip_prefix("set-cookie: "))
         .map(|cookie| cookie.split(';').next().unwrap().to_owned());
     (response[9..12].parse().unwrap(), cookie)
+}
+
+/// One login on its own connection; returns the status and the session cookie.
+async fn login(source: &str, server: SocketAddr, token: &str) -> (u16, Option<String>) {
+    let mut stream = connect_from(source, server).await;
+    stream
+        .write_all(login_request(token).as_bytes())
+        .await
+        .unwrap();
+    login_answer(stream).await
 }
 
 #[tokio::test]
@@ -124,11 +156,9 @@ async fn a_request_head_that_stalls_is_closed() {
 #[tokio::test]
 async fn an_idle_connection_is_closed_after_its_response() {
     let app = app(&["--demo"]);
-    let server = serve(&app, limits(16, SHORT)).await;
-    let mut idle = TcpStream::connect(server).await.unwrap();
-    idle.write_all(b"GET /health HTTP/1.1\r\nHost: gliss\r\n\r\n")
-        .await
-        .unwrap();
+    let (listener, server) = listen(&app).await;
+    let mut idle = sent_ahead(server, b"GET /health HTTP/1.1\r\nHost: gliss\r\n\r\n").await;
+    start(listener, router(app.clone()), limits(16, SHORT));
     assert_eq!(status(&mut idle).await, 200);
     // The body of the response, then nothing more: no error is sent on an idle connection.
     let rest = until_closed(&mut idle).await;
@@ -172,17 +202,12 @@ async fn a_response_nobody_reads_is_cut_and_gives_its_connection_back() {
     let router = Router::new()
         .route("/large", get(|| async { vec![0u8; BODY] }))
         .route("/small", get(|| async { "ok" }));
-    let server = serve_router(router, &app, limits(1, SHORT)).await;
-    let mut stuck = TcpStream::connect(server).await.unwrap();
-    stuck
-        .write_all(b"GET /large HTTP/1.1\r\nHost: gliss\r\n\r\n")
-        .await
-        .unwrap();
+    let (listener, server) = listen(&app).await;
+    let mut stuck = sent_ahead(server, b"GET /large HTTP/1.1\r\nHost: gliss\r\n\r\n").await;
     // The only slot is taken until the server gives up on the first response.
-    let mut next = TcpStream::connect(server).await.unwrap();
-    next.write_all(b"GET /small HTTP/1.1\r\nHost: gliss\r\n\r\n")
-        .await
-        .unwrap();
+    // Connections are accepted in the order they were made.
+    let mut next = sent_ahead(server, b"GET /small HTTP/1.1\r\nHost: gliss\r\n\r\n").await;
+    start(listener, router, limits(1, SHORT));
     assert_eq!(status(&mut next).await, 200);
     // What was buffered is all the first client ever gets.
     let mut received = Vec::new();
@@ -222,20 +247,20 @@ fn masked(text: &[u8]) -> Vec<u8> {
 #[tokio::test]
 async fn a_stream_outlives_every_http_timeout() {
     let app = app(&["--demo"]);
-    let server = serve(&app, limits(16, SHORT)).await;
-    let (code, cookie) = login("127.0.0.1", server, TOKEN).await;
+    // Two listeners for the one server: the upgrade needs the cookie of the
+    // login, and each request is sent before anything can time it.
+    let (listener, server) = listen(&app).await;
+    let asked = sent_ahead(server, login_request(TOKEN).as_bytes()).await;
+    start(listener, router(app.clone()), limits(16, SHORT));
+    let (code, cookie) = login_answer(asked).await;
     assert_eq!(code, 200);
-    let mut stream = TcpStream::connect(server).await.unwrap();
-    stream
-        .write_all(
-            format!(
-                "GET /ws HTTP/1.1\r\nHost: gliss\r\nOrigin: {ORIGIN}\r\nCookie: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: AAECAwQFBgcICQoLDA0ODw==\r\nSec-WebSocket-Version: 13\r\n\r\n",
-                cookie.unwrap()
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
+    let (listener, server) = listen(&app).await;
+    let upgrade = format!(
+        "GET /ws HTTP/1.1\r\nHost: gliss\r\nOrigin: {ORIGIN}\r\nCookie: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: AAECAwQFBgcICQoLDA0ODw==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        cookie.unwrap()
+    );
+    let mut stream = sent_ahead(server, upgrade.as_bytes()).await;
+    start(listener, router(app.clone()), limits(16, SHORT));
     assert_eq!(status(&mut stream).await, 101);
     let (opcode, hello) = timeout(WAIT, frame(&mut stream)).await.unwrap();
     assert_eq!(opcode, 1);
