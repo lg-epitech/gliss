@@ -1,7 +1,6 @@
 mod audio;
 mod audio_adpcm;
 mod benchmark_recorder;
-mod datagram;
 mod demo;
 mod pacer;
 mod profiling;
@@ -11,11 +10,7 @@ mod rfb_request;
 mod rfb_teardown;
 mod scheduler;
 mod shared_capture;
-mod stage_trace;
 mod tcp_listener;
-mod tile_quantum;
-mod tile_send;
-mod xor_fec;
 
 use anyhow::{Context, Result, bail, ensure};
 use axum::{
@@ -61,42 +56,12 @@ use tokio::{
 struct Args {
     #[arg(long, default_value = "127.0.0.1:8080")]
     bind: SocketAddr,
-    /// Trusted single-source loopback diagnostic. Binary trace exports only after actors stop.
-    #[arg(long)]
-    stage_trace: Option<std::path::PathBuf>,
     /// Fixed accepted HTTP/WebSocket TCP_NODELAY policy; verified before HTTP IO.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     tcp_nodelay: bool,
     /// Trusted audio packet duration (20 or 40 ms); does not change the freshness budget.
     #[arg(long, default_value_t = audio::PacketDuration::DEFAULT)]
     audio_packet_ms: audio::PacketDuration,
-    /// Authenticated QUIC DATAGRAM media. Default scope remains loopback.
-    #[arg(long)]
-    datagram_bind: Option<SocketAddr>,
-    /// Trusted externally routed UDP port; omission advertises the bound port.
-    #[arg(long, requires = "datagram_bind", value_parser = clap::value_parser!(u16).range(1..))]
-    datagram_advertise_port: Option<u16>,
-    /// Trusted public media hostname or IP; requires a private managed-FD worker and HTTPS origin.
-    #[arg(long, requires = "datagram_bind", value_parser = parse_datagram_public_host)]
-    datagram_public_host: Option<String>,
-    /// Restrict the datagram source to display, keyboard and pointer access.
-    #[arg(long, requires = "datagram_bind")]
-    datagram_display_input_only: bool,
-    /// QUIC unsent-datagram memory budget, 8192..1048576 bytes; omission preserves 1 MiB.
-    #[arg(long, requires = "datagram_bind")]
-    datagram_send_buffer_bytes: Option<usize>,
-    /// Experimental QUIC media controller. Omission preserves Cubic.
-    #[arg(long, requires = "datagram_bind", value_enum)]
-    datagram_congestion_control: Option<datagram::CongestionControl>,
-    /// Trusted experimental UDP codec; the browser cannot select its own policy.
-    #[arg(long, requires = "datagram_bind", value_enum)]
-    datagram_codec: Option<datagram::DatagramCodec>,
-    /// Trusted GLT2 sending policy; omission retains frame-tick sending.
-    #[arg(long, requires = "datagram_bind", value_enum)]
-    tile_send_policy: Option<tile_send::Policy>,
-    /// Opt-in whole-tile GLT2 admission quantum; omission retains unlimited flushes.
-    #[arg(long, requires = "datagram_bind", value_enum)]
-    tile_send_quantum: Option<tile_quantum::Selection>,
     /// Trusted benchmark only: fresh private directory for canonical ROI references.
     #[arg(long)]
     benchmark_capture_dir: Option<std::path::PathBuf>,
@@ -152,7 +117,7 @@ struct Args {
     /// H.264 synthetic timestamp FPS; defaults to capture FPS.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=60))]
     video_timestamp_fps: Option<u32>,
-    /// H.264 periodic IDR interval in encoded frames; defaults to 3600 on WebSocket, 2x capture FPS on datagram.
+    /// H.264 periodic IDR interval in encoded frames; defaults to 3600.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
     video_intra_period: Option<u32>,
     /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
@@ -242,9 +207,7 @@ struct App {
     hybrid_config: gliss_hybrid::HybridConfig,
     hybrid_mask_grid: Option<u16>,
     video_timing: Option<VideoTiming>,
-    datagram: Option<Arc<datagram::DatagramRuntime>>,
     benchmark: Option<Arc<benchmark_recorder::Recorder>>,
-    stage_trace: stage_trace::Handle,
     tcp_listener: Arc<tcp_listener::SocketPolicy>,
     #[cfg(unix)]
     rfb_fd: Option<rfb_fd::RfbFd>,
@@ -299,76 +262,6 @@ const WEB_ASSETS: &[(&str, &str, &str)] = &[
         include_str!("../../../web/video-decoder.js"),
     ),
     (
-        "datagram-transport.js",
-        "text/javascript",
-        include_str!("../../../web/datagram-transport.js"),
-    ),
-    (
-        "predictive-state.js",
-        "text/javascript",
-        include_str!("../../../web/predictive-state.js"),
-    ),
-    (
-        "predictive-datagram.js",
-        "text/javascript",
-        include_str!("../../../web/predictive-datagram.js"),
-    ),
-    (
-        "xor-fec.js",
-        "text/javascript",
-        include_str!("../../../web/xor-fec.js"),
-    ),
-    (
-        "fec-predictive-state.js",
-        "text/javascript",
-        include_str!("../../../web/fec-predictive-state.js"),
-    ),
-    (
-        "tile-connect.js",
-        "text/javascript",
-        include_str!("../../../web/tile-connect.js"),
-    ),
-    (
-        "tile-transport.js",
-        "text/javascript",
-        include_str!("../../../web/tile-transport.js"),
-    ),
-    (
-        "tile-painter.js",
-        "text/javascript",
-        include_str!("../../../web/tile-painter.js"),
-    ),
-    (
-        "tile-worker.js",
-        "text/javascript",
-        include_str!("../../../web/tile-worker.js"),
-    ),
-    (
-        "tile-decoder.js",
-        "text/javascript",
-        include_str!("../../../web/tile-decoder.js"),
-    ),
-    (
-        "tile-inflate.js",
-        "text/javascript",
-        include_str!("../../../web/tile-inflate.js"),
-    ),
-    (
-        "vendor/fflate-bounded-core.js",
-        "text/javascript",
-        include_str!("../../../web/vendor/fflate-bounded-core.js"),
-    ),
-    (
-        "vendor/fflate-LICENSE",
-        "text/plain",
-        include_str!("../../../web/vendor/fflate-LICENSE"),
-    ),
-    (
-        "vendor/fflate-provenance.json",
-        "application/json",
-        include_str!("../../../web/vendor/fflate-provenance.json"),
-    ),
-    (
         "hybrid-decoder.js",
         "text/javascript",
         include_str!("../../../web/hybrid-decoder.js"),
@@ -407,7 +300,6 @@ fn main() -> Result<()> {
     }
     // Reject unsupported sources before adopting any inherited descriptor.
     rfb_teardown::validate(&args)?;
-    tile_send::validate(&args)?;
     let source_deadline = configured_source_deadline(&args)?;
     // SAFETY: a trusted launcher transfers this one exclusive owner. Adopt before
     // runtime/logging/threads can allocate another descriptor with that number.
@@ -418,26 +310,20 @@ fn main() -> Result<()> {
         .transpose()?;
     #[cfg(not(unix))]
     ensure!(args.rfb_fd.is_none(), "rfb-fd requires a Unix host");
-    let stage_trace = stage_trace::prepare(&args)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()?;
     #[cfg(unix)]
-    let result = runtime.block_on(run(args, source_deadline, rfb_fd, stage_trace.clone()));
+    let result = runtime.block_on(run(args, source_deadline, rfb_fd));
     #[cfg(not(unix))]
-    let result = runtime.block_on(run(args, source_deadline, stage_trace.clone()));
-    let trace_result = if let Some(trace) = &stage_trace {
-        runtime.block_on(trace.finish(result.is_ok()))
-    } else {
-        Ok(())
-    };
-    if source_deadline.is_some() || stage_trace.is_some() {
+    let result = runtime.block_on(run(args, source_deadline));
+    if source_deadline.is_some() {
         // Main returning ends the private worker. A blocking task cannot keep
         // its source lease alive indefinitely during runtime shutdown.
         runtime.shutdown_timeout(Duration::from_secs(1));
     }
-    result.and(trace_result)
+    result
 }
 
 fn configured_source_deadline(args: &Args) -> Result<Option<tokio::time::Instant>> {
@@ -474,7 +360,6 @@ async fn run(
     args: Args,
     source_deadline: Option<tokio::time::Instant>,
     #[cfg(unix)] rfb_fd: Option<rfb_fd::RfbFd>,
-    stage_trace: stage_trace::Handle,
 ) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -510,7 +395,6 @@ async fn run(
     let hybrid_config = configured_hybrid(&args)?;
     let hybrid_mask_grid = configured_mask_grid(&args)?;
     let video_timing = configured_video_timing(&args)?;
-    let datagram_config = configured_datagram(&args, video_timing)?;
     if args.benchmark_capture_dir.is_some() {
         ensure!(
             args.bind.ip().is_loopback()
@@ -560,19 +444,6 @@ async fn run(
         None
     };
     let (worker_shutdown, _) = watch::channel(false);
-    let datagram = datagram_config
-        .map(|(address, advertise_port)| {
-            datagram::DatagramRuntime::bind_configured(
-                address,
-                advertise_port,
-                args.datagram_congestion_control.unwrap_or_default(),
-                args.datagram_codec.unwrap_or_default(),
-                args.datagram_public_host.clone(),
-                args.datagram_send_buffer_bytes,
-            )
-        })
-        .transpose()?;
-    let datagram_origin = datagram.as_ref().map(|runtime| runtime.advertised_origin());
     let tcp_listener = tcp_listener::SocketPolicy::new(args.tcp_nodelay);
     let benchmark = args
         .benchmark_capture_dir
@@ -586,9 +457,7 @@ async fn run(
         hybrid_config,
         hybrid_mask_grid,
         video_timing,
-        datagram,
         benchmark,
-        stage_trace,
         #[cfg(unix)]
         rfb_fd,
         source_deadline,
@@ -603,21 +472,10 @@ async fn run(
         started: Instant::now(),
         shared_capture,
     });
-    let mut datagram_tasks = JoinSet::new();
-    if let Some(runtime) = &app.datagram {
-        let runtime = runtime.clone();
-        let app = app.clone();
-        datagram_tasks.spawn(async move { runtime.serve(app).await });
-    }
-    let mut router = Router::new()
-        .route(
-            "/",
-            get(|| async { Html(include_str!("../../../web/index.html")) }),
-        )
-        .route(
-            "/datagram",
-            get(|| async { Html(include_str!("../../../web/index.html")) }),
-        );
+    let mut router = Router::new().route(
+        "/",
+        get(|| async { Html(include_str!("../../../web/index.html")) }),
+    );
     for &(path, content_type, body) in WEB_ASSETS {
         router = router.route(
             &format!("/{path}"),
@@ -627,23 +485,17 @@ async fn run(
     let router = router
         .route("/health", get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }))
         .route("/api/session", post(login).delete(logout))
-        .route("/api/datagram-ticket", post(datagram_ticket))
-        .route("/api/datagram-revoke", post(datagram_revoke))
         .route("/api/stats", get(stats))
-        .route("/api/stage-clock", post(stage_clock).layer(DefaultBodyLimit::max(256)))
         .route("/ws", get(upgrade))
         .layer(DefaultBodyLimit::max(MAX_CLIPBOARD + 1024))
-        .layer(axum::middleware::map_response(move |mut response: Response| {
-            let datagram_origin = datagram_origin.clone();
-            async move {
+        .layer(axum::middleware::map_response(|mut response: Response| async move {
             let h = response.headers_mut();
             h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-            let connect = datagram_origin.as_ref().map_or_else(|| "'self'".to_owned(), |origin| format!("'self' {origin}"));
-            h.insert(header::CONTENT_SECURITY_POLICY, format!("default-src 'self'; script-src 'self'; connect-src {connect}; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'").parse().unwrap());
+            h.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
             h.insert("x-content-type-options", "nosniff".parse().unwrap());
             h.insert("referrer-policy", "no-referrer".parse().unwrap());
             response
-        }}))
+        }))
         .with_state(app.clone());
     let listener = tcp_listener::VerifiedListener::new(
         tokio::net::TcpListener::bind(bind).await?,
@@ -652,28 +504,14 @@ async fn run(
     println!("Gliss listening on http://{bind} (CPU-only)");
     let (shutdown_notice, shutdown_started) = oneshot::channel();
     let shutdown_signal = app.worker_shutdown.clone();
-    let shutdown_trace = app.stage_trace.clone();
     let serving = axum::serve(listener, router)
         .with_graceful_shutdown(async move {
             tokio::select! {
-                signal_result = tokio::signal::ctrl_c() => { if let Some(trace) = &shutdown_trace {
-                    if signal_result.is_ok() { trace.note_shutdown(1); } else { trace.note_shutdown(4); trace.failure(8); }
-                } },
-                signal_received = async {
-                    #[cfg(unix)]
-                    if shutdown_trace.is_some() {
-                        return match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-                            Ok(mut signal) => signal.recv().await.is_some(), Err(_) => false,
-                        };
-                    }
-                    std::future::pending::<bool>().await
-                } => { if let Some(trace) = &shutdown_trace {
-                    if signal_received { trace.note_shutdown(3); } else { trace.note_shutdown(4); trace.failure(8); }
-                } },
+                _ = tokio::signal::ctrl_c() => {},
                 _ = async {
                     if let Some(deadline) = source_deadline { tokio::time::sleep_until(deadline).await; }
                     else { std::future::pending::<()>().await; }
-                } => { if let Some(trace) = &shutdown_trace { trace.note_shutdown(2); } },
+                } => {},
             }
             shutdown_signal.send_replace(true);
             let _ = shutdown_notice.send(tokio::time::Instant::now());
@@ -690,17 +528,8 @@ async fn run(
                 (tokio::time::timeout_at(hard_stop, &mut serving).await, hard_stop)
             }
         };
-        if tokio::time::timeout_at(hard_stop, app.clients.clone().acquire_owned())
-            .await
-            .is_err()
-            && let Some(trace) = &app.stage_trace
-        {
-            trace.failure(16);
-        }
+        let _ = tokio::time::timeout_at(hard_stop, app.clients.clone().acquire_owned()).await;
         result.unwrap_or_else(|_| {
-            if let Some(trace) = &app.stage_trace {
-                trace.failure(16);
-            }
             tracing::warn!("graphics lease shutdown grace elapsed");
             Ok(())
         })
@@ -708,9 +537,6 @@ async fn run(
         serving.await
     };
     app.worker_shutdown.send_replace(true);
-    while let Some(result) = datagram_tasks.join_next().await {
-        result.context("datagram worker failed")??;
-    }
     if let Some(capture) = &app.shared_capture {
         capture
             .shutdown()
@@ -752,227 +578,8 @@ fn explicit_video_timing(args: &Args) -> bool {
         || args.video_intra_period.is_some()
 }
 
-fn configured_datagram(
-    args: &Args,
-    timing: Option<VideoTiming>,
-) -> Result<Option<(SocketAddr, Option<u16>)>> {
-    let Some(address) = args.datagram_bind else {
-        ensure!(
-            args.datagram_advertise_port.is_none()
-                && args.datagram_congestion_control.is_none()
-                && args.datagram_codec.is_none()
-                && args.datagram_public_host.is_none()
-                && !args.datagram_display_input_only
-                && args.datagram_send_buffer_bytes.is_none(),
-            "datagram options require datagram-bind"
-        );
-        return Ok(None);
-    };
-    if let Some(host) = &args.datagram_public_host {
-        parse_datagram_public_host(host).map_err(anyhow::Error::msg)?;
-        ensure!(
-            args.bind.ip().is_loopback() && args.rfb_fd.is_some() && args.max_clients == 1,
-            "public datagrams require private HTTP, a managed RFB FD and max-clients1"
-        );
-        let origin = args
-            .origin
-            .as_deref()
-            .context("public datagrams require an exact HTTPS origin")?;
-        let authority = origin
-            .strip_prefix("https://")
-            .context("public datagrams require an exact HTTPS origin")?;
-        let uri: axum::http::Uri = origin.parse().context("invalid public browser origin")?;
-        ensure!(
-            !authority.is_empty()
-                && !authority
-                    .bytes()
-                    .any(|byte| matches!(byte, b'/' | b'?' | b'#' | b'@' | b'\\'))
-                && uri.authority().is_some(),
-            "public datagrams require an exact HTTPS origin without a path or userinfo"
-        );
-    } else {
-        ensure!(
-            address.ip() == std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            "experimental datagram bind must use 127.0.0.1; public UDP requires datagram-public-host"
-        );
-    }
-    if let Some(bytes) = args.datagram_send_buffer_bytes {
-        datagram::validate_send_buffer(bytes)?;
-    }
-    if args.datagram_codec.unwrap_or_default() == datagram::DatagramCodec::H264 {
-        ensure!(
-            args.codec == "h264" && timing.is_some_and(|timing| timing.intra_period() == 1),
-            "datagram H264 media requires --codec h264 --video-intra-period 1"
-        );
-    } else if args.datagram_codec.is_some_and(|codec| codec.predictive()) {
-        ensure!(
-            args.codec == "h264"
-                && timing.is_some_and(|timing| timing.intra_period() == 4)
-                && args.stream_stats
-                && args.max_clients == 1,
-            "predictive GOP4 requires --codec h264 --video-intra-period 4 --stream-stats --max-clients 1"
-        );
-    } else {
-        ensure!(
-            args.datagram_congestion_control == Some(datagram::CongestionControl::Bbr),
-            "experimental GLT2 requires explicit --datagram-congestion-control bbr"
-        );
-    }
-    Ok(Some((address, args.datagram_advertise_port)))
-}
-
-fn parse_datagram_public_host(value: &str) -> std::result::Result<String, String> {
-    let bare = value
-        .strip_prefix('[')
-        .and_then(|host| host.strip_suffix(']'))
-        .unwrap_or(value);
-    if let Ok(address) = bare.parse::<std::net::IpAddr>() {
-        if address.is_unspecified() || address.is_multicast() {
-            return Err("media IP must be a unicast destination".into());
-        }
-        return Ok(address.to_string());
-    }
-    if value.is_empty()
-        || value.len() > 253
-        || !value.is_ascii()
-        || value.split('.').any(|label| {
-            label.is_empty()
-                || label.len() > 63
-                || label.starts_with('-')
-                || label.ends_with('-')
-                || !label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-    {
-        return Err(
-            "media host must be a DNS hostname or literal IP without a scheme, port or path".into(),
-        );
-    }
-    Ok(value.to_ascii_lowercase())
-}
-
 #[cfg(test)]
-mod public_datagram_tests {
-    use super::*;
-
-    fn selected() -> Args {
-        Args::try_parse_from([
-            "gliss-server",
-            "--token",
-            "01234567890123456789012345678901",
-            "--rfb-fd",
-            "9",
-            "--rfb-deadline-unix-ms",
-            "1",
-            "--max-clients",
-            "1",
-            "--codec",
-            "batch",
-            "--datagram-bind",
-            "0.0.0.0:4443",
-            "--datagram-public-host",
-            "media.example",
-            "--origin",
-            "https://desktop.example",
-            "--datagram-display-input-only",
-            "--datagram-codec",
-            "glt2-lossless",
-            "--datagram-congestion-control",
-            "bbr",
-            "--datagram-send-buffer-bytes",
-            "65536",
-        ])
-        .unwrap()
-    }
-
-    #[test]
-    fn public_udp_requires_private_managed_source_and_exact_https_browser_origin() {
-        let selected = selected();
-        assert_eq!(
-            configured_datagram(&selected, None).unwrap(),
-            Some(("0.0.0.0:4443".parse().unwrap(), None))
-        );
-        assert_eq!(
-            selected.datagram_public_host.as_deref(),
-            Some("media.example")
-        );
-        for origin in [
-            "http://desktop.example",
-            "https://desktop.example/",
-            "https://desktop.example/api",
-            "https://user@desktop.example",
-            "https://desktop.example?token=x",
-            "https://desktop.example#fragment",
-            "https://",
-        ] {
-            let mut invalid = self::selected();
-            invalid.origin = Some(origin.to_owned());
-            assert!(configured_datagram(&invalid, None).is_err(), "{origin}");
-        }
-        let mut invalid = self::selected();
-        invalid.origin = None;
-        assert!(configured_datagram(&invalid, None).is_err());
-        let mut invalid = self::selected();
-        invalid.rfb_fd = None;
-        assert!(configured_datagram(&invalid, None).is_err());
-        let mut invalid = self::selected();
-        invalid.bind = "0.0.0.0:8080".parse().unwrap();
-        assert!(configured_datagram(&invalid, None).is_err());
-        let mut invalid = self::selected();
-        invalid.max_clients = 2;
-        assert!(configured_datagram(&invalid, None).is_err());
-        let mut invalid = self::selected();
-        invalid.datagram_public_host = None;
-        assert!(configured_datagram(&invalid, None).is_err());
-        let mut invalid = self::selected();
-        invalid.datagram_send_buffer_bytes = Some(8191);
-        assert!(configured_datagram(&invalid, None).is_err());
-    }
-
-    #[test]
-    fn public_host_is_only_a_normalized_destination_not_an_arbitrary_url() {
-        for (value, expected) in [
-            ("Media.Example", "media.example"),
-            ("203.0.113.7", "203.0.113.7"),
-            ("2001:db8::7", "2001:db8::7"),
-            ("[2001:db8::7]", "2001:db8::7"),
-        ] {
-            assert_eq!(parse_datagram_public_host(value).unwrap(), expected);
-        }
-        for value in [
-            "",
-            "https://media.example",
-            "media.example:4443",
-            "media.example/path",
-            "user@media.example",
-            "media.example?ticket=x",
-            "media.example#x",
-            "media.example; script-src *",
-            "-media.example",
-            "media..example",
-            "0.0.0.0",
-            "::",
-            "ff02::1",
-            "224.0.0.1",
-            "media.example\n",
-        ] {
-            assert!(parse_datagram_public_host(value).is_err(), "{value}");
-        }
-    }
-
-    #[test]
-    fn scoped_source_does_not_publish_guest_clipboard_contents() {
-        assert_eq!(clipboard_message("guest secret".to_owned(), true), None);
-        assert_eq!(
-            clipboard_message("guest text".to_owned(), false),
-            Some(json!({"type":"clipboard", "text":"guest text"}))
-        );
-    }
-}
-
-#[cfg(test)]
-mod datagram_option_tests {
+mod option_tests {
     use super::*;
 
     fn args(extra: &[&str]) -> Args {
@@ -990,311 +597,6 @@ mod datagram_option_tests {
     }
 
     #[test]
-    fn predictive_gop4_requires_its_own_trusted_capability_and_bounded_diagnostics() {
-        let selected = args(&[
-            "--codec",
-            "h264",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-codec",
-            "h264-predictive-gop4",
-            "--video-intra-period",
-            "4",
-            "--stream-stats",
-            "--max-clients",
-            "1",
-        ]);
-        assert!(
-            configured_datagram(&selected, configured_video_timing(&selected).unwrap()).is_ok()
-        );
-        for options in [
-            vec![
-                "--codec",
-                "h264",
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--video-intra-period",
-                "4",
-            ],
-            vec![
-                "--codec",
-                "h264",
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-codec",
-                "h264-predictive-gop4",
-                "--video-intra-period",
-                "1",
-                "--stream-stats",
-                "--max-clients",
-                "1",
-            ],
-            vec![
-                "--codec",
-                "h264",
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-codec",
-                "h264-predictive-gop4",
-                "--video-intra-period",
-                "4",
-                "--max-clients",
-                "1",
-            ],
-            vec![
-                "--codec",
-                "h264",
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-codec",
-                "h264-predictive-gop4",
-                "--video-intra-period",
-                "4",
-                "--stream-stats",
-                "--max-clients",
-                "2",
-            ],
-        ] {
-            let invalid = args(&options);
-            assert!(
-                configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn predictive_head100_changes_only_the_trusted_head_cadence() {
-        let base = [
-            "--codec",
-            "h264",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-codec",
-            "h264-predictive-gop4-head100",
-            "--video-intra-period",
-            "4",
-            "--stream-stats",
-            "--max-clients",
-            "1",
-        ];
-        let selected = args(&base);
-        let codec = selected.datagram_codec.unwrap();
-        assert_eq!(codec, datagram::DatagramCodec::H264PredictiveGop4Head100);
-        assert!(codec.predictive());
-        assert_eq!(codec.policy(), None);
-        assert_eq!(codec.protocol(), "GLV1");
-        assert!(
-            configured_datagram(&selected, configured_video_timing(&selected).unwrap()).is_ok()
-        );
-        let mut legacy = json!({});
-        datagram::DatagramCodec::H264PredictiveGop4.decorate_video(&mut legacy);
-        assert_eq!(
-            legacy,
-            json!({"media":"GLD1/GLV1-predictive-v1",
-            "datagram_codec":"h264-predictive-gop4","protocol":"GLV1","datagram_protocol":"GLD1",
-            "independent_frames":false,"reference_policy":"contiguous-since-idr","gop_frames":4,
-            "maximum_access_unit_bytes":1048576,"encoded_head_interval_ms":1000,
-            "encoded_head_deadline_ms":250,"recovery_interval_ms":1000,"media_retransmission":false})
-        );
-        let mut fast = json!({});
-        codec.decorate_video(&mut fast);
-        let mut expected = legacy;
-        expected["datagram_codec"] = json!("h264-predictive-gop4-head100");
-        expected["encoded_head_interval_ms"] = json!(100);
-        assert_eq!(fast, expected);
-        for (flag, value) in [
-            ("--video-intra-period", "1"),
-            ("--max-clients", "2"),
-            ("--datagram-bind", "0.0.0.0:0"),
-        ] {
-            let mut changed = base.to_vec();
-            let index = changed.iter().position(|item| *item == flag).unwrap() + 1;
-            changed[index] = value;
-            let invalid = args(&changed);
-            assert!(
-                configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err()
-            );
-        }
-        let without_stats = base
-            .into_iter()
-            .filter(|item| *item != "--stream-stats")
-            .collect::<Vec<_>>();
-        let invalid = args(&without_stats);
-        assert!(configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err());
-    }
-
-    #[test]
-    fn compact_head_profile_keeps_the_same_trusted_gop4_admission_guards() {
-        let base = [
-            "--codec",
-            "h264",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-codec",
-            "h264-predictive-gop4-compact100",
-            "--video-intra-period",
-            "4",
-            "--stream-stats",
-            "--max-clients",
-            "1",
-        ];
-        let selected = args(&base);
-        assert_eq!(
-            selected.datagram_codec,
-            Some(datagram::DatagramCodec::H264PredictiveGop4Compact100)
-        );
-        assert!(
-            configured_datagram(&selected, configured_video_timing(&selected).unwrap()).is_ok()
-        );
-        for (flag, value) in [
-            ("--video-intra-period", "1"),
-            ("--max-clients", "2"),
-            ("--datagram-bind", "0.0.0.0:0"),
-        ] {
-            let mut changed = base.to_vec();
-            let index = changed.iter().position(|item| *item == flag).unwrap() + 1;
-            changed[index] = value;
-            let invalid = args(&changed);
-            assert!(
-                configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err()
-            );
-        }
-        let without_stats = base
-            .into_iter()
-            .filter(|item| *item != "--stream-stats")
-            .collect::<Vec<_>>();
-        let invalid = args(&without_stats);
-        assert!(configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err());
-    }
-
-    #[test]
-    fn compact50_keeps_trusted_predictive_profile_admission() {
-        let base = [
-            "--codec",
-            "h264",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-codec",
-            "h264-predictive-gop4-compact50",
-            "--video-intra-period",
-            "4",
-            "--stream-stats",
-            "--max-clients",
-            "1",
-        ];
-        let selected = args(&base);
-        assert_eq!(
-            selected.datagram_codec,
-            Some(datagram::DatagramCodec::H264PredictiveGop4Compact50)
-        );
-        assert!(
-            configured_datagram(&selected, configured_video_timing(&selected).unwrap()).is_ok()
-        );
-        for (flag, value) in [
-            ("--video-intra-period", "1"),
-            ("--max-clients", "2"),
-            ("--datagram-bind", "0.0.0.0:0"),
-        ] {
-            let mut changed = base.to_vec();
-            let index = changed.iter().position(|item| *item == flag).unwrap() + 1;
-            changed[index] = value;
-            let invalid = args(&changed);
-            assert!(
-                configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err()
-            );
-        }
-        let no_stats = base
-            .into_iter()
-            .filter(|item| *item != "--stream-stats")
-            .collect::<Vec<_>>();
-        let invalid = args(&no_stats);
-        assert!(configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err());
-    }
-
-    #[test]
-    fn xor8_keeps_trusted_predictive_profile_admission() {
-        let base = [
-            "--codec",
-            "h264",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-codec",
-            "h264-predictive-gop4-compact50-xor8",
-            "--video-intra-period",
-            "4",
-            "--stream-stats",
-            "--max-clients",
-            "1",
-        ];
-        let selected = args(&base);
-        assert_eq!(
-            selected.datagram_codec,
-            Some(datagram::DatagramCodec::H264PredictiveGop4Compact50Xor8)
-        );
-        assert!(
-            configured_datagram(&selected, configured_video_timing(&selected).unwrap()).is_ok()
-        );
-        for (flag, value) in [
-            ("--video-intra-period", "1"),
-            ("--max-clients", "2"),
-            ("--datagram-bind", "0.0.0.0:0"),
-        ] {
-            let mut changed = base.to_vec();
-            let index = changed.iter().position(|item| *item == flag).unwrap() + 1;
-            changed[index] = value;
-            let invalid = args(&changed);
-            assert!(
-                configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err()
-            );
-        }
-        let no_stats = base
-            .into_iter()
-            .filter(|item| *item != "--stream-stats")
-            .collect::<Vec<_>>();
-        let invalid = args(&no_stats);
-        assert!(configured_datagram(&invalid, configured_video_timing(&invalid).unwrap()).is_err());
-    }
-
-    #[test]
-    fn tile_codec_is_explicit_scoped_and_does_not_require_video_idr() {
-        let base = [
-            "gliss-server",
-            "--demo",
-            "--token",
-            "01234567890123456789012345678901",
-        ];
-        for (codec, policy) in [("glt2-lossless", 0), ("glt2-gentle", 1), ("glt2-strong", 2)] {
-            assert!(
-                Args::try_parse_from(base.into_iter().chain(["--datagram-codec", codec])).is_err()
-            );
-            let selected = args(&[
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-codec",
-                codec,
-                "--datagram-congestion-control",
-                "bbr",
-            ]);
-            assert_eq!(selected.datagram_codec.unwrap().policy(), Some(policy));
-            assert!(configured_datagram(&selected, None).unwrap().is_some());
-            let cubic = args(&["--datagram-bind", "127.0.0.1:0", "--datagram-codec", codec]);
-            assert!(configured_datagram(&cubic, None).is_err());
-        }
-        let ordinary = args(&[]);
-        assert_eq!(ordinary.datagram_codec, None);
-        assert!(configured_datagram(&ordinary, None).unwrap().is_none());
-        assert!(
-            Args::try_parse_from(base.into_iter().chain([
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-codec",
-                "automatic"
-            ]))
-            .is_err()
-        );
-    }
-
-    #[test]
     fn export_web_writes_every_served_module_without_a_token_or_source() {
         let directory = std::env::temp_dir().join(format!("gliss-export-{}", std::process::id()));
         let args =
@@ -1309,7 +611,7 @@ mod datagram_option_tests {
                 "{path}"
             );
         }
-        for path in ["client.js", "decoder.js", "vendor/fflate-bounded-core.js"] {
+        for path in ["client.js", "decoder.js", "video-decoder.js"] {
             assert!(
                 WEB_ASSETS.iter().any(|(name, _, _)| *name == path),
                 "{path}"
@@ -1348,132 +650,6 @@ mod datagram_option_tests {
             assert!(Args::try_parse_from(base.into_iter().chain(extra)).is_err());
         }
     }
-
-    #[test]
-    fn congestion_controller_is_operator_selected_and_requires_udp_scope() {
-        let base = [
-            "gliss-server",
-            "--demo",
-            "--token",
-            "01234567890123456789012345678901",
-        ];
-        for controller in ["cubic", "bbr"] {
-            assert!(
-                Args::try_parse_from(
-                    base.into_iter()
-                        .chain(["--datagram-congestion-control", controller])
-                )
-                .is_err()
-            );
-            let selected = args(&[
-                "--codec",
-                "h264",
-                "--video-intra-period",
-                "1",
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-congestion-control",
-                controller,
-            ]);
-            assert!(
-                configured_datagram(&selected, configured_video_timing(&selected).unwrap())
-                    .unwrap()
-                    .is_some()
-            );
-            assert_eq!(
-                selected.datagram_congestion_control.unwrap().name(),
-                controller
-            );
-        }
-        for invalid in ["reno", "BBR", "none", "", "gpu"] {
-            assert!(
-                Args::try_parse_from(base.into_iter().chain([
-                    "--datagram-bind",
-                    "127.0.0.1:0",
-                    "--datagram-congestion-control",
-                    invalid,
-                ]))
-                .is_err()
-            );
-        }
-        let default = args(&[
-            "--codec",
-            "h264",
-            "--video-intra-period",
-            "1",
-            "--datagram-bind",
-            "127.0.0.1:0",
-        ]);
-        assert_eq!(default.datagram_congestion_control, None);
-        assert_eq!(
-            default.datagram_congestion_control.unwrap_or_default(),
-            datagram::CongestionControl::Cubic
-        );
-        let mut unscoped = args(&[]);
-        unscoped.datagram_congestion_control = Some(datagram::CongestionControl::Bbr);
-        assert!(configured_datagram(&unscoped, None).is_err());
-    }
-
-    #[test]
-    fn datagram_requires_loopback_and_independently_decodable_video() {
-        let valid = args(&[
-            "--codec",
-            "h264",
-            "--video-intra-period",
-            "1",
-            "--datagram-bind",
-            "127.0.0.1:0",
-            "--datagram-advertise-port",
-            "4443",
-        ]);
-        assert_eq!(
-            configured_datagram(&valid, configured_video_timing(&valid).unwrap()).unwrap(),
-            Some(("127.0.0.1:0".parse().unwrap(), Some(4443)))
-        );
-        for bind in ["0.0.0.0:4443", "127.0.0.2:4443", "[::1]:4443"] {
-            let args = args(&[
-                "--codec",
-                "h264",
-                "--video-intra-period",
-                "1",
-                "--datagram-bind",
-                bind,
-            ]);
-            assert!(configured_datagram(&args, configured_video_timing(&args).unwrap()).is_err());
-        }
-        for extra in [
-            vec!["--codec", "h264", "--datagram-bind", "127.0.0.1:0"],
-            vec!["--codec", "deflate", "--datagram-bind", "127.0.0.1:0"],
-        ] {
-            let args = args(&extra);
-            assert!(configured_datagram(&args, configured_video_timing(&args).unwrap()).is_err());
-        }
-    }
-
-    #[test]
-    fn default_clients_need_no_datagram_endpoint_or_advertised_port() {
-        for codec in ["deflate", "h264", "hybrid-grid"] {
-            let args = args(&["--codec", codec]);
-            assert!(
-                configured_datagram(&args, configured_video_timing(&args).unwrap())
-                    .unwrap()
-                    .is_none()
-            );
-        }
-        for extra in [
-            vec!["--datagram-advertise-port", "4443"],
-            vec![
-                "--datagram-bind",
-                "127.0.0.1:0",
-                "--datagram-advertise-port",
-                "0",
-            ],
-        ] {
-            assert!(
-                Args::try_parse_from(["gliss-server", "--demo"].into_iter().chain(extra)).is_err()
-            );
-        }
-    }
 }
 
 fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
@@ -1485,16 +661,14 @@ fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
 }
 
 /// The longest interval the encoder accepts: two minutes of frames at 30 fps.
-const WEBSOCKET_INTRA_PERIOD: u32 = 3600;
+const DEFAULT_INTRA_PERIOD: u32 = 3600;
 
 fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
     let qp = configured_video_qp(args)?;
     if args.video_frame_skip || qp.is_some() {
         ensure!(
-            args.codec == "h264"
-                && args.datagram_bind.is_none()
-                && args.benchmark_capture_dir.is_none(),
-            "video frame skipping and QP bounds require WebSocket h264 without native benchmark capture"
+            args.codec == "h264" && args.benchmark_capture_dir.is_none(),
+            "video frame skipping and QP bounds require h264 without native benchmark capture"
         );
     }
     if args.codec != "h264" {
@@ -1507,17 +681,10 @@ fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
     // A WebSocket stream loses nothing, and its client asks for a keyframe after a
     // decode error. A periodic keyframe there only costs a burst of bytes and
     // resets the picture to a coarser quality, so it is as rare as the encoder allows.
-    let default_intra_period = if args.datagram_bind.is_none() {
-        WEBSOCKET_INTRA_PERIOD
-    } else {
-        args.fps
-            .checked_mul(2)
-            .context("H.264 keyframe interval overflow")?
-    };
     Ok(Some(VideoTiming::new(
         args.video_fps.unwrap_or(args.fps),
         args.video_timestamp_fps.unwrap_or(args.fps),
-        args.video_intra_period.unwrap_or(default_intra_period),
+        args.video_intra_period.unwrap_or(DEFAULT_INTRA_PERIOD),
     )?))
 }
 
@@ -1593,23 +760,7 @@ fn with_stream_metadata(value: serde_json::Value, app: &App) -> serde_json::Valu
     }
     value["tcp_listener"] = json!(app.tcp_listener.snapshot());
     value["audio_packet_ms"] = json!(app.args.audio_packet_ms.millis());
-    if app.args.datagram_display_input_only {
-        value["display_input_only"] = json!(true);
-    }
-    if app
-        .args
-        .datagram_codec
-        .is_some_and(|codec| codec.policy().is_some())
-    {
-        value["tile_send_quantum"] = json!(tile_quantum::selected_name(app.args.tile_send_quantum));
-        value["tile_quantum_configuration"] =
-            tile_quantum::configuration(app.args.tile_send_quantum);
-    }
     with_video_metadata(value, &app.args, app.video_timing)
-}
-
-fn clipboard_message(text: String, display_input_only: bool) -> Option<serde_json::Value> {
-    (!display_input_only).then(|| json!({"type":"clipboard", "text":text}))
 }
 
 fn origin_allowed(app: &App, headers: &HeaderMap) -> bool {
@@ -1921,7 +1072,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn explicit_keyframe_intervals_and_other_transport_defaults_are_preserved() {
+    fn explicit_keyframe_intervals_are_preserved() {
         for period in ["1", "4", "60", "240", "3600"] {
             let args = args(&["--codec", "h264", "--video-intra-period", period]).unwrap();
             assert_eq!(
@@ -1932,12 +1083,6 @@ mod video_timing_option_tests {
                 period.parse::<u32>().unwrap()
             );
         }
-        let mut datagram = args(&["--codec", "h264", "--fps", "30"]).unwrap();
-        datagram.datagram_bind = Some("127.0.0.1:0".parse().unwrap());
-        assert_eq!(
-            configured_video_timing(&datagram).unwrap().unwrap(),
-            VideoTiming::new(30, 30, 60).unwrap()
-        );
     }
 
     #[test]
@@ -2060,7 +1205,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn frame_skip_is_opt_in_and_rejects_unimplemented_transports_and_recorders() {
+    fn frame_skip_is_opt_in_and_rejects_other_codecs_and_recorders() {
         let default = args(&["--codec", "h264"]).unwrap();
         assert!(!default.video_frame_skip);
         let enabled = args(&["--codec", "h264", "--video-frame-skip", "true"]).unwrap();
@@ -2075,14 +1220,6 @@ mod video_timing_option_tests {
         );
         for extra in [
             vec!["--codec", "deflate", "--video-frame-skip", "true"],
-            vec![
-                "--codec",
-                "h264",
-                "--video-frame-skip",
-                "true",
-                "--datagram-bind",
-                "127.0.0.1:0",
-            ],
             vec![
                 "--codec",
                 "h264",
@@ -2299,128 +1436,10 @@ async fn stats(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
         json!({"bytes":app.bytes.load(Ordering::Relaxed),"frames":app.frames.load(Ordering::Relaxed),"active_clients":app.args.max_clients-app.clients.available_permits(),"uptime_s":app.started.elapsed().as_secs_f64(),"codec":app.args.codec,"shared_capture":app.shared_capture.as_ref().map(|capture|capture.snapshot())}),
         &app,
     );
-    if let Some(runtime) = &app.datagram {
-        value["datagram_config"] = json!({
-            "transport":"webtransport-datagram",
-            "congestion_control":runtime.congestion_control(),
-            "bound_udp":runtime.local_addr().to_string(),
-            "advertised_udp_port":app.args.datagram_advertise_port.unwrap_or(runtime.local_addr().port()),
-            "independent_frames":true,
-            "media_retransmission":false,
-        });
-        if let Some(policy) = runtime.codec().policy() {
-            let config = value["datagram_config"].as_object_mut().unwrap();
-            config.insert("codec".into(), json!(runtime.codec().name()));
-            config.insert("protocol".into(), json!(runtime.codec().protocol()));
-            config.insert("policy".into(), json!(policy));
-            config.insert(
-                "tile_send_policy".into(),
-                json!(app.args.tile_send_policy.unwrap_or_default().name()),
-            );
-            config.insert(
-                "tile_send_quantum".into(),
-                json!(tile_quantum::selected_name(app.args.tile_send_quantum)),
-            );
-            config.insert(
-                "tile_quantum_configuration".into(),
-                tile_quantum::configuration(app.args.tile_send_quantum),
-            );
-            config.insert("independent_frames".into(), json!(false));
-            config.insert("independent_tiles".into(), json!(true));
-        }
-        runtime
-            .codec()
-            .decorate_video(&mut value["datagram_config"]);
-    }
     if let Some(recorder) = &app.benchmark {
         value["benchmark_capture"] = recorder.snapshot();
     }
     Json(value).into_response()
-}
-
-async fn datagram_ticket(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    match &app.datagram {
-        Some(runtime) => runtime.mint_ticket(&app, &headers),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn datagram_revoke(State(app): State<Arc<App>>, headers: HeaderMap) -> Response {
-    let Some(runtime) = &app.datagram else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if !origin_allowed(&app, &headers) || authorized_until(&app, &headers).is_none() {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    // The irreversible admission/input gate changes before endpoint close or
-    // shutdown notification. A revoked worker cannot be redeemed or reused.
-    runtime.revoke();
-    app.worker_shutdown.send_replace(true);
-    StatusCode::NO_CONTENT.into_response()
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StageClockRequest {
-    nonce: String,
-    ordinal: u32,
-}
-
-impl StageClockRequest {
-    fn valid(&self) -> bool {
-        (1..=64).contains(&self.ordinal)
-            && self.nonce.len() == 32
-            && self
-                .nonce
-                .bytes()
-                .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
-    }
-}
-
-async fn stage_clock(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<StageClockRequest>, axum::extract::rejection::JsonRejection>,
-) -> Response {
-    let Some(trace) = &app.stage_trace else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    if !origin_allowed(&app, &headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    if authorized_until(&app, &headers).is_none() {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let Ok(Json(body)) = body else {
-        return StatusCode::BAD_REQUEST.into_response();
-    };
-    if !body.valid() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let Ok(_actor) = stage_trace::lease(&app.stage_trace) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    match trace.clock_probe() {
-        Ok((request_index, stamp, origin)) => Json(json!({
-            "schema": "gliss-causal-native-clock-v1",
-            "nonce": body.nonce,
-            "ordinal": body.ordinal,
-            "request_index": request_index,
-            "pid": std::process::id(),
-            "clock": "CLOCK_MONOTONIC",
-            "domain_id": stamp.domain_id.to_string(),
-            "origin_monotonic_ns": origin.to_string(),
-            "delta_ns": stamp.delta_ns.to_string(),
-        }))
-        .into_response(),
-        Err(stage_trace::ClockProbeError::Closed) => {
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
-        }
-        Err(stage_trace::ClockProbeError::Full) => StatusCode::TOO_MANY_REQUESTS.into_response(),
-        Err(stage_trace::ClockProbeError::Clock) => {
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
-        }
-    }
 }
 
 async fn upgrade(
@@ -2428,13 +1447,6 @@ async fn upgrade(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
-    if app
-        .stage_trace
-        .as_ref()
-        .is_some_and(|trace| trace.is_stopping())
-    {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
     if !origin_allowed(&app, &headers) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
@@ -2450,21 +1462,11 @@ async fn upgrade(
     let Ok(permit) = app.clients.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Ok(trace_actor) = stage_trace::lease(&app.stage_trace) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
     ws.max_message_size(MAX_CLIPBOARD + 1024)
         .max_frame_size(MAX_CLIPBOARD + 1024)
         .on_upgrade(move |socket| async move {
-            let _trace_actor = trace_actor;
             let _permit = permit;
-            let trace = app.stage_trace.clone();
             if let Err(error) = stream(socket, app, expires_at).await {
-                if error.downcast_ref::<WorkerStopped>().is_none()
-                    && let Some(trace) = &trace
-                {
-                    trace.failure(4);
-                }
                 tracing::warn!("stream ended: {error:#}");
             }
         })
@@ -2475,7 +1477,6 @@ async fn upgrade(
 struct Captured {
     frame: Arc<Frame>,
     forwarded_input_id: u32,
-    stage_generation: Option<u64>,
     published_at: Option<Instant>,
 }
 
@@ -2488,15 +1489,10 @@ struct Source {
     shutdown: Option<oneshot::Receiver<()>>,
     _tasks: JoinSet<()>,
     capture_lease: Option<shared_capture::CaptureLease>,
-    _stage_lease: Option<stage_trace::Lease>,
 }
 
 async fn source(app: &App) -> Result<Source> {
     rfb_teardown::validate_source(app)?;
-    let stage_lease = stage_trace::lease(&app.stage_trace)?;
-    if let Some(trace) = &app.stage_trace {
-        trace.claim_source()?;
-    }
     let (frame_tx, frames) = watch::channel(None);
     let (input, mut input_rx) = mpsc::channel::<Input>(128);
     let (event_tx, events) = mpsc::channel(16);
@@ -2531,20 +1527,15 @@ async fn source(app: &App) -> Result<Source> {
         let (mut reader, mut writer, info) = tokio::time::timeout(Duration::from_secs(10), async {
             #[cfg(unix)]
             if let Some(slot) = &app.rfb_fd {
-                return gliss_rfb::connect_unix_traced(
-                    slot.claim()?,
-                    app.args.vnc_password.as_deref(),
-                    stage_trace::rfb_observer(&app.stage_trace),
-                )
-                .await;
+                return gliss_rfb::connect_unix(slot.claim()?, app.args.vnc_password.as_deref())
+                    .await;
             }
-            gliss_rfb::connect_traced(
+            gliss_rfb::connect(
                 app.args
                     .vnc
                     .as_deref()
                     .context("Missing fixed RFB source")?,
                 app.args.vnc_password.as_deref(),
-                stage_trace::rfb_observer(&app.stage_trace),
             )
             .await
         })
@@ -2597,12 +1588,8 @@ async fn source(app: &App) -> Result<Source> {
         let reader_events = event_tx.clone();
         let rfb_frames = frame_tx.clone();
         let recorder = app.benchmark.clone();
-        let reader_trace = app.stage_trace.clone();
-        let reader_actor = stage_trace::lease(&reader_trace)?;
-        let display_input_only = app.args.datagram_display_input_only;
         let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
-            let _trace_actor = reader_actor;
             loop {
                 let event = match reader.read_event().await { Ok(event) => event, Err(_) => { let _ = reader_events.send(json!({"type":"error","message":"The VM display disconnected."})).await; break; } };
                 match event {
@@ -2619,16 +1606,10 @@ async fn source(app: &App) -> Result<Source> {
                                 break;
                             }
                             let forwarded_input_id = reader_id.load(Ordering::Acquire);
-                            let stage_frame = reader_trace.as_ref().map(|_|frame.clone());
-                            let stage_generation = reader_trace.as_ref().map(|trace|trace.publication_started(reader.traced_update_ordinal()));
-                            let sent = rfb_frames.send(Some(Captured { frame, forwarded_input_id,stage_generation,published_at:profile_capture.then(Instant::now) }));
-                            if let (Some(trace),Some(frame),Some(generation)) = (&reader_trace,stage_frame,stage_generation) {
-                                trace.publication_finished(generation,&frame,reader.traced_update_ordinal(),sent.is_ok());
-                            }
-                            if sent.is_err() { break; }
+                            if rfb_frames.send(Some(Captured { frame, forwarded_input_id, published_at: profile_capture.then(Instant::now) })).is_err() { break; }
                         }
                     }
-                    Event::Clipboard(text) => { if let Some(message) = clipboard_message(text, display_input_only) { let _ = reader_events.try_send(message); } }
+                    Event::Clipboard(text) => { let _ = reader_events.try_send(json!({"type":"clipboard","text":text})); }
                     Event::Cursor(cursor) => { if !dbus_capture { let _ = reader_events.try_send(json!({"type":"cursor","width":cursor.width,"height":cursor.height,"hotspot_x":cursor.hotspot_x,"hotspot_y":cursor.hotspot_y,"pixels":cursor.pixels})); } }
                     Event::Bell => { let _ = reader_events.try_send(json!({"type":"bell"})); }
                     Event::ResizeResult { width, height, status } => { let _ = reader_events.try_send(json!({"type":"resize_result","width":width,"height":height,"status":status})); }
@@ -2656,7 +1637,7 @@ async fn source(app: &App) -> Result<Source> {
                     if event.disabled { let _ = frame_tx.send(None); }
                     if let Some(frame) = event.frame {
                         capture_dimensions.store((u32::from(frame.width) << 16) | u32::from(frame.height), Ordering::Release);
-                        if frame_tx.send(Some(Captured { frame:Arc::new(frame), forwarded_input_id:capture_input.load(Ordering::Acquire),stage_generation:None,published_at:diagnostics.then(Instant::now) })).is_err() { break; }
+                        if frame_tx.send(Some(Captured { frame:Arc::new(frame), forwarded_input_id:capture_input.load(Ordering::Acquire),published_at:diagnostics.then(Instant::now) })).is_err() { break; }
                     }
                     let next_cursor = if event.mouse.is_none_or(|(_,_,visible)| visible) { event.cursor } else { None };
                     if next_cursor != cursor {
@@ -2679,10 +1660,7 @@ async fn source(app: &App) -> Result<Source> {
         }
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         shutdown = Some(shutdown_rx);
-        let input_trace = app.stage_trace.clone();
-        let input_actor = stage_trace::lease(&input_trace)?;
         tasks.spawn(async move {
-            let _trace_actor = input_actor;
             let mut tick = tokio::time::interval(period);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut ready = spacing.map(rfb_request::Ready::new);
@@ -2692,28 +1670,25 @@ async fn source(app: &App) -> Result<Source> {
             let mut pointer = None;
             let mut audio_enabled = false;
             let initial_audio_request = *audio_requests.borrow_and_update();
-            audio::update_capture(&mut writer, initial_audio_request, &mut audio_enabled, &audio_status, !display_input_only).await;
+            audio::update_capture(&mut writer, initial_audio_request, &mut audio_enabled, &audio_status).await;
             loop {
                 tokio::select! {
                     changed = audio_requests.changed() => {
                         if changed.is_err() { break; }
                         let request = *audio_requests.borrow_and_update();
-                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status, !display_input_only).await;
+                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status).await;
                     }
                     changed = audio_available.changed() => {
                         if changed.is_err() { break; }
                         audio_available.borrow_and_update();
                         let request = *audio_requests.borrow();
-                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status, !display_input_only).await;
+                        audio::update_capture(&mut writer, request, &mut audio_enabled, &audio_status).await;
                     }
                     command = input_rx.recv() => {
                         let Some(command) = command else { break; };
-                        stage_trace::emit(&input_trace,stage_trace::Kind::InputDequeued,||stage_trace::Fields { input_id:Some(u64::from(command.id())),..stage_trace::Fields::default() });
                         if let Input::Key { keysym, down, .. } = &command { if *down { keys.insert(*keysym); } else { keys.remove(keysym); } }
                         if let Input::Pointer { x, y, buttons, .. } = &command { pointer = Some((*x, *y, *buttons)); }
-                        let result = writer.send_input(&command).await;
-                        stage_trace::emit(&input_trace,stage_trace::Kind::InputSendCompleted,||stage_trace::Fields { input_id:Some(u64::from(command.id())),outcome:if result.is_ok(){stage_trace::Outcome::Accepted}else{stage_trace::Outcome::Error},..stage_trace::Fields::default() });
-                        if let Err(error) = result { let _ = event_tx.try_send(json!({"type":"input_error","message":error.to_string()})); }
+                        if let Err(error) = writer.send_input(&command).await { let _ = event_tx.try_send(json!({"type":"input_error","message":error.to_string()})); }
                         else { input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
                     }
                     _ = async { display_changed.as_ref().unwrap().notified().await }, if display_changed.is_some() => {
@@ -2732,14 +1707,13 @@ async fn source(app: &App) -> Result<Source> {
                             tick.tick().await;
                         }
                     }, if !dbus_capture || first => {
-                        stage_trace::emit(&input_trace,stage_trace::Kind::CaptureTickServiced,stage_trace::Fields::default);
                         if !pending.swap(true, Ordering::AcqRel) {
                             let size = dimensions.load(Ordering::Relaxed);
                             let force_refresh = refresh.swap(false, Ordering::AcqRel);
                             if let Some(ready) = &mut ready { ready.invoked(); }
                             if writer.request_update(!first && !force_refresh, (size >> 16) as u16, size as u16).await.is_err() { break; }
                             first = false;
-                        } else { stage_trace::emit(&input_trace,stage_trace::Kind::CaptureRequestSkipped,||stage_trace::Fields { outcome:stage_trace::Outcome::Skipped,..stage_trace::Fields::default() }); }
+                        }
                     }
                 }
             }
@@ -2768,20 +1742,8 @@ async fn source(app: &App) -> Result<Source> {
         shutdown,
         _tasks: tasks,
         capture_lease,
-        _stage_lease: stage_lease,
     })
 }
-
-/// Preserve the existing shutdown error result while distinguishing this exact
-/// intentional cancellation from an authenticated session failure in evidence.
-#[derive(Debug)]
-struct WorkerStopped(&'static str);
-impl std::fmt::Display for WorkerStopped {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.0)
-    }
-}
-impl std::error::Error for WorkerStopped {}
 
 async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()> {
     let mut worker_shutdown = app.worker_shutdown.subscribe();
@@ -2800,21 +1762,15 @@ async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()>
     );
     let mut source = tokio::select! {
         result = tokio::time::timeout_at(deadline, source(&app)) => result.context("display session expired during source setup")??,
-        _ = worker_shutdown.wait_for(|stopped| *stopped) => return Err(WorkerStopped("worker stopped during source setup").into()),
+        _ = worker_shutdown.wait_for(|stopped| *stopped) => bail!("worker stopped during source setup"),
     };
     let result = tokio::select! {
         result = tokio::time::timeout_at(deadline, stream_session(socket, app.clone(), &mut source)) => result.context("display session expired").and_then(|result| result),
-        _ = worker_shutdown.wait_for(|stopped| *stopped) => Err(WorkerStopped("worker stopped during stream").into()),
+        _ = worker_shutdown.wait_for(|stopped| *stopped) => Err(anyhow::anyhow!("worker stopped during stream")),
     };
     drop(source.input);
-    if let Some(shutdown) = source.shutdown.take()
-        && !matches!(
-            tokio::time::timeout(Duration::from_secs(1), shutdown).await,
-            Ok(Ok(()))
-        )
-        && let Some(trace) = &app.stage_trace
-    {
-        trace.failure(2);
+    if let Some(shutdown) = source.shutdown.take() {
+        let _ = tokio::time::timeout(Duration::from_secs(1), shutdown).await;
     }
     // Release this viewer's held input before dropping shared membership.
     drop(source.capture_lease.take());
@@ -2887,10 +1843,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     let generation = Arc::new(AtomicU64::new(0));
     let mut io_tasks = JoinSet::<Result<()>>::new();
     let input = source.input.clone();
-    let input_trace = app.stage_trace.clone();
-    let input_actor = stage_trace::lease(&input_trace)?;
     let video = app.args.codec == "h264";
-    let display_input_only = app.args.datagram_display_input_only;
     let audio_request = source.audio.request.clone();
     let writer_audio_request = audio_request.subscribe();
     let mut audio_status = source.audio.status.clone();
@@ -2899,7 +1852,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     // This task forwards input independently of semaphore waits, encoding and writes.
     // Dropping the session's JoinSet aborts it and releases its input sender clone.
     io_tasks.spawn(async move {
-        let _trace_actor = input_actor;
         while let Some(message) = receiver.next().await {
             let command = match message? {
                 Message::Text(text) => {
@@ -2910,22 +1862,17 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                             Some(StreamCommand::Ack(sequence))
                         }
                         Some("resync") => Some(StreamCommand::Resync),
-                        Some("audio") => { if !display_input_only { audio::request(&audio_request, value)?; } None }
+                        Some("audio") => { audio::request(&audio_request, value)?; None }
                         Some("ping") => Some(StreamCommand::Reply(Message::Text(json!({"type":"pong","id":value.get("id")}).to_string().into()))),
                         _ => {
                             let command: Input = serde_json::from_value(value)?;
-                            stage_trace::emit(&input_trace,stage_trace::Kind::ControlReceived,||stage_trace::Fields { input_id:Some(u64::from(command.id())),..stage_trace::Fields::default() });
                             if let Input::Clipboard { text, .. } = &command && text.len() > MAX_CLIPBOARD {
-                                stage_trace::emit(&input_trace,stage_trace::Kind::InputRejected,||stage_trace::Fields { input_id:Some(u64::from(command.id())),outcome:stage_trace::Outcome::Rejected,..stage_trace::Fields::default() });
                                 bail!("clipboard too large");
                             }
                             if video && matches!(command, Input::Resize { width, height, .. } if width < 16 || height < 16 || width > 3840 || height > 2160 || width % 2 != 0 || height % 2 != 0) {
-                                stage_trace::emit(&input_trace,stage_trace::Kind::InputRejected,||stage_trace::Fields { input_id:Some(u64::from(command.id())),outcome:stage_trace::Outcome::Rejected,..stage_trace::Fields::default() });
                                 Some(StreamCommand::Reply(Message::Text(json!({"type":"input_error","message":"Software H264 requires even desktop dimensions from 16x16 through 3840x2160."}).to_string().into())))
                             } else {
-                                let id = command.id(); let sent = input.try_send(command);
-                                stage_trace::emit(&input_trace,if sent.is_ok(){stage_trace::Kind::InputAdmitted}else{stage_trace::Kind::InputRejected},||stage_trace::Fields { input_id:Some(u64::from(id)),outcome:match &sent { Ok(())=>stage_trace::Outcome::Accepted,Err(mpsc::error::TrySendError::Full(_))=>stage_trace::Outcome::Full,Err(mpsc::error::TrySendError::Closed(_))=>stage_trace::Outcome::Error },..stage_trace::Fields::default() });
-                                sent.context("input queue full")?;
+                                input.try_send(command).context("input queue full")?;
                                 None
                             }
                         }
@@ -2940,9 +1887,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
         Ok(())
     });
     let writer_generation = generation.clone();
-    let writer_actor = stage_trace::lease(&app.stage_trace)?;
     io_tasks.spawn(async move {
-        let _trace_actor = writer_actor;
         // Keep hello first on the wire while the independent receiver forwards input.
         tokio::time::timeout(Duration::from_secs(10), sink.send(hello)).await.context("hello write timed out")??;
         let initial_audio_status = audio_status.borrow_and_update().message();
@@ -3153,13 +2098,9 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 let permits = app.encoders.clone();
                 let queued = Instant::now();
                 let profile_encode = app.args.stream_stats;
-                let encode_actor = stage_trace::lease(&app.stage_trace)?;
-                let blocking_actor = stage_trace::lease(&app.stage_trace)?;
                 encoder_jobs.spawn(async move {
-                    let _trace_actor = encode_actor;
                     let permit = permits.acquire_owned().await?;
                     tokio::task::spawn_blocking(move || {
-                        let _trace_actor = blocking_actor;
                         let _permit = permit;
                         let started = Instant::now();
                         let source_age = captured.published_at.map(|at| started.saturating_duration_since(at));
@@ -3216,6 +2157,7 @@ impl StreamEncoder {
         }
     }
 
+    #[cfg(test)]
     fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
         self.encode_optional(frame, sequence, input_id)?
             .context("Unexpected skipped output in a strict media path")
@@ -3254,40 +2196,6 @@ impl StreamEncoder {
                     .encode_optional(frame, sequence, input_id)
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod causal_clock_request_tests {
-    use super::StageClockRequest;
-
-    #[test]
-    fn request_has_only_a_bounded_nonce_and_ordinal() {
-        for ordinal in [1, 64] {
-            assert!(
-                StageClockRequest {
-                    nonce: "ab".repeat(16),
-                    ordinal
-                }
-                .valid()
-            );
-        }
-        for (nonce, ordinal) in [
-            ("ab".repeat(15), 1),
-            ("ab".repeat(17), 1),
-            ("AB".repeat(16), 1),
-            ("gg".repeat(16), 1),
-            ("ab".repeat(16), 0),
-            ("ab".repeat(16), 65),
-        ] {
-            assert!(!StageClockRequest { nonce, ordinal }.valid());
-        }
-        assert!(
-            serde_json::from_str::<StageClockRequest>(
-                r#"{"nonce":"abababababababababababababababab","ordinal":1,"extra":0}"#
-            )
-            .is_err()
-        );
     }
 }
 
@@ -3362,7 +2270,6 @@ mod video_qp_option_tests {
         }
         for extra in [
             vec!["--codec", "deflate"],
-            vec!["--codec", "h264", "--datagram-bind", "127.0.0.1:0"],
             vec![
                 "--codec",
                 "h264",

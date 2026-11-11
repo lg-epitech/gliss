@@ -1,4 +1,4 @@
-// Standalone viewer page served at / and /datagram.
+// Standalone viewer page served at /.
 import { GlissClient } from './client.js';
 
 const $=id=>document.getElementById(id);
@@ -37,7 +37,7 @@ $('login').addEventListener('submit',async e=>{
 $('disconnect').onclick=async()=>{client.disconnect();await fetch('/api/session',{method:'DELETE'});$('desktop').style.display='none';$('login').hidden=false;for(const id of ['sound','clipboard','fit','fullscreen','disconnect'])$(id).hidden=true;};
 $('clipboard').onclick=()=>{$('cliptext').value=cliptext;$('clipdialog').showModal();};
 $('sendclip').onclick=()=>{client.send({type:'clipboard',text:$('cliptext').value});$('clipdialog').close();};
-$('fit').onclick=()=>{const box=$('viewport').getBoundingClientRect();let width=Math.max(320,Math.min(client.codec==='h264'||client.codec?.startsWith('glt2-')?3840:4096,Math.round(box.width-2))),height=Math.max(200,Math.min(2160,Math.round(window.innerHeight-box.top-80)));if(client.codec==='h264'){width-=width%2;height-=height%2;}client.send({type:'resize',width,height});};
+$('fit').onclick=()=>{const box=$('viewport').getBoundingClientRect();let width=Math.max(320,Math.min(client.codec==='h264'?3840:4096,Math.round(box.width-2))),height=Math.max(200,Math.min(2160,Math.round(window.innerHeight-box.top-80)));if(client.codec==='h264'){width-=width%2;height-=height%2;}client.send({type:'resize',width,height});};
 $('fullscreen').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();else $('viewport').requestFullscreen();};
 
 $('sound').onclick=()=>{void client.setAudioEnabled($('sound').getAttribute('aria-pressed')!=='true');};

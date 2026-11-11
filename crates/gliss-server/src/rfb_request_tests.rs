@@ -179,9 +179,7 @@ fn app(address: &str, policy: &str) -> App {
         hybrid_config: gliss_hybrid::HybridConfig::default(),
         hybrid_mask_grid: None,
         video_timing: None,
-        datagram: None,
         benchmark: None,
-        stage_trace: None,
         tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
         #[cfg(unix)]
         rfb_fd: None,
