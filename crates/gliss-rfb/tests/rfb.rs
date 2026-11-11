@@ -233,6 +233,172 @@ async fn raw_and_overlapping_copyrect_produce_opaque_rgba_frames() {
     peer.await.unwrap();
 }
 
+/// QEMU's native format: blue in the low byte.
+const BGRX_FORMAT: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0];
+
+/// A server that stores BGRX and, like QEMU, sends whatever format it is asked for.
+async fn init_bgrx(stream: &mut TcpStream, width: u16, height: u16) {
+    stream.write_all(b"RFB 003.008\n").await.unwrap();
+    let mut version = [0; 12];
+    stream.read_exact(&mut version).await.unwrap();
+    stream.write_all(&[1, 1]).await.unwrap();
+    assert_eq!(stream.read_u8().await.unwrap(), 1);
+    stream.write_u32(0).await.unwrap();
+    assert_eq!(stream.read_u8().await.unwrap(), 1, "shared connection");
+    stream.write_u16(width).await.unwrap();
+    stream.write_u16(height).await.unwrap();
+    stream.write_all(&BGRX_FORMAT).await.unwrap();
+    stream.write_u32(4).await.unwrap();
+    stream.write_all(b"QEMU").await.unwrap();
+    let mut format = [0; 20];
+    stream.read_exact(&mut format).await.unwrap();
+    assert_eq!(&format[..4], &[0, 0, 0, 0]);
+    assert_eq!(
+        &format[4..],
+        &BGRX_FORMAT,
+        "a BGRX server must be asked for its own format"
+    );
+    assert_eq!(stream.read_u8().await.unwrap(), 2);
+    stream.read_u8().await.unwrap();
+    let count = stream.read_u16().await.unwrap();
+    for _ in 0..count {
+        stream.read_i32().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn bgrx_server_keeps_its_format_and_frames_and_cursors_arrive_as_rgba() {
+    // Wide enough that a full-width rectangle spans several read pieces, with a
+    // partial last piece, and a partial-width rectangle takes the per-row path.
+    const WIDTH: u16 = 640;
+    const HEIGHT: u16 = 250;
+    let wire = |index: usize| {
+        // Distinct blue, green and red per pixel; the fourth byte is undefined on the wire.
+        [index as u8, (index >> 8) as u8, (index * 7) as u8, 0x5a]
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init_bgrx(&mut stream, WIDTH, HEIGHT).await;
+        let mut request = [0; 10];
+        stream.read_exact(&mut request).await.unwrap();
+        stream.write_all(&[0, 0, 0, 1]).await.unwrap();
+        rectangle(&mut stream, 0, 0, WIDTH, HEIGHT, 0).await;
+        let pixels: Vec<u8> = (0..usize::from(WIDTH) * usize::from(HEIGHT))
+            .flat_map(wire)
+            .collect();
+        stream.write_all(&pixels).await.unwrap();
+        stream.write_all(&[0, 0, 0, 2]).await.unwrap();
+        rectangle(&mut stream, 5, 3, 2, 2, 0).await;
+        stream
+            .write_all(&[1, 2, 3, 0, 4, 5, 6, 0, 7, 8, 9, 0, 10, 11, 12, 0])
+            .await
+            .unwrap();
+        // A 2x1 cursor with only its first pixel opaque.
+        rectangle(&mut stream, 0, 0, 2, 1, -239).await;
+        stream
+            .write_all(&[20, 30, 40, 0, 50, 60, 70, 0, 0b1000_0000])
+            .await
+            .unwrap();
+        // CopyRect moves pixels that are already RGBA; it must not convert them again.
+        stream.write_all(&[0, 0, 0, 1]).await.unwrap();
+        rectangle(&mut stream, 20, 10, 2, 2, 1).await;
+        stream.write_all(&[0, 5, 0, 3]).await.unwrap();
+        // The negotiated format outlives a resize.
+        stream.write_all(&[0, 0, 0, 1]).await.unwrap();
+        rectangle(&mut stream, 0, 0, 2, 1, -223).await;
+        stream.write_all(&[0, 0, 0, 1]).await.unwrap();
+        rectangle(&mut stream, 0, 0, 2, 1, 0).await;
+        stream.write_all(&[1, 2, 3, 0, 4, 5, 6, 0]).await.unwrap();
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    writer.request_update(false, WIDTH, HEIGHT).await.unwrap();
+    let Event::Frame(full) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    for (index, pixel) in full.pixels.as_chunks::<4>().0.iter().enumerate() {
+        let [blue, green, red, _] = wire(index);
+        assert_eq!(*pixel, [red, green, blue, 255], "pixel {index}");
+    }
+    let Event::Cursor(cursor) = event(&mut reader).await.unwrap() else {
+        panic!("cursor expected")
+    };
+    assert_eq!(cursor.pixels, [40, 30, 20, 255, 70, 60, 50, 0]);
+    let Event::Frame(patched) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    let at = |x: usize, y: usize| {
+        let start = (y * usize::from(WIDTH) + x) * 4;
+        patched.pixels[start..start + 4].to_vec()
+    };
+    assert_eq!(at(5, 3), [3, 2, 1, 255]);
+    assert_eq!(at(6, 3), [6, 5, 4, 255]);
+    assert_eq!(at(5, 4), [9, 8, 7, 255]);
+    assert_eq!(at(6, 4), [12, 11, 10, 255]);
+    let [blue, green, red, _] = wire(4 * usize::from(WIDTH) + 7);
+    assert_eq!(at(7, 4), [red, green, blue, 255], "neighbour is untouched");
+    let Event::Frame(copied) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    let start = (10 * usize::from(WIDTH) + 20) * 4;
+    assert_eq!(
+        copied.pixels[start..start + 8],
+        [3, 2, 1, 255, 6, 5, 4, 255]
+    );
+    let Event::Frame(resized) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    assert_eq!((resized.width, resized.height), (2, 1));
+    let Event::Frame(after) = event(&mut reader).await.unwrap() else {
+        panic!("frame expected")
+    };
+    assert_eq!(after.pixels, [3, 2, 1, 255, 6, 5, 4, 255]);
+    peer.await.unwrap();
+}
+
+#[tokio::test]
+async fn refresh_hold_repeats_the_audio_format_only_after_the_server_confirms_audio() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let peer = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        init(&mut stream, 8, 16, 16).await;
+        audio_ack(&mut stream).await;
+        // The hint is the format message alone: it must not enable capture.
+        let mut hints = [0; 20];
+        stream.read_exact(&mut hints).await.unwrap();
+        let format = [255, 1, 0, 2, 3, 2, 0, 0, 187, 128];
+        assert_eq!(hints[..10], format);
+        assert_eq!(hints[10..], format);
+        let mut key = [0; 8];
+        stream.read_exact(&mut key).await.unwrap();
+        assert_eq!(key, [4, 1, 0, 0, 0, 0, 0, 65]);
+    });
+    let (mut reader, mut writer, _) = connect(&address.to_string(), None).await.unwrap();
+    assert!(
+        writer.hold_refresh().await.is_err(),
+        "a server without the audio extension would drop the connection"
+    );
+    let mut available = writer.audio_available();
+    timeout(Duration::from_secs(2), available.wait_for(|value| *value))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(event(&mut reader).await.unwrap(), Event::Frame(_)));
+    writer.hold_refresh().await.unwrap();
+    writer.hold_refresh().await.unwrap();
+    writer
+        .send_input(&Input::Key {
+            keysym: 65,
+            down: true,
+            id: 1,
+        })
+        .await
+        .unwrap();
+    peer.await.unwrap();
+}
+
 #[tokio::test]
 async fn vnc_authentication_uses_bit_reversed_password_bytes_and_forwards_input() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
