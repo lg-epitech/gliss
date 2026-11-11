@@ -3,6 +3,7 @@ mod audio_adpcm;
 mod benchmark_recorder;
 mod datagram;
 mod demo;
+mod pacer;
 mod profiling;
 #[cfg(unix)]
 mod rfb_fd;
@@ -105,8 +106,8 @@ struct Args {
     /// Opt-in single-private-RFB receiver lifetime experiment; default immediate.
     #[arg(long, value_enum)]
     rfb_close_policy: Option<rfb_teardown::ClosePolicy>,
-    /// RFB request scheduling; ready rearms on completion within the FPS cap.
-    #[arg(long, value_enum, default_value = "tick")]
+    /// When to ask the VNC server for the next update. The FPS cap limits encoding either way.
+    #[arg(long, value_enum, default_value = "eager")]
     rfb_request_policy: rfb_request::Policy,
     /// Private one-use connected Unix graphics descriptor inherited from a trusted launcher.
     #[arg(long, conflicts_with_all = ["vnc", "demo", "dbus_address", "vm_uuid", "shared_dbus"], requires = "rfb_deadline_unix_ms", value_parser = clap::value_parser!(i32).range(3..))]
@@ -2571,10 +2572,17 @@ async fn source(app: &App) -> Result<Source> {
         }
         let pending = Arc::new(AtomicBool::new(false));
         let refresh = Arc::new(AtomicBool::new(false));
+        let period = Duration::from_secs_f64(1.0 / f64::from(app.args.fps));
         // D-Bus retains its original one-initial-request interval branch.
-        let completion = (!dbus_capture
-            && app.args.rfb_request_policy == rfb_request::Policy::Ready)
-            .then(|| Arc::new(tokio::sync::Notify::new()));
+        let spacing = app
+            .args
+            .rfb_request_policy
+            .spacing(period)
+            .filter(|_| !dbus_capture);
+        let completion = spacing.map(|_| Arc::new(tokio::sync::Notify::new()));
+        // D-Bus capture does not depend on the VNC server's refresh timer.
+        let display_changed = (!dbus_capture).then(|| Arc::new(tokio::sync::Notify::new()));
+        let reader_display_changed = display_changed.clone();
         let reader_completion = completion.clone();
         let reader_id = input_id.clone();
         let reader_size = dimensions.clone();
@@ -2597,6 +2605,7 @@ async fn source(app: &App) -> Result<Source> {
                         if !dbus_capture && reader_size.swap(size, Ordering::AcqRel) != size { reader_refresh.store(true, Ordering::Release); }
                         reader_pending.store(false, Ordering::Release);
                         if let Some(completion) = &reader_completion { completion.notify_one(); }
+                        if let Some(changed) = &reader_display_changed { changed.notify_one(); }
                         if !dbus_capture {
                             let frame = Arc::new(frame);
                             if let Some(recorder) = &recorder && let Err(error) = recorder.capture(&frame) {
@@ -2662,7 +2671,6 @@ async fn source(app: &App) -> Result<Source> {
                 capture.close().await;
             });
         }
-        let period = Duration::from_secs_f64(1.0 / f64::from(app.args.fps));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         shutdown = Some(shutdown_rx);
         let input_trace = app.stage_trace.clone();
@@ -2671,7 +2679,8 @@ async fn source(app: &App) -> Result<Source> {
             let _trace_actor = input_actor;
             let mut tick = tokio::time::interval(period);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut ready = completion.as_ref().map(|_| rfb_request::Ready::new(period));
+            let mut ready = spacing.map(rfb_request::Ready::new);
+            let mut hold = rfb_request::RefreshHold::new();
             let mut first = true;
             let mut keys = HashSet::new();
             let mut pointer = None;
@@ -2699,7 +2708,14 @@ async fn source(app: &App) -> Result<Source> {
                         let result = writer.send_input(&command).await;
                         stage_trace::emit(&input_trace,stage_trace::Kind::InputSendCompleted,||stage_trace::Fields { input_id:Some(u64::from(command.id())),outcome:if result.is_ok(){stage_trace::Outcome::Accepted}else{stage_trace::Outcome::Error},..stage_trace::Fields::default() });
                         if let Err(error) = result { let _ = event_tx.try_send(json!({"type":"input_error","message":error.to_string()})); }
-                        else { input_id.store(command.id(), Ordering::Release); }
+                        else { input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
+                    }
+                    _ = async { display_changed.as_ref().unwrap().notified().await }, if display_changed.is_some() => {
+                        hold.display_changed();
+                    }
+                    _ = tokio::time::sleep_until(hold.deadline()), if !dbus_capture && hold.active() && *audio_available.borrow() => {
+                        if writer.hold_refresh().await.is_err() { break; }
+                        hold.hint_sent();
                     }
                     // D-Bus capture requests one initial RFB update only, for cursor/
                     // resize negotiation. Later media arrives exclusively through D-Bus.
@@ -3026,8 +3042,8 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     let mut native_skipped_frames = 0_u64;
     let mut waiting = None::<MediaPacket>;
     let mut latest = None::<Captured>;
-    let mut pacing = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(app.args.fps)));
-    pacing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut pacer = pacer::Pacer::new(Duration::from_secs_f64(1.0 / f64::from(app.args.fps)));
+    let mut eligible = tokio::time::Instant::now();
     let mut telemetry = tokio::time::interval(Duration::from_secs(1));
     telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -3040,6 +3056,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 .reset();
             window.finish_resync()?;
             replace_latest(&mut latest, source.frames.borrow().clone(), &mut window);
+            eligible = pacer.eligible();
         }
         if waiting
             .as_ref()
@@ -3107,6 +3124,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             changed = source.frames.changed() => {
                 if changed.is_err() { break; }
                 replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
+                eligible = pacer.eligible();
             }
             Some(event) = source.events.recv() => {
                 let failed = event.get("type").and_then(|value| value.as_str()) == Some("error");
@@ -3114,7 +3132,8 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 control_tx.try_send(ControlPacket { message: Message::Text(event.to_string().into()), flushed }).context("bounded control writer queue full or closed")?;
                 if let Some(done) = done { let _ = tokio::time::timeout(Duration::from_secs(2), done).await; break; }
             }
-            _ = pacing.tick(), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
+            _ = tokio::time::sleep_until(eligible), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
+                pacer.started();
                 let captured = latest.take().unwrap();
                 let mut next_encoder = encoder.take().context("encoder is already busy")?;
                 let packet_sequence = sequence.wrapping_add(1);
