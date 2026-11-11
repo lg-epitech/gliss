@@ -45,7 +45,6 @@ export function hybridServerArgs(options={}){
 
 export async function startServer(options={}){
   const hybridArgs=hybridServerArgs(options);
-  if(options.sharedDbus&&!options.dbusAddress)throw new Error('Shared D-Bus tests require a fixed D-Bus target');
   const port=options.port||await freePort();
   const token=randomBytes(24).toString('base64url');
   const url=`http://127.0.0.1:${port}`;
@@ -60,12 +59,6 @@ export async function startServer(options={}){
   if(options.inFlightFrames!==undefined)args.push('--in-flight-frames',String(options.inFlightFrames));
   if(options.inFlightBytes!==undefined)args.push('--in-flight-bytes',String(options.inFlightBytes));
   if(options.streamStats)args.push('--stream-stats');
-  if(options.dbusAddress){
-    if(!options.vnc||!options.vmUuid)throw new Error('D-Bus tests require a fixed VNC input target and expected VM UUID');
-    args.push('--dbus-address',options.dbusAddress,'--vm-uuid',options.vmUuid);
-    if(options.dbusConsole!==undefined)args.push('--dbus-console',String(options.dbusConsole));
-    if(options.sharedDbus)args.push('--shared-dbus');
-  }
   const child=spawn(binary,args,{env:{...process.env,GLISS_TOKEN:token},stdio:['ignore','pipe','pipe']});
   let output=''; let error;
   child.on('error',e=>error=e);

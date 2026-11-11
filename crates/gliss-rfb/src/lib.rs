@@ -1,4 +1,4 @@
-//! Bounded RFB capture and input over TCP or an owned established Unix stream.
+//! Bounded RFB capture and input over TCP.
 //!
 //! Wire formats follow [RFC 6143](https://www.rfc-editor.org/rfc/rfc6143.html).
 //! Screen resizing follows the [RFB extension specification](https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst).
@@ -17,8 +17,6 @@ use des::{
     cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray},
 };
 use gliss_core::{Frame, Input, MAX_CLIPBOARD, MAX_PIXELS};
-#[cfg(unix)]
-use tokio::net::UnixStream;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
@@ -164,26 +162,6 @@ pub async fn connect(
         .context("RFB connection/handshake timed out")?
 }
 
-/// Negotiate RFB on an already established, owned Unix stream.
-///
-/// This consumes the stream, including on handshake failure or cancellation;
-/// it never resolves a socket path, opens another connection or bypasses RFB
-/// security. The caller owns FD adoption, target authorization and identity
-/// attestation. No expected VM generation is validated here; the authoritative
-/// lease/compare-and-attach boundary remains outside this transport seam, and
-/// the real Distribox gateway remains unavailable. The caller must
-/// request the initial non-incremental update and release held inputs before
-/// dropping the returned handles, as for [`connect`].
-#[cfg(unix)]
-pub async fn connect_unix(
-    stream: UnixStream,
-    password: Option<&str>,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    timeout(HANDSHAKE_TIMEOUT, connect_unix_inner(stream, password))
-        .await
-        .context("RFB established Unix handshake timed out")?
-}
-
 async fn connect_inner(
     address: &str,
     password: Option<&str>,
@@ -194,16 +172,6 @@ async fn connect_inner(
     stream.set_nodelay(true)?;
     let (frame, info, layout) = handshake(&mut stream, password).await?;
     // Preserve TCP's existing owned split: no generic split mutex in this path.
-    let (read, write) = stream.into_split();
-    Ok(start_tasks(read, write, frame, info, layout))
-}
-
-#[cfg(unix)]
-async fn connect_unix_inner(
-    mut stream: UnixStream,
-    password: Option<&str>,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    let (frame, info, layout) = handshake(&mut stream, password).await?;
     let (read, write) = stream.into_split();
     Ok(start_tasks(read, write, frame, info, layout))
 }
