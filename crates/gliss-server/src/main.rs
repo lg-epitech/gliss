@@ -1,6 +1,7 @@
 mod audio;
 mod audio_adpcm;
 mod demo;
+mod held;
 mod notices;
 mod pacer;
 mod profiling;
@@ -29,7 +30,6 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
     net::SocketAddr,
     sync::{
         Arc, Mutex,
@@ -871,8 +871,7 @@ async fn source(app: &App) -> Result<Source> {
             let mut ready = spacing.map(rfb_request::Ready::new);
             let mut hold = rfb_request::RefreshHold::new();
             let mut first = true;
-            let mut keys = HashSet::new();
-            let mut pointer = None;
+            let mut held = held::Held::default();
             let mut audio_enabled = false;
             let initial_audio_request = *audio_requests.borrow_and_update();
             audio::update_capture(&mut writer, initial_audio_request, &mut audio_enabled, &audio_status).await;
@@ -891,10 +890,9 @@ async fn source(app: &App) -> Result<Source> {
                     }
                     command = input_rx.recv() => {
                         let Some(command) = command else { break; };
-                        if let Input::Key { keysym, down, .. } = &command { if *down { keys.insert(*keysym); } else { keys.remove(keysym); } }
-                        if let Input::Pointer { x, y, buttons, .. } = &command { pointer = Some((*x, *y, *buttons)); }
+                        if !held.admits(&command) { input_notices.input_error(held::TOO_MANY_KEYS.into()); continue; }
                         if let Err(error) = writer.send_input(&command).await { input_notices.input_error(error.to_string()); }
-                        else { input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
+                        else { held.written(&command); input_id.store(command.id(), Ordering::Release); hold.input_sent(); }
                     }
                     _ = display_changed.notified() => {
                         hold.display_changed();
@@ -921,8 +919,7 @@ async fn source(app: &App) -> Result<Source> {
                 }
             }
             if audio_enabled { let _ = writer.set_audio(false).await; }
-            for keysym in keys { let _ = writer.send_input(&Input::Key { keysym, down: false, id: 0 }).await; }
-            if let Some((x, y, buttons)) = pointer && buttons != 0 { let _ = writer.send_input(&Input::Pointer { x, y, buttons: 0, id: 0 }).await; }
+            for release in held.releases() { let _ = writer.send_input(&release).await; }
             // The session learns its held input is released before the connection closes.
             let _ = shutdown_tx.send(());
             drop(writer);
