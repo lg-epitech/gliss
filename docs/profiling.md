@@ -7,7 +7,8 @@ compare the same workload and settings with profiling both enabled and disabled.
 
 ## Record a browser session
 
-Use the existing `GlissClient` instance; do not open a second desktop connection:
+Use the existing `GlissClient` instance, once it is connected; do not open a
+second desktop connection:
 
 ```js
 const recording = await client.startProfiling({
@@ -20,17 +21,18 @@ const report = recording.stop();
 ```
 
 On the standalone viewer, the instance is `window.gliss`. Embedded viewers own
-and pass their instance directly. Omit `probeIntervalMs` to send no probes.
-Control probes use the existing connection and never inject guest input.
+and pass their instance directly. `durationMs` is 1,000 to 60,000 and defaults
+to 15,000. Omit `probeIntervalMs` to send no probes; otherwise it is 1,000 to
+10,000. Control probes use the existing connection and never inject guest input.
 Only one recorder can run per client. Recording stops on disconnect or disposal;
 a pending start is cancelled and reconnects never merge into an old recording.
 `client.stopProfiling()` also cancels a pending start or stops the active recorder.
 The returned handle retains its immutable final report after automatic stop.
 
 Record a short idle baseline, then a separate recording during window movement,
-scrolling or sound playback. Keep resolution, codec, frame window and bitrate
-constant between comparisons. A static desktop need not emit frames at the FPS
-cap: report completed frames and their cadence without treating idle gaps as lag.
+scrolling or sound playback. Keep resolution, frame window and bitrate constant
+between comparisons. A static desktop need not emit frames at the FPS cap:
+report completed frames and their cadence without treating idle gaps as lag.
 
 The `gliss-profile-v1` JSON export contains only fixed numeric fields and known
 labels. It excludes URLs, credentials, VM/session IDs, pixels, clipboard text,
@@ -52,25 +54,26 @@ Audio queues and client socket buffering are sampled every 250 ms and can miss
 short peaks. Browser CPU, guest rendering and physical speaker/display latency
 are not measured by this recorder.
 
-Start the native server with `--stream-stats` to include its existing diagnostic
-messages. This is an operator setting; the browser cannot enable it remotely.
-Diagnostics now include native process user/system CPU, calling-thread encode
-CPU, encode elapsed time, encoder-worker wait, publication-to-encode age,
-write elapsed time and enqueue-to-ACK time. Unsupported clocks and missing
+Start the server with `--stream-stats` to include its diagnostic messages,
+sent once a second. This is an operator setting; the browser cannot enable it
+remotely. Diagnostics include native process user/system CPU, calling-thread
+encode CPU, encode elapsed time, encoder-worker wait, publication-to-encode
+age, write elapsed time and enqueue-to-ACK time. Unsupported clocks and missing
 snapshots remain unavailable, not zero. Process CPU includes all sessions and
 threads; 100% means one full core and totals can exceed 100%.
 
 Native summaries use differences between the first and last retained native
 snapshots, over their own measured interval. A cumulative maximum is labelled
-`lifetime_max_ms`; it is not an interval maximum. Source age starts at native
-RFB/private D-Bus publication, excluding guest rendering and upstream capture;
-it is unavailable for demo/shared D-Bus sources. It includes worker wait.
-Enqueue-to-ACK also overlaps browser processing and return traffic. Do not add
-native timing fields as if they were disjoint CPU costs.
+`lifetime_max_ms`; it is not an interval maximum. Source age starts when the
+server has read a complete update from the VNC server, so it excludes guest
+rendering and upstream capture; it is unavailable for the `--demo` source. It
+includes worker wait. Enqueue-to-ACK also overlaps browser processing and
+return traffic. Do not add native timing fields as if they were disjoint CPU
+costs.
 
-If stalls coincide with large keyframes, compare `--video-intra-period` settings
-while keeping the other controls fixed. A longer interval reduces recurring
-bursts; it does not shrink individual keyframes or remove their delivery delay.
+If stalls coincide with keyframes, check `--video-intra-period`: the default of
+3600 frames is the longest interval, and a shorter one sends those bursts of
+bytes more often.
 
 Browser and native clocks are separate. Control round trip includes outgoing
 and return traffic, relays and event-loop scheduling; half of it is not proven
@@ -79,6 +82,5 @@ To inspect JavaScript stacks, use the browser's Performance panel on the same
 workload. Raw browser traces can contain sensitive URLs; do not attach them to
 public issues or commit them. Use the bounded JSON report for sharing.
 
-This initial recorder supports WebSocket desktops. Datagram and tile transports
-reject recording explicitly. Profiling does not change codec settings, buffers,
-frame pacing, ACK order or recovery policy.
+Profiling does not change encoder settings, buffers, frame pacing, ACK order or
+recovery policy.

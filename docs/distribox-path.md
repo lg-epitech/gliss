@@ -37,7 +37,7 @@ These come from `ui/vnc.c` in QEMU 10 and 11, and from the traces below.
    Any other server is asked for RGBX as before. Full-width Raw rectangles are
    read in pieces of up to 256 KiB instead of one read per row.
 2. **Requests the next update when the previous one arrives**, at most once
-   per 25 ms at the default cap, so a request is pending at each 30 ms tick.
+   per 25 ms at this 30 fps cap, so a request is pending at each 30 ms tick.
    The former fixed 33.3 ms clock drifted against QEMU's timer and missed a
    tick several times a second; each miss cost 110 ms instead of 30 ms.
    `--rfb-request-policy tick` restores the fixed clock.
