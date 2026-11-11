@@ -3,6 +3,7 @@
 //! They live inside the crate because the entry points are private, and they
 //! run with the other tests. `docs/development.md` says how to run a campaign.
 
+mod clipboard;
 mod model;
 mod stream;
 #[allow(dead_code)]
