@@ -668,11 +668,14 @@ impl Update {
             !self.resized,
             "RFB update changes the desktop size more than once"
         );
+        // The rectangles that follow draw the new desktop, within what it
+        // allows less what the update has done already: a change of size
+        // does not give an update a second budget.
+        let spent = Self::budget(frame) - self.budget;
         *frame = Frame::new(width, height).context("invalid RFB resize")?;
         self.resized = true;
         self.changed = true;
-        // The rectangles that follow draw the new desktop.
-        self.budget = Self::budget(frame);
+        self.budget = Self::budget(frame).saturating_sub(spent);
         Ok(())
     }
 }

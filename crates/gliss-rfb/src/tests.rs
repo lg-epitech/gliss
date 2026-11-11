@@ -149,3 +149,104 @@ async fn decoding_returns_to_the_runtime_as_its_work_adds_up() {
         "another task ran {small} times during 3200 small rectangles"
     );
 }
+
+fn rectangle(wire: &mut Vec<u8>, x: u16, y: u16, width: u16, height: u16, encoding: i32) {
+    for value in [x, y, width, height] {
+        wire.extend_from_slice(&value.to_be_bytes());
+    }
+    wire.extend_from_slice(&encoding.to_be_bytes());
+}
+
+/// A CopyRect of the whole `width`x`height` desktop onto itself.
+fn whole_copy(wire: &mut Vec<u8>, width: u16, height: u16) {
+    rectangle(wire, 0, 0, width, height, 1);
+    wire.extend_from_slice(&[0, 0, 0, 0]);
+}
+
+/// A Raw rectangle of `height` whole rows of a desktop `width` pixels wide.
+fn rows(wire: &mut Vec<u8>, width: u16, height: u16) {
+    rectangle(wire, 0, 0, width, height, 0);
+    wire.resize(wire.len() + usize::from(width) * usize::from(height) * 4, 7);
+}
+
+/// An ExtendedDesktopSize rectangle: the desktop is `width`x`height` and one screen.
+fn desktop_size(wire: &mut Vec<u8>, width: u16, height: u16) {
+    rectangle(wire, 0, 0, width, height, -308);
+    wire.extend_from_slice(&[1, 0, 0, 0]);
+    wire.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0]);
+    wire.extend_from_slice(&width.to_be_bytes());
+    wire.extend_from_slice(&height.to_be_bytes());
+    wire.extend_from_slice(&[0, 0, 0, 0]);
+}
+
+/// Decodes one update of `count` rectangles on a 100x100 desktop and returns
+/// the size of the frame it reports.
+async fn updated(count: u16, rectangles: &[u8]) -> Result<(u16, u16)> {
+    let mut wire = vec![0, 0];
+    wire.extend_from_slice(&count.to_be_bytes());
+    wire.extend_from_slice(rectangles);
+    let info = ServerInfo {
+        width: 100,
+        height: 100,
+        name: "test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader, _writer, _) = start_tasks(
+        std::io::Cursor::new(wire),
+        tokio::io::sink(),
+        Frame::new(100, 100).unwrap(),
+        info,
+        Layout::Rgbx,
+    );
+    match reader.read_event().await? {
+        Event::Frame(frame) => Ok((frame.width, frame.height)),
+        other => bail!("a frame was expected, not {other:?}"),
+    }
+}
+
+fn over_budget(result: Result<(u16, u16)>) -> bool {
+    result.is_err_and(|error| format!("{error:#}").contains("exceeds its pixel budget"))
+}
+
+#[tokio::test]
+async fn a_change_of_size_does_not_renew_the_pixel_budget_of_an_update() {
+    // Four whole frames of copying are all a 100x100 desktop allows. Then it
+    // grows by two rows, which allows 800 pixels more and not four frames.
+    let mut spent = Vec::new();
+    for _ in 0..4 {
+        whole_copy(&mut spent, 100, 100);
+    }
+    desktop_size(&mut spent, 100, 102);
+    assert_eq!(updated(5, &spent).await.unwrap(), (100, 102));
+    let mut fifth_copy = spent.clone();
+    whole_copy(&mut fifth_copy, 100, 102);
+    assert!(over_budget(updated(6, &fifth_copy).await));
+    let mut within = spent.clone();
+    rows(&mut within, 100, 8);
+    assert_eq!(updated(6, &within).await.unwrap(), (100, 102));
+    let mut beyond = spent.clone();
+    rows(&mut beyond, 100, 9);
+    assert!(over_budget(updated(6, &beyond).await));
+
+    // An update that changes the size and then draws has the new desktop's
+    // whole budget: four frames of it, and not a fifth.
+    let mut resized = Vec::new();
+    desktop_size(&mut resized, 100, 102);
+    rows(&mut resized, 100, 102);
+    assert_eq!(updated(2, &resized).await.unwrap(), (100, 102));
+    for _ in 0..3 {
+        whole_copy(&mut resized, 100, 102);
+    }
+    assert_eq!(updated(5, &resized).await.unwrap(), (100, 102));
+    whole_copy(&mut resized, 100, 102);
+    assert!(over_budget(updated(6, &resized).await));
+
+    // A smaller desktop allows less: what was drawn on the larger one counts.
+    let mut shrunk = Vec::new();
+    rows(&mut shrunk, 100, 100);
+    desktop_size(&mut shrunk, 100, 30);
+    rows(&mut shrunk, 100, 20);
+    assert_eq!(updated(3, &shrunk).await.unwrap(), (100, 30));
+    rows(&mut shrunk, 100, 1);
+    assert!(over_budget(updated(4, &shrunk).await));
+}
