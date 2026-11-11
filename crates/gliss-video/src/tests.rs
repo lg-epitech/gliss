@@ -247,3 +247,28 @@ fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
     );
     assert_eq!(encoder.timing(), timing);
 }
+
+#[test]
+fn encodable_sizes_are_exactly_the_ones_the_encoder_accepts() {
+    for (width, height) in [
+        (16, 16),
+        (64, 48),
+        (3840, 2160),
+        (2160, 3840),
+        (15, 16),
+        (16, 14),
+        (65, 48),
+        (64, 47),
+        (3842, 2160),
+        (3840, 2162),
+        (2162, 2162),
+        (0, 0),
+    ] {
+        assert_eq!(
+            encodable(width, height),
+            VideoEncoder::new(width, height, 30).is_ok(),
+            "{width}x{height}"
+        );
+    }
+    assert!(encodable(3840, 2160) && !encodable(3842, 2160) && !encodable(65, 48));
+}

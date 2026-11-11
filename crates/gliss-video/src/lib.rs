@@ -76,6 +76,12 @@ fn validate_dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
+/// Whether a frame of this size can be encoded. A caller that checks first can
+/// wait for a size that fits instead of failing on the encode.
+pub fn encodable(width: u16, height: u16) -> bool {
+    validate_dimensions(width, height).is_ok()
+}
+
 fn native_encoder(timing: VideoTiming, bitrate: u32) -> Result<Encoder> {
     let config = EncoderConfig::new()
         .bitrate(BitRate::from_bps(bitrate))
