@@ -50,7 +50,7 @@ export async function startServer(options={}){
   const token=randomBytes(24).toString('base64url');
   const url=`http://127.0.0.1:${port}`;
   const binary=serverBinary();
-  const args=['--bind',`127.0.0.1:${port}`,'--codec',options.codec||'deflate','--workload',options.workload||'static','--fps',String(options.fps||60),'--max-clients',String(options.maxClients||8)];
+  const args=['--bind',`127.0.0.1:${port}`,'--codec',options.codec||'h264','--workload',options.workload||'static','--fps',String(options.fps||60),'--max-clients',String(options.maxClients||8)];
   args.push(...hybridArgs);
   if(options.vnc)args.push('--vnc',options.vnc);else args.push('--demo');
   if(options.origin)args.push('--origin',options.origin);
@@ -78,6 +78,13 @@ export async function startServer(options={}){
     await new Promise(resolve=>setTimeout(resolve,30));
   }
   await stop();throw new Error(`Server startup timeout: ${output}`);
+}
+
+// H.264 is lossy: a flat colour comes back within a few levels of the source.
+export const COLOUR_TOLERANCE=12;
+export function assertColour(actual,expected,message){
+  const distance=Math.max(...expected.map((value,channel)=>Math.abs(actual[channel]-value)));
+  if(distance>COLOUR_TOLERANCE)throw new Error(`${message??'Colour'}: ${Array.from(actual)} is not within ${COLOUR_TOLERANCE} of ${expected}`);
 }
 
 export async function loginPage(page,server,url=server.url){

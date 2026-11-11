@@ -4,7 +4,7 @@ import { launchBrowser,startServer } from './helpers.mjs';
 
 // Another web app imports client.js as a module, without the standalone page.
 test('embedded client: module import, explicit URL, close event and dispose',async t=>{
-  const server=await startServer({codec:'batch'});t.after(server.stop);
+  const server=await startServer();t.after(server.stop);
   const browser=await launchBrowser();t.after(()=>browser.close());
   const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto(`${server.url}/health`);
@@ -20,7 +20,7 @@ test('embedded client: module import, explicit URL, close event and dispose',asy
     return canvas.width;
   },server.token);
   assert.ok(width>0);
-  assert.equal(await page.evaluate(()=>window.events.find(event=>event.type==='hello')?.codec),'batch');
+  assert.equal(await page.evaluate(()=>window.events.find(event=>event.type==='hello')?.codec),'h264');
   await server.stop();
   await page.waitForFunction(()=>window.events.some(event=>event.type==='close'));
   const after=await page.evaluate(()=>{

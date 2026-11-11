@@ -3,21 +3,25 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:net';
 import {once} from 'node:events';
-import {startServer, launchBrowser, loginPage} from './helpers.mjs';
+import {startServer, launchBrowser, loginPage, COLOUR_TOLERANCE} from './helpers.mjs';
 
 const WIDTH = 96, HEIGHT = 64;
 
 // An RFB peer that answers each update request with the next queued solid colour and
-// leaves the request pending once the queue is empty.
+// leaves the request pending once the queue is empty. Like a server with a refresh
+// timer, it sends two updates at least 20 ms apart: the server under test keeps only
+// the newest capture, so of two captures a millisecond apart the first may never start.
 async function startColourSource() {
   const queue = [[10, 20, 30]];
-  let pending = false, socket;
+  let pending = false, socket, sent = -Infinity, timer;
   const answer = () => {
     if (!pending || !queue.length || !socket) return;
+    const wait = sent + 20 - performance.now();
+    if (wait > 0) {clearTimeout(timer);timer = setTimeout(answer, wait);return;}
     const [red, green, blue] = queue.shift(), update = Buffer.alloc(16 + WIDTH * HEIGHT * 4);
     update.writeUInt16BE(1, 2);update.writeUInt16BE(WIDTH, 8);update.writeUInt16BE(HEIGHT, 10);
     for (let offset = 16; offset < update.length; offset += 4) update.set([red, green, blue, 0], offset);
-    pending = false;socket.write(update);
+    pending = false;sent = performance.now();socket.write(update);
   };
   const server = createServer(async connection => {
     socket = connection;connection.setNoDelay(true);connection.on('error', () => {});
@@ -46,7 +50,7 @@ async function startColourSource() {
   });
   server.listen(0, '127.0.0.1');await once(server, 'listening');
   return {address: `127.0.0.1:${server.address().port}`, push: (...colours) => {queue.push(...colours);answer();},
-    stop: () => new Promise(resolve => {socket?.destroy();server.close(resolve);})};
+    stop: () => new Promise(resolve => {clearTimeout(timer);socket?.destroy();server.close(resolve);})};
 }
 
 test('frame-rate cap: a burst faster than the cap loses a middle frame and ends on its last', {timeout: 30000}, async t => {
@@ -56,18 +60,24 @@ test('frame-rate cap: a burst faster than the cap loses a middle frame and ends 
   const browser = await launchBrowser();t.after(() => browser.close());
   const page = await browser.newPage();
   await loginPage(page, server);
-  await page.evaluate(() => {
+  const burst = [[200, 0, 0], [0, 200, 0], [0, 0, 200], [200, 200, 0], [0, 200, 200], [200, 0, 200], [90, 90, 90], [250, 120, 0]];
+  // H.264 returns each flat colour a few levels off, so a painted frame is named after
+  // the source colour it is closest to, and must be close to one.
+  await page.evaluate(({colours, tolerance}) => {
     window.painted = [];
     const forward = window.gliss.onEvent;
     window.gliss.onEvent = event => {
       forward(event);
-      if (event.type === 'frame') window.painted.push(Array.from(window.gliss.ctx.getImageData(10, 10, 1, 1).data.subarray(0, 3)).join());
+      if (event.type !== 'frame') return;
+      const pixel = window.gliss.ctx.getImageData(10, 10, 1, 1).data;
+      const distance = colour => Math.max(...colour.map((value, channel) => Math.abs(pixel[channel] - value)));
+      const nearest = colours.reduce((best, colour) => distance(colour) < distance(best) ? colour : best);
+      window.painted.push(distance(nearest) <= tolerance ? nearest.join() : `unknown ${Array.from(pixel.subarray(0, 3))}`);
     };
-  });
+  }, {colours: [[10, 20, 30], ...burst], tolerance: COLOUR_TOLERANCE});
   // Let the cap's schedule go idle, then offer eight captures as fast as the server
   // asks: 3.5 s of captures, in which the cap admits five at most.
   await new Promise(resolve => setTimeout(resolve, 2500));
-  const burst = [[200, 0, 0], [0, 200, 0], [0, 0, 200], [200, 200, 0], [0, 200, 200], [200, 0, 200], [90, 90, 90], [250, 120, 0]];
   source.push(...burst);
   const last = burst.at(-1).join();
   await page.waitForFunction(colour => window.painted.at(-1) === colour, last, {timeout: 15000});
