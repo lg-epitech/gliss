@@ -16,7 +16,7 @@ license-files = [
   "licenses/rust-dependencies.md",
 ]
 requires-python = ">=3.8"
-keywords = ["vnc", "rfb", "remote-desktop", "webtransport", "streaming", "qemu"]
+keywords = ["vnc", "rfb", "remote-desktop", "websocket", "h264", "streaming", "qemu"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Web Environment",
