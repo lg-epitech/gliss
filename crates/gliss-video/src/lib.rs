@@ -302,4 +302,6 @@ pub fn parse_packet(packet: &[u8]) -> Result<VideoPacket<'_>> {
 }
 
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
 mod tests;
