@@ -205,6 +205,20 @@ async fn frame(stream: &mut TcpStream) -> (u8, Vec<u8>) {
     (opcode, payload)
 }
 
+/// A short text message in a masked frame, as a browser sends it.
+fn masked(text: &[u8]) -> Vec<u8> {
+    assert!(text.len() < 126);
+    let mask = [1, 2, 3, 4];
+    let mut message = vec![0x81, 0x80 | text.len() as u8];
+    message.extend_from_slice(&mask);
+    message.extend(
+        text.iter()
+            .zip(mask.iter().cycle())
+            .map(|(byte, mask)| byte ^ mask),
+    );
+    message
+}
+
 #[tokio::test]
 async fn a_stream_outlives_every_http_timeout() {
     let app = app(&["--demo"]);
@@ -230,17 +244,29 @@ async fn a_stream_outlives_every_http_timeout() {
             .unwrap()
             .contains(r#""type":"hello""#)
     );
+    // The first picture is acknowledged, as a browser does, so the stream has
+    // no deadline of its own running while the HTTP timeouts pass.
+    let sequence = timeout(WAIT, async {
+        loop {
+            let (opcode, payload) = frame(&mut stream).await;
+            if opcode == 2 && payload.starts_with(b"GLV1") {
+                break u32::from_le_bytes(payload[4..8].try_into().unwrap());
+            }
+        }
+    })
+    .await
+    .expect("the stream must send its first frame");
+    let acknowledgement = json!({"type":"ack","sequence":sequence}).to_string();
+    stream
+        .write_all(&masked(acknowledgement.as_bytes()))
+        .await
+        .unwrap();
     // Many times the header and idle timeout, with nothing sent by the browser.
     tokio::time::sleep(SHORT * 6).await;
-    // A masked text frame, as a browser sends it.
-    let ping = br#"{"type":"ping","id":5}"#;
-    let mut message = vec![0x81, 0x80 | ping.len() as u8, 1, 2, 3, 4];
-    message.extend(
-        ping.iter()
-            .zip([1, 2, 3, 4].iter().cycle())
-            .map(|(byte, mask)| byte ^ mask),
-    );
-    stream.write_all(&message).await.unwrap();
+    stream
+        .write_all(&masked(br#"{"type":"ping","id":5}"#))
+        .await
+        .unwrap();
     timeout(WAIT, async {
         loop {
             let (opcode, payload) = frame(&mut stream).await;
