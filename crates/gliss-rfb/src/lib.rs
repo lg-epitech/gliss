@@ -948,4 +948,6 @@ async fn decode<R: AsyncRead + Unpin>(
 }
 
 #[cfg(test)]
+mod fuzz;
+#[cfg(test)]
 mod tests;
