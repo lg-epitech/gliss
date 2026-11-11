@@ -3,11 +3,9 @@ use crate::{App, Args, Input, Source, VideoTiming};
 use clap::Parser;
 use futures_util::FutureExt;
 use serde_json::json;
-use std::sync::{Arc, Mutex, atomic::AtomicU64};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{Semaphore, watch},
     time::{advance, timeout},
 };
 
@@ -169,20 +167,7 @@ fn app(address: &str, policy: &str) -> App {
         policy,
     ])
     .unwrap();
-    App {
-        args,
-        video_timing: VideoTiming::new(10, 3600).unwrap(),
-        tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
-        worker_shutdown: watch::channel(false).0,
-        origins: Vec::new(),
-        cookie_key: [0; 32],
-        clients: Arc::new(Semaphore::new(1)),
-        encoders: Arc::new(Semaphore::new(1)),
-        login_attempts: Mutex::new((std::time::Instant::now(), 0)),
-        bytes: AtomicU64::new(0),
-        frames: AtomicU64::new(0),
-        started: std::time::Instant::now(),
-    }
+    App::new(args, VideoTiming::new(10, 3600).unwrap(), Vec::new())
 }
 
 async fn handshake(listener: TcpListener) -> TcpStream {

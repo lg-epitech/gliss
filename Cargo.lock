@@ -446,6 +446,8 @@ dependencies = [
  "gliss-video",
  "hex",
  "hmac",
+ "hyper",
+ "hyper-util",
  "libc",
  "opus",
  "rand",

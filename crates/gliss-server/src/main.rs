@@ -2,6 +2,7 @@ mod audio;
 mod audio_adpcm;
 mod demo;
 mod held;
+mod http;
 mod notices;
 mod pacer;
 mod profiling;
@@ -12,6 +13,7 @@ mod tcp_listener;
 use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
+    body::Body,
     extract::{
         DefaultBodyLimit, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
@@ -158,6 +160,7 @@ struct App {
     clients: Arc<Semaphore>,
     encoders: Arc<Semaphore>,
     login_attempts: Mutex<(Instant, u32)>,
+    login_body_timeout: Duration,
     bytes: AtomicU64,
     frames: AtomicU64,
     started: Instant,
@@ -176,6 +179,7 @@ impl App {
             clients: Arc::new(Semaphore::new(args.max_clients)),
             encoders: Arc::new(Semaphore::new(2)),
             login_attempts: Mutex::new((Instant::now(), 0)),
+            login_body_timeout: LOGIN_BODY_TIMEOUT,
             bytes: AtomicU64::new(0),
             frames: AtomicU64::new(0),
             started: Instant::now(),
@@ -245,6 +249,34 @@ fn main() -> Result<()> {
     runtime.block_on(run(args))
 }
 
+fn router(app: Arc<App>) -> Router {
+    let mut router = Router::new().route(
+        "/",
+        get(|| async { Html(include_str!("../../../web/index.html")) }),
+    );
+    for &(path, content_type, body) in WEB_ASSETS {
+        router = router.route(
+            &format!("/{path}"),
+            get(move || async move { ([(header::CONTENT_TYPE, content_type)], body) }),
+        );
+    }
+    router
+        .route("/health", get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }))
+        .route("/api/session", post(login).delete(logout))
+        .route("/api/stats", get(stats))
+        .route("/ws", get(upgrade))
+        .layer(DefaultBodyLimit::max(LOGIN_BODY_LIMIT))
+        .layer(axum::middleware::map_response(|mut response: Response| async move {
+            let h = response.headers_mut();
+            h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
+            h.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
+            h.insert("x-content-type-options", "nosniff".parse().unwrap());
+            h.insert("referrer-policy", "no-referrer".parse().unwrap());
+            response
+        }))
+        .with_state(app)
+}
+
 async fn run(args: Args) -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -284,45 +316,20 @@ async fn run(args: Args) -> Result<()> {
     let bind = args.bind;
     let app = Arc::new(App::new(args, video_timing, origins));
     let tcp_listener = app.tcp_listener.clone();
-    let mut router = Router::new().route(
-        "/",
-        get(|| async { Html(include_str!("../../../web/index.html")) }),
-    );
-    for &(path, content_type, body) in WEB_ASSETS {
-        router = router.route(
-            &format!("/{path}"),
-            get(move || async move { ([(header::CONTENT_TYPE, content_type)], body) }),
-        );
-    }
-    let router = router
-        .route("/health", get(|| async { Json(json!({"status":"ok","version":env!("CARGO_PKG_VERSION")})) }))
-        .route("/api/session", post(login).delete(logout))
-        .route("/api/stats", get(stats))
-        .route("/ws", get(upgrade))
-        .layer(DefaultBodyLimit::max(MAX_CLIPBOARD + 1024))
-        .layer(axum::middleware::map_response(|mut response: Response| async move {
-            let h = response.headers_mut();
-            h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
-            h.insert(header::CONTENT_SECURITY_POLICY, "default-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
-            h.insert("x-content-type-options", "nosniff".parse().unwrap());
-            h.insert("referrer-policy", "no-referrer".parse().unwrap());
-            response
-        }))
-        .with_state(app.clone());
+    let router = router(app.clone());
     let listener = tcp_listener::VerifiedListener::new(
         tokio::net::TcpListener::bind(bind).await?,
         tcp_listener,
     );
     println!("Gliss listening on http://{bind} (CPU-only)");
     let shutdown_signal = app.worker_shutdown.clone();
-    let result = axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            let _ = tokio::signal::ctrl_c().await;
-            shutdown_signal.send_replace(true);
-        })
-        .await;
+    let limits = http::Limits::for_clients(app.args.max_clients);
+    http::serve(listener, router, limits, async move {
+        let _ = tokio::signal::ctrl_c().await;
+        shutdown_signal.send_replace(true);
+    })
+    .await;
     app.worker_shutdown.send_replace(true);
-    result?;
     Ok(())
 }
 
@@ -641,16 +648,31 @@ fn authorized_until(app: &App, headers: &HeaderMap) -> Option<u64> {
     mac.verify_slice(&signature).is_ok().then_some(expiry)
 }
 
+/// A login body is `{"token":"..."}` and a key is something a person pastes.
+const LOGIN_BODY_LIMIT: usize = 4096;
+/// Time to send that body once the request head is in.
+const LOGIN_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Deserialize)]
 struct Login {
     token: String,
 }
 
-async fn login(
-    State(app): State<Arc<App>>,
-    headers: HeaderMap,
-    Json(body): Json<Login>,
-) -> Response {
+fn is_json(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or_default().trim())
+        .is_some_and(|kind| {
+            let kind = kind.to_ascii_lowercase();
+            kind == "application/json"
+                || (kind.starts_with("application/") && kind.ends_with("+json"))
+        })
+}
+
+async fn login(State(app): State<Arc<App>>, headers: HeaderMap, body: Body) -> Response {
+    // Everything that needs no body comes first: a request that is refused
+    // anyway cannot make the server wait for one.
     if !origin_allowed(&app, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -664,6 +686,28 @@ async fn login(
         }
         rate.1 += 1;
     }
+    if !is_json(&headers) {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
+    let announced = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok());
+    if announced.is_some_and(|length| length > LOGIN_BODY_LIMIT) {
+        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    }
+    let read = axum::body::to_bytes(body, LOGIN_BODY_LIMIT);
+    let bytes = match tokio::time::timeout(app.login_body_timeout, read).await {
+        Ok(Ok(bytes)) => bytes,
+        // A body without an announced length that outgrew the limit.
+        Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        // hyper closes a connection whose request body was not read to its end.
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+    };
+    let body = match Json::<Login>::from_bytes(&bytes) {
+        Ok(Json(body)) => body,
+        Err(rejection) => return rejection.into_response(),
+    };
     if !bool::from(Sha256::digest(body.token.as_bytes()).ct_eq(&Sha256::digest(
         app.args.token.as_deref().unwrap_or_default().as_bytes(),
     ))) {
@@ -1359,3 +1403,6 @@ mod source_tests;
 
 #[cfg(test)]
 mod viewer_tests;
+
+#[cfg(test)]
+mod http_tests;
