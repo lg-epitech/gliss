@@ -7,7 +7,7 @@ mod rfb_request;
 mod scheduler;
 mod tcp_listener;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use axum::{
     Json, Router,
     extract::{
@@ -22,7 +22,7 @@ use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
 use gliss_core::{Frame, Input, MAX_CLIPBOARD};
 use gliss_rfb::Event;
-use gliss_video::{VideoEncoder, VideoProfile, VideoTiming};
+use gliss_video::{VideoEncoder, VideoTiming};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::json;
@@ -83,24 +83,9 @@ struct Args {
     codec: String,
     #[arg(long, default_value_t = 4_000_000)]
     h264_bitrate: u32,
-    /// H.264 nominal rate-control FPS; defaults to capture FPS without changing capture cadence.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=60))]
-    video_fps: Option<u32>,
-    /// H.264 synthetic timestamp FPS; defaults to capture FPS.
-    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=60))]
-    video_timestamp_fps: Option<u32>,
     /// H.264 periodic IDR interval in encoded frames; defaults to 3600.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=3600))]
     video_intra_period: Option<u32>,
-    /// Allow native H.264 to drop current pictures to meet its bitrate target (WebSocket only).
-    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
-    video_frame_skip: bool,
-    /// Requested minimum H.264 QP; positive bounds avoid native default substitution.
-    #[arg(long, requires = "video_qp_max", value_parser = clap::value_parser!(u8).range(1..=51))]
-    video_qp_min: Option<u8>,
-    /// Requested maximum H.264 QP; must accompany video-qp-min.
-    #[arg(long, requires = "video_qp_min", value_parser = clap::value_parser!(u8).range(1..=51))]
-    video_qp_max: Option<u8>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
     /// Experimental media window; the stable default waits for each frame ACK.
@@ -334,12 +319,6 @@ async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn explicit_video_timing(args: &Args) -> bool {
-    args.video_fps.is_some()
-        || args.video_timestamp_fps.is_some()
-        || args.video_intra_period.is_some()
-}
-
 #[cfg(test)]
 mod option_tests {
     use super::*;
@@ -383,6 +362,21 @@ mod option_tests {
     }
 
     #[test]
+    fn codec_defaults_to_h264_and_accepts_nothing_else() {
+        assert_eq!(args(&[]).codec, "h264");
+        assert_eq!(args(&["--codec", "h264"]).codec, "h264");
+        let base = [
+            "gliss-server",
+            "--demo",
+            "--token",
+            "01234567890123456789012345678901",
+        ];
+        for other in ["deflate", "batch", "hybrid", "H264", ""] {
+            assert!(Args::try_parse_from(base.into_iter().chain(["--codec", other])).is_err());
+        }
+    }
+
+    #[test]
     fn version_flag_reports_the_package_version_without_other_arguments() {
         let error = Args::try_parse_from(["gliss-server", "--version"]).unwrap_err();
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
@@ -414,46 +408,32 @@ mod option_tests {
     }
 }
 
-fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
-    match (args.video_qp_min, args.video_qp_max) {
-        (None, None) => Ok(None),
-        (Some(min), Some(max)) => Ok(Some(gliss_video::QpBounds::new(min, max)?)),
-        _ => bail!("Both video-qp-min and video-qp-max are required"),
-    }
-}
-
 /// The longest interval the encoder accepts: two minutes of frames at 30 fps.
 const DEFAULT_INTRA_PERIOD: u32 = 3600;
 
 fn configured_video_timing(args: &Args) -> Result<VideoTiming> {
-    configured_video_qp(args)?;
     // A WebSocket stream loses nothing, and its client asks for a keyframe after a
     // decode error. A periodic keyframe there only costs a burst of bytes and
     // resets the picture to a coarser quality, so it is as rare as the encoder allows.
     VideoTiming::new(
-        args.video_fps.unwrap_or(args.fps),
-        args.video_timestamp_fps.unwrap_or(args.fps),
+        args.fps,
         args.video_intra_period.unwrap_or(DEFAULT_INTRA_PERIOD),
     )
 }
 
+/// Clients are told the encoder timing only when the operator chose the keyframe interval.
 fn with_video_metadata(
     mut value: serde_json::Value,
     args: &Args,
     timing: VideoTiming,
 ) -> serde_json::Value {
-    if explicit_video_timing(args) {
+    if args.video_intra_period.is_some() {
+        // Access units are timestamped at the rate-control rate.
         value["video_config"] = json!({
             "fps": timing.fps(),
-            "timestamp_fps": timing.timestamp_fps(),
+            "timestamp_fps": timing.fps(),
             "intra_period": timing.intra_period(),
         });
-    }
-    if let (Some(min), Some(max)) = (args.video_qp_min, args.video_qp_max) {
-        value["video_qp_bounds"] = json!({"min":min,"max":max,"scope":"requested native bounds; not coded-QP attestation"});
-    }
-    if args.video_frame_skip {
-        value["video_frame_skip"] = json!(true);
     }
     value
 }
@@ -524,7 +504,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn websocket_h264_keyframes_are_3600_encoded_frames_apart_at_any_fps() {
+    fn keyframes_are_3600_encoded_frames_apart_at_any_fps() {
         for fps in ["15", "30", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap();
@@ -536,7 +516,6 @@ mod video_timing_option_tests {
             encoder: None,
             timing,
             bitrate: 2_000_000,
-            options: gliss_video::VideoOptions::default(),
         };
         let frame = Frame::new(64, 48).unwrap();
         // Well past the former 240-frame interval, only the first frame is a keyframe.
@@ -565,11 +544,11 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn default_rates_follow_capture_fps_and_metadata_stays_implicit() {
+    fn default_rate_follows_capture_fps_and_metadata_stays_implicit() {
         for fps in ["15", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
             let timing = configured_video_timing(&args).unwrap();
-            assert_eq!(timing, VideoTiming::new(args.fps, args.fps, 3600).unwrap());
+            assert_eq!(timing, VideoTiming::new(args.fps, 3600).unwrap());
             let original = json!({"codec": "h264", "fps_limit": args.fps});
             assert_eq!(
                 with_video_metadata(original.clone(), &args, timing),
@@ -579,43 +558,20 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn explicit_video_rates_are_independent_and_describe_resolved_native_policy() {
-        let args = args(&["--codec", "h264", "--fps", "60", "--video-fps", "15"]).unwrap();
+    fn an_explicit_keyframe_interval_is_described_to_the_client() {
+        let args = args(&["--fps", "15", "--video-intra-period", "120"]).unwrap();
         let timing = configured_video_timing(&args).unwrap();
-        assert_eq!(args.fps, 60);
-        assert_eq!(timing, VideoTiming::new(15, 60, 3600).unwrap());
-        let metadata = with_video_metadata(json!({"fps_limit": args.fps}), &args, timing);
+        assert_eq!(timing, VideoTiming::new(15, 120).unwrap());
         assert_eq!(
-            metadata,
-            json!({"fps_limit":60,"video_config":{
-                "fps":15,"timestamp_fps":60,"intra_period":3600
+            with_video_metadata(json!({"fps_limit": args.fps}), &args, timing),
+            json!({"fps_limit":15,"video_config":{
+                "fps":15,"timestamp_fps":15,"intra_period":120
             }})
         );
-        for (option, value, expected) in [
-            ("--video-fps", "60", VideoTiming::new(60, 15, 3600).unwrap()),
-            (
-                "--video-timestamp-fps",
-                "60",
-                VideoTiming::new(15, 60, 3600).unwrap(),
-            ),
-            (
-                "--video-intra-period",
-                "120",
-                VideoTiming::new(15, 15, 120).unwrap(),
-            ),
-        ] {
-            let args = self::args(&["--codec", "h264", "--fps", "15", option, value]).unwrap();
-            assert_eq!(configured_video_timing(&args).unwrap(), expected);
-        }
     }
 
     #[test]
-    fn video_timing_cli_bounds_are_enforced() {
-        for option in ["--video-fps", "--video-timestamp-fps"] {
-            for value in ["0", "61", "4294967295", "-1", "x"] {
-                assert!(args(&["--codec", "h264", option, value]).is_err());
-            }
-        }
+    fn keyframe_interval_cli_bounds_are_enforced() {
         for value in ["0", "3601", "4294967295", "-1", "x"] {
             assert!(args(&["--codec", "h264", "--video-intra-period", value]).is_err());
         }
@@ -623,12 +579,11 @@ mod video_timing_option_tests {
 
     #[test]
     fn lazy_video_encoder_retains_custom_timing_across_reset_and_resize() {
-        let timing = VideoTiming::new(15, 60, 120).unwrap();
+        let timing = VideoTiming::new(15, 120).unwrap();
         let mut encoder = StreamEncoder {
             encoder: None,
             timing,
             bitrate: 3_000_000,
-            options: gliss_video::VideoOptions::default(),
         };
         encoder.reset();
         for (sequence, width, height) in [(1, 64, 48), (2, 64, 48), (3, 66, 50)] {
@@ -641,23 +596,6 @@ mod video_timing_option_tests {
         encoder.reset();
         let bytes = encoder.encode(&Frame::new(66, 50).unwrap(), 4, 3).unwrap();
         assert!(gliss_video::parse_packet(&bytes).unwrap().keyframe);
-    }
-
-    #[test]
-    fn frame_skip_is_opt_in() {
-        let default = args(&["--codec", "h264"]).unwrap();
-        assert!(!default.video_frame_skip);
-        let enabled = args(&["--codec", "h264", "--video-frame-skip", "true"]).unwrap();
-        assert!(configured_video_timing(&enabled).is_ok());
-        assert_eq!(
-            with_video_metadata(
-                json!({}),
-                &enabled,
-                configured_video_timing(&enabled).unwrap()
-            )["video_frame_skip"],
-            true
-        );
-        assert!(args(&["--codec", "h264", "--video-frame-skip", "unknown"]).is_err());
     }
 }
 
@@ -1012,7 +950,7 @@ struct Encoded {
     encoder: StreamEncoder,
     generation: u64,
     sequence: u32,
-    packet: Result<Option<Vec<u8>>>,
+    packet: Result<Vec<u8>>,
     work: Duration,
     worker_wait: Duration,
     cpu_work: Option<Duration>,
@@ -1141,10 +1079,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
         encoder: None,
         timing: app.video_timing,
         bitrate: app.args.h264_bitrate,
-        options: gliss_video::VideoOptions {
-            frame_skip: app.args.video_frame_skip,
-            qp_bounds: configured_video_qp(&app.args)?,
-        },
     });
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
     let mut window = scheduler::Window::new(
@@ -1153,7 +1087,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     )?;
     let mut sequence = 0u32;
     let mut writer_jobs = 0usize;
-    let mut native_skipped_frames = 0_u64;
     let mut waiting = None::<MediaPacket>;
     let mut latest = None::<Captured>;
     let mut pacer = pacer::Pacer::new(Duration::from_secs_f64(1.0 / f64::from(app.args.fps)));
@@ -1225,14 +1158,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 if completed.generation != window.generation() {
                     window.discarded_encode();
                 } else {
-                    if let Some(packet) = completed.packet? {
-                        if app.args.video_frame_skip { sequence = completed.sequence; }
-                        waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: packet, blocked_since: None });
-                    } else {
-                        ensure!(app.args.video_frame_skip, "Unexpected empty media output");
-                        native_skipped_frames = native_skipped_frames.saturating_add(1);
-                        window.discarded_encode();
-                    }
+                    waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: completed.packet?, blocked_since: None });
                 }
             }
             changed = source.frames.changed() => {
@@ -1250,10 +1176,8 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 pacer.started();
                 let captured = latest.take().unwrap();
                 let mut next_encoder = encoder.take().context("encoder is already busy")?;
-                let packet_sequence = sequence.wrapping_add(1);
-                // A rate-control skip must not create a predictive packet gap.
-                // Preserve legacy allocation when the opt-in policy is disabled.
-                if !app.args.video_frame_skip { sequence = packet_sequence; }
+                sequence = sequence.wrapping_add(1);
+                let packet_sequence = sequence;
                 let packet_generation = window.generation();
                 let permits = app.encoders.clone();
                 let queued = Instant::now();
@@ -1265,7 +1189,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                         let started = Instant::now();
                         let source_age = captured.published_at.map(|at| started.saturating_duration_since(at));
                         let cpu_started = profile_encode.then(profiling::thread_cpu_time).flatten();
-                        let packet = next_encoder.encode_optional(&captured.frame, packet_sequence, captured.forwarded_input_id);
+                        let packet = next_encoder.encode(&captured.frame, packet_sequence, captured.forwarded_input_id);
                         let work = started.elapsed();
                         let cpu_work = cpu_started.and_then(|at| profiling::thread_cpu_time()?.checked_sub(at));
                         Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
@@ -1279,7 +1203,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 stats["encoder_busy"] = json!(!encoder_jobs.is_empty());
                 stats["writer_jobs"] = json!(writer_jobs);
                 stats["audio"] = json!({"packet_ms":app.args.audio_packet_ms.millis(),"counters":source.audio_counters.snapshot()});
-                if app.args.video_frame_skip { stats["native_skipped_frames"] = json!(native_skipped_frames); }
                 // Diagnostics never block input/media and have no unbounded history.
                 let _ = control_tx.try_send(ControlPacket { message: Message::Text(stats.to_string().into()), flushed: None });
             }
@@ -1294,7 +1217,6 @@ struct StreamEncoder {
     encoder: Option<Box<VideoEncoder>>,
     timing: VideoTiming,
     bitrate: u32,
-    options: gliss_video::VideoOptions,
 }
 
 impl StreamEncoder {
@@ -1304,117 +1226,18 @@ impl StreamEncoder {
         }
     }
 
-    #[cfg(test)]
     fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
-        self.encode_optional(frame, sequence, input_id)?
-            .context("Unexpected skipped output in a strict media path")
-    }
-
-    fn encode_optional(
-        &mut self,
-        frame: &Frame,
-        sequence: u32,
-        input_id: u32,
-    ) -> Result<Option<Vec<u8>>> {
         if self.encoder.is_none() {
-            self.encoder = Some(Box::new(VideoEncoder::with_options(
+            self.encoder = Some(Box::new(VideoEncoder::with_timing(
                 frame.width,
                 frame.height,
                 self.bitrate,
-                VideoProfile::Screen,
                 self.timing,
-                self.options,
             )?));
         }
         self.encoder
             .as_mut()
             .unwrap()
-            .encode_optional(frame, sequence, input_id)
-    }
-}
-
-#[cfg(test)]
-mod video_qp_option_tests {
-    use super::*;
-    fn parse(extra: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(
-            [
-                "gliss-server",
-                "--demo",
-                "--token",
-                "qp-test-token-0123456789abcdef",
-            ]
-            .into_iter()
-            .chain(extra.iter().copied()),
-        )
-    }
-    #[test]
-    fn qp_bounds_are_paired_opt_in_and_scoped_before_startup() {
-        let default = parse(&["--codec", "h264"]).unwrap();
-        assert_eq!(configured_video_qp(&default).unwrap(), None);
-        assert!(
-            with_video_metadata(
-                json!({}),
-                &default,
-                configured_video_timing(&default).unwrap()
-            )
-            .get("video_qp_bounds")
-            .is_none()
-        );
-        let selected = parse(&[
-            "--codec",
-            "h264",
-            "--video-qp-min",
-            "26",
-            "--video-qp-max",
-            "51",
-        ])
-        .unwrap();
-        assert!(configured_video_timing(&selected).is_ok());
-        let qp = configured_video_qp(&selected).unwrap().unwrap();
-        assert_eq!((qp.min(), qp.max()), (26, 51));
-        let hello = with_video_metadata(
-            json!({}),
-            &selected,
-            configured_video_timing(&selected).unwrap(),
-        );
-        assert_eq!(hello["video_qp_bounds"]["min"], 26);
-        assert_eq!(hello["video_qp_bounds"]["max"], 51);
-        for extra in [
-            vec!["--codec", "h264", "--video-qp-min", "26"],
-            vec!["--codec", "h264", "--video-qp-max", "51"],
-            vec![
-                "--codec",
-                "h264",
-                "--video-qp-min",
-                "0",
-                "--video-qp-max",
-                "51",
-            ],
-            vec![
-                "--codec",
-                "h264",
-                "--video-qp-min",
-                "26",
-                "--video-qp-max",
-                "52",
-            ],
-        ] {
-            assert!(parse(&extra).is_err());
-        }
-        assert!(
-            configured_video_timing(
-                &parse(&[
-                    "--codec",
-                    "h264",
-                    "--video-qp-min",
-                    "51",
-                    "--video-qp-max",
-                    "26"
-                ])
-                .unwrap()
-            )
-            .is_err()
-        );
+            .encode(frame, sequence, input_id)
     }
 }
