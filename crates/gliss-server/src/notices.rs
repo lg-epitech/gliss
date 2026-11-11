@@ -6,12 +6,42 @@
 //! event keeps its newest unsent value, a newer one replaces it, and posting
 //! never waits and never fails. What is pending is bounded by one cursor of
 //! [`MAX_CURSOR_SIDE`] squared and one clipboard of [`MAX_CLIPBOARD`] bytes.
+//! The kinds are written in turn, so a kind the guest keeps pending does not
+//! hold back the others.
 
 use gliss_core::MAX_CLIPBOARD;
 use gliss_rfb::{Cursor, MAX_CURSOR_SIDE};
 use serde_json::json;
 use std::{fmt::Write, sync::Mutex};
 use tokio::sync::Notify;
+
+/// The kinds of event a session goes on after.
+#[derive(Clone, Copy)]
+enum Kind {
+    DisplayError,
+    InputError,
+    ResizeResult,
+    Bell,
+    Clipboard,
+    Cursor,
+}
+
+/// The order the kinds are tried in: the one written longest ago first. At
+/// the start that is small and urgent first, the largest payloads last.
+struct Turns([Kind; 6]);
+
+impl Default for Turns {
+    fn default() -> Self {
+        Self([
+            Kind::DisplayError,
+            Kind::InputError,
+            Kind::ResizeResult,
+            Kind::Bell,
+            Kind::Clipboard,
+            Kind::Cursor,
+        ])
+    }
+}
 
 #[derive(Default)]
 struct Pending {
@@ -22,6 +52,33 @@ struct Pending {
     bell: bool,
     clipboard: Option<String>,
     cursor: Option<Cursor>,
+    turns: Turns,
+}
+
+impl Pending {
+    /// Takes the event of `kind` that waits, as its text.
+    fn take(&mut self, kind: Kind) -> Option<String> {
+        Some(match kind {
+            Kind::DisplayError => {
+                json!({"type":"error","message":self.display_error.take()?}).to_string()
+            }
+            Kind::InputError => {
+                json!({"type":"input_error","message":self.input_error.take()?}).to_string()
+            }
+            Kind::ResizeResult => {
+                let (width, height, status) = self.resize_result.take()?;
+                json!({"type":"resize_result","width":width,"height":height,"status":status})
+                    .to_string()
+            }
+            Kind::Bell => {
+                std::mem::take(&mut self.bell).then(|| json!({"type":"bell"}).to_string())?
+            }
+            Kind::Clipboard => {
+                json!({"type":"clipboard","text":self.clipboard.take()?}).to_string()
+            }
+            Kind::Cursor => cursor_text(&self.cursor.take()?),
+        })
+    }
 }
 
 #[derive(Default)]
@@ -101,27 +158,23 @@ impl Notices {
 
     fn take(&self) -> Option<Notice> {
         let mut pending = self.pending.lock().unwrap_or_else(|lock| lock.into_inner());
-        // Small and urgent first; the largest payloads last.
-        let text = if let Some(message) = pending.failure.take() {
+        if let Some(message) = pending.failure.take() {
             return Some(Notice {
                 text: json!({"type":"error","message":message}).to_string(),
                 last: true,
             });
-        } else if let Some(message) = pending.display_error.take() {
-            json!({"type":"error","message":message}).to_string()
-        } else if let Some(message) = pending.input_error.take() {
-            json!({"type":"input_error","message":message}).to_string()
-        } else if let Some((width, height, status)) = pending.resize_result.take() {
-            json!({"type":"resize_result","width":width,"height":height,"status":status})
-                .to_string()
-        } else if std::mem::take(&mut pending.bell) {
-            json!({"type":"bell"}).to_string()
-        } else if let Some(text) = pending.clipboard.take() {
-            json!({"type":"clipboard","text":text}).to_string()
-        } else {
-            cursor_text(&pending.cursor.take()?)
-        };
-        Some(Notice { text, last: false })
+        }
+        // A kind that was written goes behind the others. A guest can keep
+        // one kind pending for ever, a bell that never stops ringing, and
+        // then each other kind still waits for one event of it at most.
+        for turn in 0..pending.turns.0.len() {
+            let kind = pending.turns.0[turn];
+            if let Some(text) = pending.take(kind) {
+                pending.turns.0[turn..].rotate_left(1);
+                return Some(Notice { text, last: false });
+            }
+        }
+        None
     }
 }
 
@@ -223,6 +276,56 @@ mod tests {
             ]
         );
         assert_eq!(pending_bytes(&notices), 0);
+    }
+
+    /// The `type` of the next event.
+    fn next_kind(notices: &Notices) -> String {
+        let text = notices.next().now_or_never().unwrap().text;
+        let event: serde_json::Value = serde_json::from_str(&text).unwrap();
+        event["type"].as_str().unwrap().to_owned()
+    }
+
+    #[test]
+    fn a_kind_that_is_always_pending_does_not_hold_back_the_others() {
+        let notices = Notices::default();
+        notices.clipboard("copy".into());
+        notices.cursor(cursor(1, 1, 0));
+        // The guest rings again before every write.
+        let sent: Vec<String> = (0..5)
+            .map(|_| {
+                notices.bell();
+                next_kind(&notices)
+            })
+            .collect();
+        assert_eq!(sent, ["bell", "clipboard", "cursor", "bell", "bell"]);
+        // The same for any kind, also when all of them are posted without end:
+        // each is sent once in every six writes.
+        let mut sent = Vec::new();
+        for round in 0..12u16 {
+            notices.display_error(format!("display {round}"));
+            notices.input_error(format!("input {round}"));
+            notices.resize_result(640, 480, round);
+            notices.bell();
+            notices.clipboard(format!("copy {round}"));
+            notices.cursor(cursor(1, 1, round as u8));
+            sent.push(next_kind(&notices));
+        }
+        for turn in sent.chunks(6) {
+            let mut kinds = turn.to_vec();
+            kinds.sort();
+            assert_eq!(
+                kinds,
+                [
+                    "bell",
+                    "clipboard",
+                    "cursor",
+                    "error",
+                    "input_error",
+                    "resize_result"
+                ],
+                "{sent:?}"
+            );
+        }
     }
 
     #[test]
