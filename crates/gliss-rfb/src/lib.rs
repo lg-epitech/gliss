@@ -88,6 +88,10 @@ const RAW_READ_BYTES: usize = 256 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a write to the server may make no progress. A server that reads
+/// at all takes a 10-byte message at once; one that has stopped reading would
+/// otherwise hold the writer, and every input behind it, for the whole session.
+const WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct ServerInfo {
@@ -254,26 +258,36 @@ where
         available: audio_available_tx,
     };
     let read_layout = layout.clone();
+    let (write_failed_tx, write_failed) = oneshot::channel();
     let read_task = tokio::spawn(async move {
-        let result = decode(
-            read,
-            Surface {
-                frame,
-                pixels: pixel_layout,
-            },
-            read_layout,
-            &read_commands,
-            &event_tx,
-            &reader_audio,
-        )
-        .await;
+        let result = tokio::select! {
+            result = decode(
+                read,
+                Surface {
+                    frame,
+                    pixels: pixel_layout,
+                },
+                read_layout,
+                &read_commands,
+                &event_tx,
+                &reader_audio,
+            ) => result,
+            // A connection that cannot be written to is over for reading too:
+            // nothing can ask it for another update.
+            Ok(error) = write_failed => Err(error),
+        };
         // The read half is closed by now: decoding owned it.
         if let Err(error) = result {
             let _ = event_tx.send(Err(error)).await;
         }
     });
     let clipboard = clipboard::Clipboard::new(&info.name);
-    let write_task = tokio::spawn(write_messages(write, clipboard, command_rx));
+    let write_task = tokio::spawn(write_messages(
+        write,
+        clipboard,
+        command_rx,
+        write_failed_tx,
+    ));
     (
         RfbReader {
             events,
@@ -489,13 +503,28 @@ impl RfbWriter {
     }
 }
 
+/// Write a whole message, failing when the peer accepts nothing for
+/// [`WRITE_STALL_TIMEOUT`]. A slow peer that keeps reading is never cut off.
+async fn write_progressing<W: AsyncWrite + Unpin>(write: &mut W, mut bytes: &[u8]) -> Result<()> {
+    while !bytes.is_empty() {
+        let written = timeout(WRITE_STALL_TIMEOUT, write.write(bytes))
+            .await
+            .context("RFB server stopped reading")?
+            .context("write RFB message")?;
+        ensure!(written > 0, "RFB server closed the connection");
+        bytes = &bytes[written..];
+    }
+    Ok(())
+}
+
 async fn write_messages<W: AsyncWrite + Unpin>(
     mut write: W,
     mut clipboard: clipboard::Clipboard,
     mut commands: mpsc::Receiver<WriteCommand>,
+    failed_writes: oneshot::Sender<anyhow::Error>,
 ) {
     while let Some(command) = commands.recv().await {
-        let mut failed = false;
+        let mut failure = None;
         let result = async {
             // Clipboard negotiation, ownership and response selection share the
             // same actor as input writes, so crossed updates cannot reorder a
@@ -515,16 +544,19 @@ async fn write_messages<W: AsyncWrite + Unpin>(
                     (None, Some(bytes.into_iter().map(char::from).collect()))
                 }
             };
-            if let Some(bytes) = bytes {
-                let result = write.write_all(&bytes).await.context("write RFB message");
-                failed = result.is_err();
-                result?;
+            if let Some(bytes) = bytes
+                && let Err(error) = write_progressing(&mut write, &bytes).await
+            {
+                // The caller and the reader each get the reason.
+                failure = Some(format!("{error:#}"));
+                return Err(error);
             }
             Ok(text)
         }
         .await;
         let _ = command.completed.send(result);
-        if failed {
+        if let Some(failure) = failure {
+            let _ = failed_writes.send(anyhow::anyhow!(failure));
             break;
         }
     }
@@ -791,3 +823,6 @@ async fn decode<R: AsyncRead + Unpin>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
