@@ -143,15 +143,40 @@ static libc and cpio. It uses the installed Playwright Chromium. Set
 software emulation. It creates no disk images or libvirt definitions and removes
 its own temporary files and QEMU process.
 
+## Distribox path benchmark
+
+This opt-in benchmark boots a temporary diskless guest on QEMU/KVM with a
+virtio GPU, a PS/2 keyboard and a virtio tablet, as Distribox defines its VMs.
+The guest draws a small desktop with machine-readable markers, so the browser
+side can tell which key press, pointer position and animation frame each
+painted frame shows. Each server binary runs in turn with Distribox's flags:
+
+```sh
+cargo build --locked --release -p gliss-server -j 2
+TMPDIR=/dev/shm node scripts/bench-distribox-path.mjs \
+  --binary "$PWD/target/release/gliss-server" --rounds 3 --output /dev/shm/run.json
+```
+
+Pass `--binary` again to compare builds in alternating order. It needs
+`/dev/kvm`, QEMU, a readable host kernel with matching `virtio-gpu` and
+`virtio_input` modules, GCC with a static libc, cpio, zstd and the installed
+Playwright Chromium. The temporary directory must be on tmpfs, because the test
+browser keeps its shared memory there and stalls when that is a busy disk. It
+creates no disk images or libvirt definitions and removes its own temporary
+files and processes. The [Distribox path notes](distribox-path.md) describe
+what it measures and its limits.
+
 ## Streaming controls
 
 For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).
 
-WebSocket `--codec h264` defaults to a keyframe every `8 × --fps` encoded frames
-(240 at 30 FPS), reducing recurring bandwidth bursts. Idle desktops take longer
-to reach that count. New sessions, resyncs and resizes still force an immediate
-keyframe. `--video-intra-period 60` restores the previous interval at 30 FPS.
-Datagram and public encoder-library defaults are unchanged.
+WebSocket `--codec h264` defaults to a keyframe every 3600 encoded frames, two
+minutes at 30 FPS and the longest interval the encoder accepts. The stream is
+reliable and the client asks for a keyframe after a decode error, so a periodic
+keyframe only costs a burst of bytes and resets the picture to a coarser
+quality. New sessions, resyncs and resizes still force an immediate keyframe.
+`--video-intra-period 240` restores the previous interval at 30 FPS. Datagram
+and public encoder-library defaults are unchanged.
 
 The WebSocket audio player prefers Opus, with advertised IMA ADPCM and PCM
 fallbacks. The [audio wire format](audio-wire.md) describes codec negotiation,

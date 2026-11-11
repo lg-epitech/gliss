@@ -18,7 +18,7 @@ QEMU VNC / private graphics FD -> RFB -> latest canonical RGBA frame
 browser keyboard / pointer -> WebSocket or reliable QUIC stream -> original RFB connection
 ```
 
-`gliss-rfb` negotiates RFB, validates bounded framebuffer updates and handles pointer, keyboard, cursor, clipboard and supported resize messages. VNC capture and input use QEMU's existing interface, so the guest needs no extra software. The upstream address is fixed by the operator and never accepted from the browser. The optional connected Unix graphics FD is one-use and deadline-bound; it lets a trusted launcher hand over an authorized display without opening a new port.
+`gliss-rfb` negotiates RFB, validates bounded framebuffer updates and handles pointer, keyboard, cursor, clipboard and supported resize messages. VNC capture and input use QEMU's existing interface, so the guest needs no extra software. The upstream address is fixed by the operator and never accepted from the browser. A server that stores 32-bit little-endian BGRX, as QEMU does, is asked for that format and its pixels are converted locally; any other server is asked for RGBX. The optional connected Unix graphics FD is one-use and deadline-bound; it lets a trusted launcher hand over an authorized display without opening a new port.
 
 Browser clipboard text reaches the VNC server in one of three forms:
 
@@ -49,6 +49,19 @@ GLH1/GLH2/GLH4 combine a lossless base with classified video regions. A region s
 ## Scheduling and transport
 
 The WebSocket path acknowledges frames and bytes, with a default window of one frame. Once media enters TCP, dropping a newer frame cannot remove older reliable data, and one oversized packet may progress alone, so the byte window is not a hard memory ceiling.
+
+Capture and encoding are paced separately. The server asks the VNC source for
+the next update as soon as the previous one has arrived, at most once per 25 ms
+at the default cap, and keeps only the newest capture. The frame-rate cap then
+admits encodes on a schedule with one period of slack: a source slightly faster
+than the cap loses a frame now and then instead of every frame waiting, and the
+last frame of a burst is always encoded. QEMU's VNC server looks for changes on
+a timer that slows down while nothing is sent, so for a second after input or a
+display update the server also repeats QEMU's audio format message, which keeps
+that timer at its 30 ms base rate. This needs the VNC display to have an audio
+backend, as Distribox configures; without one QEMU keeps its own timing.
+`--rfb-request-policy tick` restores requests on a fixed clock. The [Distribox path notes](distribox-path.md) give the
+reasons and the measurements.
 
 Accepted HTTP/WebSocket sockets use `TCP_NODELAY=true` by default. The operator
 can restore coalescing with `--tcp-nodelay false`; the option is applied and
