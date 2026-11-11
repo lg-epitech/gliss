@@ -5,11 +5,7 @@ import {spawn} from 'node:child_process';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const tests=(await readdir(new URL('../tests/',import.meta.url)))
   .filter(name=>name.endsWith('.test.mjs')).sort();
-const excluded=['qemu.test.mjs'];
-if(tests.some(name=>excluded.includes(name)))throw new Error('Prepared-VM tests must stay outside the portable release suite');
-console.error(JSON.stringify({kind:'gliss-portable-test-scope',requires_prepared_vm:false,
-  included:tests,
-  excluded:excluded.map(name=>({name,status:'not run',reason:'Prepared-QEMU/KVM integration suite'}))}));
+console.error(JSON.stringify({kind:'gliss-portable-test-scope',requires_prepared_vm:false,included:tests}));
 const files=tests.map(name=>fileURLToPath(new URL('../tests/'+name,import.meta.url)));
 const child=spawn(process.execPath,['--test','--test-concurrency=1',...files],{cwd:root,stdio:'inherit'});
 const forward=signal=>{if(child.exitCode===null&&child.signalCode===null)child.kill(signal);};
