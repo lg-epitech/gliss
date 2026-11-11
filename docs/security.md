@@ -1,11 +1,11 @@
 # Deployment and security boundaries
 
-Gliss is an alpha remote-display server for one operator-selected source. Its
+Gliss is a beta remote-display server for one operator-selected source. Its
 authentication, queue bounds and expiry controls do not by themselves supply
 multi-tenant VM authorization. A platform that hosts many VMs must authorize its
 users, select the VM and run a server for it. The test suites drive Chromium
-against servers on the same host; other browsers and remote networks are
-untested.
+against servers on the same host. Beyond them, Gliss has been used through
+Distribox in Chrome and Firefox over the internet; Safari is untested.
 
 ## Standalone access
 
