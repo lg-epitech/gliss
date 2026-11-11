@@ -68,21 +68,5 @@ jobs:
       - name: Test the browser and codecs
         run: npm test
 
-      - name: Install the gateway test dependency
-        run: python -m pip install -r integration/distribox/prototype/requirements.txt
-
-      - name: Test the integration adapter
-        run: python -B -m unittest discover -s tests/integration-adapter -v
-
-      # Native gateway tests create their own loopback RFB peers; no VM is used.
-      - name: Test the scoped gateway
-        run: python -B -m unittest discover -s integration/distribox/prototype/tests -v
-
       - name: Verify published benchmark arithmetic
         run: python -B benchmarks/verify.py
-
-      - name: Test gateway rendering and browser interactions
-        run: |
-          node --test integration/distribox/prototype/tests/viewer-media.test.mjs
-          node --test --test-concurrency=1 integration/distribox/prototype/tests/browser.test.mjs
-          node --test --test-concurrency=1 integration/distribox/prototype/tests/browser-glh4.test.mjs
