@@ -1321,3 +1321,47 @@ async fn a_latin1_clipboard_over_the_limit_as_utf8_is_dropped_and_the_connection
     }
     assert_eq!(lengths, [gliss_core::MAX_CLIPBOARD]);
 }
+
+#[tokio::test]
+async fn server_text_in_an_error_cannot_start_a_log_line_and_is_bounded() {
+    let reason = format!(
+        "no\r\n2026-01-01T00:00:00Z  WARN forged line\u{1b}[31m\u{85}\u{2028}{}",
+        "x".repeat(60_000)
+    );
+    for refused_before_security in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let reason = reason.clone();
+        let peer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            banner(&mut stream).await;
+            if refused_before_security {
+                stream.write_u8(0).await.unwrap();
+            } else {
+                stream.write_all(&[1, 1]).await.unwrap();
+                assert_eq!(stream.read_u8().await.unwrap(), 1);
+                stream.write_u32(1).await.unwrap();
+            }
+            stream.write_u32(reason.len() as u32).await.unwrap();
+            stream.write_all(reason.as_bytes()).await.unwrap();
+        });
+        let error = format!(
+            "{:#}",
+            connect(&address.to_string(), None).await.err().unwrap()
+        );
+        assert!(
+            !error
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'),
+            "{error:?}"
+        );
+        assert!(
+            error.contains(
+                r"no\r\n2026-01-01T00:00:00Z  WARN forged line\u{1b}[31m\u{85}\u{2028}xxx"
+            ),
+            "{error:?}"
+        );
+        assert!(error.len() <= 400, "{} bytes", error.len());
+        peer.await.unwrap();
+    }
+}
