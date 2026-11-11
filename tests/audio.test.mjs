@@ -64,7 +64,7 @@ async function audioPeer(t) {
         if (control.type === 'audio') send({type: 'audio_status', available: true, enabled: control.enabled, codec: control.codec});
       }
     });
-    send({type: 'hello', codec: 'batch'});
+    send({type: 'hello', codec: 'h264'});
     send({type: 'audio_status', available: true, enabled: false});
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

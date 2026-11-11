@@ -11,7 +11,7 @@ import {startProxy,PROFILES} from '../test-support/browser/tcp-proxy.mjs';
 test('resetting counters between real decode and paint preserves a multi-frame stream',{timeout:20000},async t=>{
   const port=await freePort();
   const proxy=await startProxy({targetPort:port,profile:PROFILES.wan});t.after(proxy.stop);
-  const server=await startServer({port,origin:proxy.url,codec:'global',workload:'scroll',inFlightFrames:4});t.after(server.stop);
+  const server=await startServer({port,origin:proxy.url,workload:'scroll',inFlightFrames:4});t.after(server.stop);
   const browser=await launchBrowser();t.after(()=>browser.close());
   const page=await browser.newPage();
   const pageErrors=[];page.on('pageerror',error=>pageErrors.push(error.message));
@@ -37,11 +37,11 @@ test('resetting counters between real decode and paint preserves a multi-frame s
     // already recorded decode time, then the counters reset before UI notify.
     // The production decoder, Canvas paint, ACKs and media chain still run.
     if(reset){
-      const paint=client.ctx.putImageData.bind(client.ctx);
-      client.ctx.putImageData=(...args)=>{
+      const paint=client.ctx.drawImage.bind(client.ctx);
+      client.ctx.drawImage=(...args)=>{
         window.metricsResetTrace.resetBoundary={decode_samples_before:client.metrics.decodeMs.length,at_page_ms:performance.now()};
         client.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
-        client.ctx.putImageData=paint;
+        client.ctx.drawImage=paint;
         return paint(...args);
       };
     }
@@ -53,7 +53,7 @@ test('resetting counters between real decode and paint preserves a multi-frame s
     t.after(()=>rm(directory,{recursive:true,force:true}));
     const temporary=join(directory,'report.json');
     const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
-    const decoder=Buffer.from(await(await fetch(`${server.url}/decoder.js`)).arrayBuffer());
+    const decoder=Buffer.from(await(await fetch(`${server.url}/video-decoder.js`)).arrayBuffer());
     const embeddedClient=Buffer.from(await(await fetch(`${server.url}/client.js`)).arrayBuffer());
     await writeFile(temporary,JSON.stringify({kind:'live-benchmark-metrics-reset-regression',created_at:new Date().toISOString(),
       browser:browser.version(),browser_args:CPU_BROWSER_ARGS,network_profile:PROFILES.wan,
