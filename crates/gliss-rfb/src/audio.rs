@@ -26,13 +26,19 @@ pub enum Event {
     Data { bytes: Arc<[u8]>, received: Instant },
 }
 
+/// Selects the only format this crate captures. Sending it again changes nothing.
+pub(crate) fn format() -> Vec<u8> {
+    // QEMU format 3 = signed 16-bit little endian, stereo, 48 kHz.
+    let mut bytes = vec![255, 1, 0, 2, 3, CHANNELS];
+    bytes.extend_from_slice(&SAMPLE_RATE.to_be_bytes());
+    bytes
+}
+
 pub(crate) fn control(enabled: bool) -> Vec<u8> {
     if !enabled {
         return vec![255, 1, 0, 1];
     }
-    // QEMU format 3 = signed 16-bit little endian, stereo, 48 kHz.
-    let mut bytes = vec![255, 1, 0, 2, 3, CHANNELS];
-    bytes.extend_from_slice(&SAMPLE_RATE.to_be_bytes());
+    let mut bytes = format();
     bytes.extend_from_slice(&[255, 1, 0, 0]);
     bytes
 }

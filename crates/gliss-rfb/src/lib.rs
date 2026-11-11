@@ -35,8 +35,66 @@ use tokio::{
     time::timeout,
 };
 
-const PIXEL_FORMAT: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0];
+/// Red in the low byte: the byte order of a canonical frame.
+const RGBX: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0];
+/// Blue in the low byte: what QEMU and most little-endian servers store.
+const BGRX: [u8; 16] = [32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0];
+
+/// Byte order of pixels on the wire.
+///
+/// A server asked for anything but its own format converts every pixel it
+/// sends. QEMU does that one pixel at a time, which costs tens of milliseconds
+/// for a full 1920x1080 update and stalls its update worker. Taking the
+/// server's format and swapping two bytes here is far cheaper, so a server
+/// that stores BGRX is asked for BGRX. Every other server is asked for RGBX.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Layout {
+    Rgbx,
+    Bgrx,
+}
+
+impl Layout {
+    /// The 13 meaningful bytes of a PIXEL_FORMAT; the rest is padding.
+    fn of_server(native: &[u8; 16]) -> Self {
+        if native[..13] == BGRX[..13] {
+            Self::Bgrx
+        } else {
+            Self::Rgbx
+        }
+    }
+
+    fn pixel_format(self) -> &'static [u8; 16] {
+        match self {
+            Self::Rgbx => &RGBX,
+            Self::Bgrx => &BGRX,
+        }
+    }
+
+    /// Rewrite wire pixels as opaque RGBA in place.
+    fn to_rgba(self, pixels: &mut [u8]) {
+        let pixels = pixels.as_chunks_mut::<4>().0;
+        match self {
+            Self::Rgbx => {
+                for pixel in pixels {
+                    pixel[3] = 255;
+                }
+            }
+            Self::Bgrx => {
+                for pixel in pixels {
+                    let bgrx = u32::from_le_bytes(*pixel);
+                    let rgba = (bgrx & 0x0000_ff00)
+                        | ((bgrx >> 16) & 0xff)
+                        | ((bgrx & 0xff) << 16)
+                        | 0xff00_0000;
+                    *pixel = rgba.to_le_bytes();
+                }
+            }
+        }
+    }
+}
 const ENCODINGS: [i32; 7] = [0, 1, -239, -223, -308, clipboard::ENCODING, audio::ENCODING];
+/// Most bytes of a full-width Raw rectangle taken by one read.
+const RAW_READ_BYTES: usize = 256 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -171,10 +229,10 @@ async fn connect_inner(
         .await
         .context("connect to RFB server")?;
     stream.set_nodelay(true)?;
-    let (frame, info) = handshake(&mut stream, password).await?;
+    let (frame, info, layout) = handshake(&mut stream, password).await?;
     // Preserve TCP's existing owned split: no generic split mutex in this path.
     let (read, write) = stream.into_split();
-    start_tasks_traced(read, write, frame, info, trace)
+    start_tasks_with(read, write, frame, info, trace, layout)
 }
 
 #[cfg(unix)]
@@ -183,12 +241,12 @@ async fn connect_unix_inner(
     password: Option<&str>,
     trace: trace::Sink,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    let (frame, info) = handshake(&mut stream, password).await?;
+    let (frame, info, layout) = handshake(&mut stream, password).await?;
     let (read, write) = stream.into_split();
-    start_tasks_traced(read, write, frame, info, trace)
+    start_tasks_with(read, write, frame, info, trace, layout)
 }
 
-async fn handshake<S>(stream: &mut S, password: Option<&str>) -> Result<(Frame, ServerInfo)>
+async fn handshake<S>(stream: &mut S, password: Option<&str>) -> Result<(Frame, ServerInfo, Layout)>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -231,8 +289,9 @@ where
         name,
         protocol_version: (3, minor),
     };
+    let layout = Layout::of_server(&native_format);
     let mut format = vec![0, 0, 0, 0];
-    format.extend_from_slice(&PIXEL_FORMAT);
+    format.extend_from_slice(layout.pixel_format());
     stream.write_all(&format).await?;
     let mut encodings = vec![2, 0];
     encodings.extend_from_slice(&(ENCODINGS.len() as u16).to_be_bytes());
@@ -240,7 +299,7 @@ where
         encodings.extend_from_slice(&encoding.to_be_bytes());
     }
     stream.write_all(&encodings).await?;
-    Ok((frame, info))
+    Ok((frame, info, layout))
 }
 
 #[cfg(test)]
@@ -258,12 +317,28 @@ where
         .expect("disabled trace does not reject actor admission")
 }
 
+#[cfg(test)]
 fn start_tasks_traced<R, W>(
     read: R,
     write: W,
     frame: Frame,
     info: ServerInfo,
     trace: trace::Sink,
+) -> Result<(RfbReader, RfbWriter, ServerInfo)>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
+    start_tasks_with(read, write, frame, info, trace, Layout::Rgbx)
+}
+
+fn start_tasks_with<R, W>(
+    read: R,
+    write: W,
+    frame: Frame,
+    info: ServerInfo,
+    trace: trace::Sink,
+    pixel_layout: Layout,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -296,7 +371,10 @@ where
             // stream for the terminal drain of that exact same owned half.
             let decode = decode(
                 &mut read,
-                frame,
+                Surface {
+                    frame,
+                    pixels: pixel_layout,
+                },
                 read_layout,
                 &read_commands,
                 &event_tx,
@@ -488,6 +566,21 @@ impl RfbWriter {
             "RFB server has not confirmed audio support"
         );
         self.send(WriteMessage::Bytes(audio::control(enabled)), None, false)
+            .await
+    }
+
+    /// Ask QEMU to look for display changes at its base rate again.
+    ///
+    /// QEMU resets its VNC refresh timer for every client message except
+    /// update requests and the two setup messages. Repeating the audio format
+    /// is the one such message that changes no guest or session state. It
+    /// needs the audio extension, so servers without it are left alone.
+    pub async fn hold_refresh(&mut self) -> Result<()> {
+        ensure!(
+            *self.audio_available.borrow(),
+            "RFB server has not confirmed audio support"
+        );
+        self.send(WriteMessage::Bytes(audio::format()), None, false)
             .await
     }
 
@@ -707,15 +800,25 @@ fn dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
+/// The framebuffer a connection decodes into and the byte order it arrives in.
+struct Surface {
+    frame: Frame,
+    pixels: Layout,
+}
+
 async fn decode<R: AsyncRead + Unpin>(
     mut read: R,
-    mut frame: Frame,
+    surface: Surface,
     layout: Arc<Mutex<Option<Screen>>>,
     commands: &mpsc::Sender<WriteCommand>,
     events: &mpsc::Sender<Result<Event>>,
     trace: &trace::Sink,
     audio: &audio::Sink,
 ) -> Result<()> {
+    let Surface {
+        mut frame,
+        pixels: pixel_layout,
+    } = surface;
     let mut update_ordinal = 0u64;
     loop {
         let message = read.read_u8().await.context("read RFB message")?;
@@ -764,12 +867,25 @@ async fn decode<R: AsyncRead + Unpin>(
                                 bounds(&frame, x, y, width, height)?;
                                 let stride = usize::from(frame.width) * 4;
                                 let row_bytes = usize::from(width) * 4;
-                                for row in usize::from(y)..usize::from(y) + usize::from(height) {
-                                    let start = row * stride + usize::from(x) * 4;
-                                    let pixels = &mut frame.pixels[start..start + row_bytes];
-                                    read.read_exact(pixels).await?;
-                                    for pixel in pixels.as_chunks_mut::<4>().0 {
-                                        pixel[3] = 255;
+                                if row_bytes == stride {
+                                    // Full-width rows are contiguous in the frame. Read
+                                    // several per call, in pieces that stay in cache for
+                                    // the conversion that follows.
+                                    let start = usize::from(y) * stride;
+                                    let rows = &mut frame.pixels
+                                        [start..start + usize::from(height) * stride];
+                                    let piece = (RAW_READ_BYTES / stride).max(1) * stride;
+                                    for pixels in rows.chunks_mut(piece) {
+                                        read.read_exact(pixels).await?;
+                                        pixel_layout.to_rgba(pixels);
+                                    }
+                                } else {
+                                    for row in usize::from(y)..usize::from(y) + usize::from(height)
+                                    {
+                                        let start = row * stride + usize::from(x) * 4;
+                                        let pixels = &mut frame.pixels[start..start + row_bytes];
+                                        read.read_exact(pixels).await?;
+                                        pixel_layout.to_rgba(pixels);
                                     }
                                 }
                             }
@@ -810,6 +926,7 @@ async fn decode<R: AsyncRead + Unpin>(
                                 );
                                 let mut pixels = vec![0; count * 4];
                                 read.read_exact(&mut pixels).await?;
+                                pixel_layout.to_rgba(&mut pixels);
                                 let mask_stride = usize::from(width).div_ceil(8);
                                 let mut mask = vec![0; mask_stride * usize::from(height)];
                                 read.read_exact(&mut mask).await?;
