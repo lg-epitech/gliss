@@ -1291,3 +1291,33 @@ async fn a_cursor_above_128_pixels_a_side_is_read_off_the_wire_and_not_reported(
     assert_eq!(cursors, [(128, 128, 128 * 128 * 4)]);
     assert_eq!(gliss_rfb::MAX_CURSOR_SIDE, 128);
 }
+
+#[tokio::test]
+async fn a_latin1_clipboard_over_the_limit_as_utf8_is_dropped_and_the_connection_continues() {
+    let clipboard = |length: usize| {
+        let mut bytes = vec![3, 0, 0, 0];
+        bytes.extend_from_slice(&(length as u32).to_be_bytes());
+        // Every byte above 0x7f takes two bytes as UTF-8.
+        bytes.resize(bytes.len() + length, 0xe9);
+        bytes
+    };
+    let half = gliss_core::MAX_CLIPBOARD / 2;
+    let mut script = clipboard(gliss_core::MAX_CLIPBOARD);
+    script.extend(clipboard(half + 1));
+    script.extend(clipboard(half));
+    script.push(2);
+    let (mut reader, _writer) = scripted(2, 1, script).await;
+    let mut lengths = Vec::new();
+    loop {
+        match timeout(Duration::from_secs(20), reader.read_event())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            Event::Clipboard(text) => lengths.push(text.len()),
+            Event::Bell => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(lengths, [gliss_core::MAX_CLIPBOARD]);
+}

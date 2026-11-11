@@ -163,6 +163,17 @@ impl Clipboard {
     }
 }
 
+/// Text of a base-protocol clipboard message, which is Latin-1.
+///
+/// A byte above 0x7f takes two bytes as UTF-8, so text within the limit on
+/// the wire can be up to twice the limit once converted. Such text is dropped:
+/// the limit is what the browser side was promised, and an oversized copy in
+/// the guest is not a protocol error.
+pub fn latin1_text(bytes: &[u8]) -> Option<String> {
+    let converted = bytes.len() + bytes.iter().filter(|byte| **byte > 0x7f).count();
+    (converted <= MAX_CLIPBOARD).then(|| bytes.iter().copied().map(char::from).collect())
+}
+
 fn message(flags: u32, data: &[u8]) -> Vec<u8> {
     let mut bytes = vec![6, 0, 0, 0];
     bytes.extend_from_slice(&(-((4 + data.len()) as i32)).to_be_bytes());
@@ -183,6 +194,26 @@ mod tests {
         let mut bytes = (PROVIDE | TEXT).to_be_bytes().to_vec();
         bytes.extend_from_slice(&encoder.finish().unwrap());
         bytes
+    }
+
+    #[test]
+    fn latin1_text_is_limited_by_its_utf8_length() {
+        assert_eq!(latin1_text(b"caf\xe9\n").as_deref(), Some("caf\u{e9}\n"));
+        assert_eq!(latin1_text(b"").as_deref(), Some(""));
+        let ascii = vec![b'a'; MAX_CLIPBOARD];
+        assert_eq!(
+            latin1_text(&ascii).map(|text| text.len()),
+            Some(MAX_CLIPBOARD)
+        );
+        // One accented letter makes the same number of wire bytes one too many.
+        let mut accented = ascii;
+        accented[0] = 0xe9;
+        assert_eq!(latin1_text(&accented), None);
+        let half = vec![0xe9; MAX_CLIPBOARD / 2];
+        assert_eq!(
+            latin1_text(&half).map(|text| text.len()),
+            Some(MAX_CLIPBOARD)
+        );
     }
 
     #[test]
