@@ -147,12 +147,17 @@ async fn a_burst_of_guest_events_does_not_end_the_session_of_a_browser_that_is_n
     );
     // Once it reads again it gets the newest value of each kind, and at most
     // one older value that was already being written when it stopped. The
-    // cursor is written last; the answer to the ping shows the session is alive.
+    // answer to the ping shows the session is alive.
     viewer.say(json!({"type":"ping","id":7})).await;
     let (mut bells, mut clipboards, mut resizes, mut cursors) =
         (0, Vec::new(), Vec::new(), Vec::new());
     let mut answered = false;
-    while !answered || cursors.last() != Some(&250) {
+    while !(answered
+        && bells > 0
+        && clipboards.last().is_some_and(|text| text == "copy 250")
+        && resizes.last() == Some(&250)
+        && cursors.last() == Some(&250))
+    {
         let message = viewer.text().await;
         match message["type"].as_str().unwrap() {
             "bell" => bells += 1,

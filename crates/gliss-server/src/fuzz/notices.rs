@@ -9,7 +9,18 @@ use serde_json::{Value, json};
 use super::Notices;
 use crate::fuzz::support::{self, Rng};
 
-/// The newest unsent event of each kind, in the order they are sent.
+/// The kinds of event a session goes on after, by the `type` each is sent
+/// with, in the order they are sent when none has been sent before.
+const KINDS: [&str; 6] = [
+    "error",
+    "input_error",
+    "resize_result",
+    "bell",
+    "clipboard",
+    "cursor",
+];
+
+/// The newest unsent event of each kind, and when each kind was last sent.
 #[derive(Default)]
 struct Model {
     failure: Option<&'static str>,
@@ -19,34 +30,61 @@ struct Model {
     bell: bool,
     clipboard: Option<String>,
     cursor: Option<Cursor>,
+    /// For each of [`KINDS`], the number of the write that last sent it:
+    /// zero if none has.
+    sent: [u64; 6],
+    writes: u64,
 }
 
 impl Model {
+    /// Whether an event of each of [`KINDS`] waits.
+    fn waiting(&self) -> [bool; 6] {
+        [
+            self.display_error.is_some(),
+            self.input_error.is_some(),
+            self.resize_result.is_some(),
+            self.bell,
+            self.clipboard.is_some(),
+            self.cursor.is_some(),
+        ]
+    }
+
     /// The next event as JSON, and whether it is the last of the session.
     fn take(&mut self) -> Option<(Value, bool)> {
         if let Some(message) = self.failure.take() {
             return Some((json!({"type": "error", "message": message}), true));
         }
-        let event = if let Some(message) = self.display_error.take() {
-            json!({"type": "error", "message": message})
-        } else if let Some(message) = self.input_error.take() {
-            json!({"type": "input_error", "message": message})
-        } else if let Some((width, height, status)) = self.resize_result.take() {
-            json!({"type": "resize_result", "width": width, "height": height, "status": status})
-        } else if std::mem::take(&mut self.bell) {
-            json!({"type": "bell"})
-        } else if let Some(text) = self.clipboard.take() {
-            json!({"type": "clipboard", "text": text})
-        } else {
-            let cursor = self.cursor.take()?;
-            json!({
-                "type": "cursor",
-                "width": cursor.width,
-                "height": cursor.height,
-                "hotspot_x": cursor.hotspot_x,
-                "hotspot_y": cursor.hotspot_y,
-                "pixels": cursor.pixels,
-            })
+        // Of the kinds that wait, the one sent longest ago, and the first in
+        // the list of those never sent.
+        let waiting = self.waiting();
+        let kind = (0..KINDS.len())
+            .filter(|kind| waiting[*kind])
+            .min_by_key(|kind| self.sent[*kind])?;
+        self.writes += 1;
+        self.sent[kind] = self.writes;
+        let event = match KINDS[kind] {
+            "error" => json!({"type": "error", "message": self.display_error.take()}),
+            "input_error" => json!({"type": "input_error", "message": self.input_error.take()}),
+            "resize_result" => {
+                let (width, height, status) = self.resize_result.take().unwrap();
+                json!({"type": "resize_result", "width": width, "height": height, "status": status})
+            }
+            "bell" => {
+                self.bell = false;
+                json!({"type": "bell"})
+            }
+            "clipboard" => json!({"type": "clipboard", "text": self.clipboard.take()}),
+            _ => {
+                let cursor = self.cursor.take().unwrap();
+                json!({
+                    "type": "cursor",
+                    "width": cursor.width,
+                    "height": cursor.height,
+                    "hotspot_x": cursor.hotspot_x,
+                    "hotspot_y": cursor.hotspot_y,
+                    "pixels": cursor.pixels,
+                })
+            }
         };
         Some((event, false))
     }
@@ -113,6 +151,9 @@ fn fuzz_guest_events() {
         |rng, iteration| {
             let notices = Notices::default();
             let mut model = Model::default();
+            // For each kind, how often each other kind was sent while an
+            // event of the first has waited.
+            let mut overtaken = [[0u8; 6]; 6];
             if iteration % 128 == 0 {
                 // The clipboard limit itself, which random text rarely meets: a
                 // byte over it is not kept, and text at it is.
@@ -162,6 +203,7 @@ fn fuzz_guest_events() {
                         // The display fits again: an unsent error about it goes.
                         notices.display_resumed();
                         model.display_error = None;
+                        overtaken[0] = [0; 6];
                     }
                     9 if rng.chance(4) => {
                         let message = rng.pick(&FAILURES);
@@ -178,6 +220,21 @@ fn fuzz_guest_events() {
                                 serde_json::from_str(&sent.text).expect("an event is JSON");
                             assert_eq!(parsed, event);
                             assert_eq!(sent.last, last);
+                            let kind = KINDS.iter().position(|kind| parsed["type"] == *kind);
+                            if let (Some(kind), false) = (kind, last) {
+                                // No kind waits behind two events of another.
+                                overtaken[kind] = [0; 6];
+                                let waiting = model.waiting();
+                                for other in (0..KINDS.len()).filter(|other| waiting[*other]) {
+                                    overtaken[other][kind] += 1;
+                                    assert!(
+                                        overtaken[other][kind] <= 1,
+                                        "{} was sent twice while {} waited",
+                                        KINDS[kind],
+                                        KINDS[other]
+                                    );
+                                }
+                            }
                         }
                     }
                 }
