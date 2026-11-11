@@ -158,7 +158,12 @@ fn fuzz_guest_events() {
                         notices.display_error(message.clone());
                         model.display_error = Some(message);
                     }
-                    8 if rng.chance(4) => {
+                    8 if rng.chance(2) => {
+                        // The display fits again: an unsent error about it goes.
+                        notices.display_resumed();
+                        model.display_error = None;
+                    }
+                    9 if rng.chance(4) => {
                         let message = rng.pick(&FAILURES);
                         notices.failed(message);
                         model.failure = Some(message);
