@@ -18,8 +18,6 @@ const EAGER_SPACING: Duration = Duration::from_millis(25);
 pub enum Policy {
     /// Request on a fixed clock at the FPS cap.
     Tick,
-    /// Request when the previous update has arrived, at most once per FPS period.
-    Ready,
     /// Request when the previous update has arrived, at most once per 25 ms.
     /// A higher FPS cap shortens that to its period; a cap below 20 lengthens
     /// it to half its period, so capture stays within twice the cap. The FPS
@@ -33,7 +31,6 @@ impl Policy {
     pub fn spacing(self, period: Duration) -> Option<Duration> {
         match self {
             Self::Tick => None,
-            Self::Ready => Some(period),
             Self::Eager => Some(period.min(EAGER_SPACING.max(period / 2))),
         }
     }
