@@ -1,7 +1,6 @@
 [workspace]
-members = ["crates/gliss-core", "crates/gliss-rfb", "crates/gliss-codec", "crates/gliss-video", "crates/gliss-server", "crates/gliss-dbus", "crates/gliss-hybrid", "crates/gliss-hybrid-grid", "crates/gliss-hybrid-continuity", "crates/gliss-tiles"]
+members = ["crates/gliss-core", "crates/gliss-rfb", "crates/gliss-codec", "crates/gliss-video", "crates/gliss-server", "crates/gliss-dbus", "crates/gliss-hybrid", "crates/gliss-hybrid-grid", "crates/gliss-hybrid-continuity"]
 resolver = "2"
-exclude = ["test-support/rust/adaptive-tiles", "test-support/rust/independent-tiles"]
 
 [workspace.package]
 version = "0.1.0-alpha.9"

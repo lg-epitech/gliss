@@ -14,7 +14,6 @@ gliss-core.workspace = true
 gliss-rfb.workspace = true
 gliss-codec.workspace = true
 gliss-video.workspace = true
-gliss-tiles = { path = "../gliss-tiles" }
 flate2.workspace = true
 gliss-dbus.workspace = true
 gliss-hybrid.workspace = true
@@ -32,7 +31,6 @@ rand = "0.9"
 hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-wtransport = { version = "0.7.2", features = ["quinn"] }
 opus = "0.4.0"
 
 [dev-dependencies]

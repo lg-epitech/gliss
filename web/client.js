@@ -25,17 +25,7 @@ export class GlissClient {
   async connect() {
     this.disconnect(); this.decoder=new Decoder(); this.chain=Promise.resolve();
     let decoder=this.decoder;const epoch=++this.epoch;
-    let socket;
-    if(!this.url&&location.pathname==='/datagram'){
-      try{
-        const {openDatagramSocket}=await import('./tile-connect.js');
-        if(epoch!==this.epoch)return;
-        socket=await openDatagramSocket({isCurrent:()=>epoch===this.epoch,canvas:this.canvas,onPaint:batch=>this.recordTilePaint(batch,epoch)});
-        if(!socket)return;
-        if(epoch!==this.epoch){socket.close();return;}
-        this.tileMedia=socket.tileMedia??null;
-      }catch(error){if(epoch===this.epoch)this.onStatus(`Datagram connection failed: ${error.message}`);return;}
-    }else socket=new WebSocket(this.url??`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
+    const socket=new WebSocket(this.url??`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
     this.socket=socket; socket.binaryType='arraybuffer';
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
@@ -63,7 +53,7 @@ export class GlissClient {
         const message=textMessage;
         if(message.type==='hello'){
           this.codec=message.codec;
-          if(message.codec==='h264'){decoder=new VideoDecoderAdapter({timeoutMs:socket.predictiveVideo===true?250:5000,configureTimeoutMs:socket.predictiveVideo===true?250:null});this.decoder=decoder;}
+          if(message.codec==='h264'){decoder=new VideoDecoderAdapter();this.decoder=decoder;}
           else if(message.codec==='hybrid'){
             // Negotiate before loading optional media modules, leaving room for
             // the WebSocket on bounded HTTP/1 connection relays.
@@ -84,13 +74,12 @@ export class GlissClient {
       }
       const started=performance.now();let ownedVideoFrame=null;
       try {
-        socket.beginVideoDecode?.(event.data,decoder);
         const frame=await decoder.decode(event.data);
         ownedVideoFrame=frame.videoFrame??null;
         if(epoch!==this.epoch){return;}
         const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
-        if(!socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
+        if(this.canvas.width!==frame.width||this.canvas.height!==frame.height){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
         // Disconnect can release this wait while a hidden document suspends RAF.
         await new Promise(resolve=>{
           let cancel;
@@ -102,12 +91,6 @@ export class GlissClient {
         });
         if(epoch!==this.epoch){return;}
         const paintStarted=performance.now();
-        if(socket.completeVideoDecode && !socket.completeVideoDecode(frame.sequence,true)){
-          return;
-        }
-        // Admission can synchronously close the transport while pumping recovery.
-        if(epoch!==this.epoch)return;
-        if(socket.completeVideoDecode&&(this.canvas.width!==frame.width||this.canvas.height!==frame.height)){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
         if(frame.videoFrame)this.ctx.drawImage(frame.videoFrame,0,0);
         else if(this.renderStrategy==='damage'&&!this.needsFullPaint&&frame.damage!==undefined){
           const area=frame.damage;
@@ -143,18 +126,6 @@ export class GlissClient {
       }finally{ownedVideoFrame?.close();}
     }).catch(error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}});};
   }
-  recordTilePaint(batch,epoch){
-    if(epoch!==this.epoch)return;
-    const presented=batch.presented;this.presentationState={codec:this.codec,epoch:batch.epoch,width:batch.width,height:batch.height,presentedAtMs:presented,wholeFrame:false,tiles:batch.tiles};this.metrics.frames++;this.metrics.bytes=this.socket?.transportStats?.mediaBytes??this.metrics.bytes;
-    this.metrics.decodeMs.push(batch.decodeMs);this.metrics.presentTimes.push(presented);(this.metrics.paintMs??=[]).push(batch.paintMs);
-    this.metrics.tileMedia={...this.tileMedia?.painter.snapshot(),unit:'Actual partial Canvas paint batches; not full-frame FPS.',epoch:batch.epoch};
-    const echo=this.pixelInputs.size?this.readProbe():null,pixelTime=this.pixelInputs.get(echo);
-    if(pixelTime!==undefined){this.metrics.pixelEchoLatencyMs.push(presented-pixelTime);this.metrics.pixelEchoEvents.push({id:echo,latencyMs:presented-pixelTime,presentedAtMs:presented});this.pixelInputs.delete(echo);}
-    for(const array of[this.metrics.decodeMs,this.metrics.presentTimes,this.metrics.paintMs,this.metrics.pixelEchoLatencyMs,this.metrics.pixelEchoEvents])if(array.length>10000)array.splice(0,array.length-10000);
-    // Tile headers have no input ID. Forwarded-input age stays unassociated;
-    // input-response measurement uses the actual painted probe pixels.
-    this.onEvent({type:'frame',frame:{width:batch.width,height:batch.height,epoch:batch.epoch,partial:true,tiles:batch.tiles,bytes:batch.bytes},decodeMs:batch.decodeMs});
-  }
   send(input,{pixelEcho=false}={}) {
     if(this.socket?.readyState!==WebSocket.OPEN)return 0;
     const id=this.inputId=(this.inputId+1)>>>0;
@@ -181,7 +152,6 @@ export class GlissClient {
     if(this.profiler||this.profilingStart)throw new Error('A profile is already recording');
     const socket=this.socket,epoch=this.epoch;
     if(socket?.readyState!==WebSocket.OPEN||!this.codec)throw new Error('Connect the desktop before profiling');
-    if(socket.transportStats||this.tileMedia)throw new Error('Profiling currently supports WebSocket desktops');
     const token={};this.profilingStart=token;
     try{
       const {StreamProfiler}=await import('./profiling.js');

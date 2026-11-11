@@ -1,10 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {GlissClient} from '../web/client.js';
-import {PredictiveDatagramSocket} from '../web/predictive-datagram.js';
-import {PredictiveReceiver} from '../web/predictive-state.js';
 
-function fixture({resizeThrows=false,scheduleThrows=false,drawThrows=false,predictive=false}={}) {
+function fixture({resizeThrows=false,scheduleThrows=false,drawThrows=false}={}) {
   const names=['window','document','location','WebSocket','requestAnimationFrame','cancelAnimationFrame'];
   const previous=new Map(names.map(name=>[name,Object.getOwnPropertyDescriptor(globalThis,name)]));
   const callbacks=new Map(),draws=[],statuses=[],operations=[];
@@ -12,7 +10,7 @@ function fixture({resizeThrows=false,scheduleThrows=false,drawThrows=false,predi
   const target={addEventListener(){}};
   class Socket extends EventTarget {
     static OPEN=1;
-    constructor(){super();this.readyState=1;this.sent=[];this.predictiveVideo=predictive;}
+    constructor(){super();this.readyState=1;this.sent=[];}
     send(data){const message=JSON.parse(data);this.sent.push(message);if(message.type==='ack')operations.push('ack');}
     close(){this.readyState=3;}
   }
@@ -34,7 +32,6 @@ function fixture({resizeThrows=false,scheduleThrows=false,drawThrows=false,predi
     async connect(){
       await app.connect();
       app.socket.onmessage({data:JSON.stringify({type:'hello',codec:'h264'})});await app.chain;
-      if(predictive){app.socket.beginVideoDecode=()=>{};app.socket.completeVideoDecode=()=>true;}
     },
     submit(sequence=1,{buffer=new ArrayBuffer(24),width=64,height=48,keyframe=true}={}){
       let closes=0;
@@ -54,13 +51,6 @@ function fixture({resizeThrows=false,scheduleThrows=false,drawThrows=false,predi
 }
 const ready=()=>new Promise(setImmediate);
 const acks=socket=>socket.sent.filter(message=>message.type==='ack');
-
-function packet(sequence,keyframe){
-  const nal=keyframe?[0,0,1,103,66,0,30,128,0,0,1,104,128,0,0,1,101,128]:[0,0,1,65,128];
-  const raw=new Uint8Array(24+nal.length),view=new DataView(raw.buffer);raw.set([71,76,86,49]);
-  view.setUint32(4,sequence,true);view.setUint16(12,32,true);view.setUint16(14,32,true);
-  view.setUint16(18,+keyframe,true);view.setUint32(20,nal.length,true);raw.set(nal,24);return raw.buffer;
-}
 
 test('successful presentation closes its frame before acknowledging it',{timeout:3000},async()=>{
   const f=fixture();try{
@@ -100,39 +90,6 @@ for(const failure of ['resize','schedule','draw'])test(`${failure} failure relea
     assert.equal(output.closes,1);assert.deepEqual(acks(output.socket),[]);
     assert.equal(f.app.metrics.errors,1);assert.ok(f.statuses.some(status=>status.includes(`${failure} failed`)));
     assert.deepEqual(f.operations,['close','recovery'],'recovery callbacks must observe a released frame');
-  }finally{await f.cleanup();}
-});
-
-test('predictive admission failure releases the decoded output',{timeout:3000},async()=>{
-  const f=fixture({predictive:true});try{
-    await f.connect();const output=f.submit();await ready();
-    f.app.socket.completeVideoDecode=()=>{throw new Error('admission failed');};
-    f.flush();await output.done;
-    assert.equal(output.closes,1);assert.deepEqual(f.draws,[]);assert.deepEqual(acks(output.socket),[]);
-    assert.equal(f.app.metrics.errors,1);
-  }finally{await f.cleanup();}
-});
-
-test('real predictive recovery can close inside a successful admission',{timeout:3000},async()=>{
-  const f=fixture({predictive:true});try{
-    await f.connect();const receiver=new PredictiveReceiver(),now=performance.now()-12;
-    receiver.offerAccessUnit(packet(1,true),now);const first=receiver.next(now);receiver.complete(first.token,true,now);
-    receiver.offerAccessUnit(packet(2,false),now);const selected=receiver.next(now);
-    receiver.offerAccessUnit(packet(4,false),now);
-    // Omit constructor IO; use the real admission, gap recovery and close methods.
-    const transport=f.app.socket;
-    delete transport.beginVideoDecode;delete transport.completeVideoDecode;
-    Object.setPrototypeOf(transport,PredictiveDatagramSocket.prototype);
-    Object.assign(transport,{receiver,selected,closedOnce:false,hello:true,delivering:true,
-      queuedControls:32,queuedControlBytes:0,writes:Promise.resolve(),expiryTimer:null,assembler:{close(){}},
-      transportStats:{presented:0,decodedOutputSuppressed:0,recoveryEnqueued:0,recoveryWriteCompleted:0}});
-    const send=transport.send.bind(transport);
-    transport.send=data=>{transport.sent.push(JSON.parse(data));return send(data);};
-    const output=f.submit(2,{buffer:selected.buffer,width:32,height:32,keyframe:false});await ready();
-    f.flush();await output.done;
-    assert.equal(transport.closedOnce,true);assert.equal(output.closes,1);
-    assert.deepEqual(f.draws,[]);assert.deepEqual(acks(output.socket),[]);
-    assert.equal(f.app.metrics.frames,0);assert.equal(f.app.metrics.errors,0);
   }finally{await f.cleanup();}
 });
 

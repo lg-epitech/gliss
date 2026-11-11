@@ -193,9 +193,8 @@ pub async fn update_capture(
     request: Request,
     enabled: &mut bool,
     status: &watch::Sender<Status>,
-    allowed: bool,
 ) {
-    let available = allowed && *writer.audio_available().borrow();
+    let available = *writer.audio_available().borrow();
     let desired = available && request.codec.is_some();
     let mut message = None;
     if desired != *enabled {

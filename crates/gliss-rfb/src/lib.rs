@@ -6,9 +6,6 @@
 pub mod audio;
 mod clipboard;
 mod teardown;
-pub mod trace;
-#[cfg(test)]
-mod trace_tests;
 pub use teardown::{
     DRAIN_SCRATCH_BYTES, DrainReport, DrainTermination, MAX_DRAIN_BYTES, MAX_DRAIN_DURATION,
     ReaderDrainControl,
@@ -135,8 +132,6 @@ pub struct RfbReader {
     audio: broadcast::Sender<audio::Event>,
     task: JoinHandle<()>,
     drain: ReaderDrainControl,
-    trace: trace::Sink,
-    traced_updates_read: u64,
 }
 
 /// Messages are serialized by an owned task, even if the caller cancels its wait.
@@ -145,8 +140,6 @@ pub struct RfbWriter {
     audio_available: watch::Receiver<bool>,
     task: JoinHandle<()>,
     layout: Arc<Mutex<Option<Screen>>>,
-    trace: trace::Sink,
-    traced_commands: u64,
 }
 
 enum WriteMessage {
@@ -158,9 +151,6 @@ enum WriteMessage {
 struct WriteCommand {
     message: WriteMessage,
     completed: oneshot::Sender<Result<Option<String>>>,
-    ordinal: u64,
-    input_id: Option<u32>,
-    capture_request: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -175,15 +165,7 @@ pub async fn connect(
     address: &str,
     password: Option<&str>,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    connect_traced(address, password, None).await
-}
-
-pub async fn connect_traced(
-    address: &str,
-    password: Option<&str>,
-    trace: trace::Sink,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    timeout(HANDSHAKE_TIMEOUT, connect_inner(address, password, trace))
+    timeout(HANDSHAKE_TIMEOUT, connect_inner(address, password))
         .await
         .context("RFB connection/handshake timed out")?
 }
@@ -203,27 +185,14 @@ pub async fn connect_unix(
     stream: UnixStream,
     password: Option<&str>,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    connect_unix_traced(stream, password, None).await
-}
-
-#[cfg(unix)]
-pub async fn connect_unix_traced(
-    stream: UnixStream,
-    password: Option<&str>,
-    trace: trace::Sink,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
-    timeout(
-        HANDSHAKE_TIMEOUT,
-        connect_unix_inner(stream, password, trace),
-    )
-    .await
-    .context("RFB established Unix handshake timed out")?
+    timeout(HANDSHAKE_TIMEOUT, connect_unix_inner(stream, password))
+        .await
+        .context("RFB established Unix handshake timed out")?
 }
 
 async fn connect_inner(
     address: &str,
     password: Option<&str>,
-    trace: trace::Sink,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
     let mut stream = TcpStream::connect(address)
         .await
@@ -232,18 +201,17 @@ async fn connect_inner(
     let (frame, info, layout) = handshake(&mut stream, password).await?;
     // Preserve TCP's existing owned split: no generic split mutex in this path.
     let (read, write) = stream.into_split();
-    start_tasks_with(read, write, frame, info, trace, layout)
+    Ok(start_tasks(read, write, frame, info, layout))
 }
 
 #[cfg(unix)]
 async fn connect_unix_inner(
     mut stream: UnixStream,
     password: Option<&str>,
-    trace: trace::Sink,
 ) -> Result<(RfbReader, RfbWriter, ServerInfo)> {
     let (frame, info, layout) = handshake(&mut stream, password).await?;
     let (read, write) = stream.into_split();
-    start_tasks_with(read, write, frame, info, trace, layout)
+    Ok(start_tasks(read, write, frame, info, layout))
 }
 
 async fn handshake<S>(stream: &mut S, password: Option<&str>) -> Result<(Frame, ServerInfo, Layout)>
@@ -302,44 +270,13 @@ where
     Ok((frame, info, layout))
 }
 
-#[cfg(test)]
 fn start_tasks<R, W>(
     read: R,
     write: W,
     frame: Frame,
     info: ServerInfo,
-) -> (RfbReader, RfbWriter, ServerInfo)
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static,
-{
-    start_tasks_traced(read, write, frame, info, None)
-        .expect("disabled trace does not reject actor admission")
-}
-
-#[cfg(test)]
-fn start_tasks_traced<R, W>(
-    read: R,
-    write: W,
-    frame: Frame,
-    info: ServerInfo,
-    trace: trace::Sink,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)>
-where
-    R: AsyncRead + Unpin + Send + 'static,
-    W: AsyncWrite + Unpin + Send + 'static,
-{
-    start_tasks_with(read, write, frame, info, trace, Layout::Rgbx)
-}
-
-fn start_tasks_with<R, W>(
-    read: R,
-    write: W,
-    frame: Frame,
-    info: ServerInfo,
-    trace: trace::Sink,
     pixel_layout: Layout,
-) -> Result<(RfbReader, RfbWriter, ServerInfo)>
+) -> (RfbReader, RfbWriter, ServerInfo)
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin + Send + 'static,
@@ -356,11 +293,7 @@ where
     };
     let read_layout = layout.clone();
     let (drain_tx, mut drain_rx) = mpsc::channel::<teardown::DrainRequest>(1);
-    let read_trace = trace.clone();
-    let read_actor = trace::Actor::new(trace.clone())?;
-    let write_actor = trace::Actor::new(trace.clone())?;
     let read_task = tokio::spawn(async move {
-        let _trace_actor = read_actor;
         let mut read = read;
         enum Outcome {
             Decoded(Result<()>),
@@ -378,7 +311,6 @@ where
                 read_layout,
                 &read_commands,
                 &event_tx,
-                &read_trace,
                 &reader_audio,
             );
             tokio::pin!(decode);
@@ -404,31 +336,23 @@ where
         }
     });
     let drain = ReaderDrainControl::new(drain_tx, read_task.abort_handle());
-    let write_trace = trace.clone();
     let clipboard = clipboard::Clipboard::new(&info.name);
-    let write_task = tokio::spawn(async move {
-        let _trace_actor = write_actor;
-        write_messages(write, clipboard, command_rx, write_trace).await;
-    });
-    Ok((
+    let write_task = tokio::spawn(write_messages(write, clipboard, command_rx));
+    (
         RfbReader {
             events,
             audio,
             task: read_task,
             drain,
-            trace: trace.clone(),
-            traced_updates_read: 0,
         },
         RfbWriter {
             commands,
             audio_available,
             task: write_task,
             layout,
-            trace,
-            traced_commands: 0,
         },
         info,
-    ))
+    )
 }
 
 async fn read_text<R: AsyncRead + Unpin>(stream: &mut R, max: usize) -> Result<String> {
@@ -519,26 +443,7 @@ impl RfbReader {
     }
 
     pub async fn read_event(&mut self) -> Result<Event> {
-        let value = self.events.recv().await.context("RFB reader closed")?;
-        if self.trace.is_some() && matches!(&value, Ok(Event::Frame(_))) {
-            self.traced_updates_read = self
-                .traced_updates_read
-                .checked_add(1)
-                .context("trace update ordinal exhausted")?;
-            trace::emit(
-                &self.trace,
-                trace::Kind::EventDequeued,
-                self.traced_updates_read,
-                None,
-                1,
-                trace::Outcome::Observed,
-            );
-        }
-        value
-    }
-
-    pub fn traced_update_ordinal(&self) -> Option<u64> {
-        self.trace.as_ref().map(|_| self.traced_updates_read)
+        self.events.recv().await.context("RFB reader closed")?
     }
 }
 
@@ -565,7 +470,7 @@ impl RfbWriter {
             *self.audio_available.borrow(),
             "RFB server has not confirmed audio support"
         );
-        self.send(WriteMessage::Bytes(audio::control(enabled)), None, false)
+        self.send(WriteMessage::Bytes(audio::control(enabled)))
             .await
     }
 
@@ -580,8 +485,7 @@ impl RfbWriter {
             *self.audio_available.borrow(),
             "RFB server has not confirmed audio support"
         );
-        self.send(WriteMessage::Bytes(audio::format()), None, false)
-            .await
+        self.send(WriteMessage::Bytes(audio::format())).await
     }
 
     pub fn supports_resize(&self) -> bool {
@@ -598,7 +502,7 @@ impl RfbWriter {
         let mut bytes = vec![3, u8::from(incremental), 0, 0, 0, 0];
         bytes.extend_from_slice(&width.to_be_bytes());
         bytes.extend_from_slice(&height.to_be_bytes());
-        self.send(WriteMessage::Bytes(bytes), None, true).await
+        self.send(WriteMessage::Bytes(bytes)).await
     }
 
     /// Clipboard text uses UTF-8 when negotiated, otherwise the base Latin-1 format.
@@ -620,13 +524,7 @@ impl RfbWriter {
                     text.len() <= MAX_CLIPBOARD,
                     "clipboard exceeds {MAX_CLIPBOARD} bytes"
                 );
-                return self
-                    .send(
-                        WriteMessage::ClipboardInput(text.clone()),
-                        Some(input.id()),
-                        false,
-                    )
-                    .await;
+                return self.send(WriteMessage::ClipboardInput(text.clone())).await;
             }
             Input::Resize { width, height, .. } => {
                 dimensions(*width, *height)?;
@@ -647,63 +545,15 @@ impl RfbWriter {
                 bytes
             }
         };
-        self.send(WriteMessage::Bytes(bytes), Some(input.id()), false)
-            .await
+        self.send(WriteMessage::Bytes(bytes)).await
     }
 
-    async fn send(
-        &mut self,
-        message: WriteMessage,
-        input_id: Option<u32>,
-        capture_request: bool,
-    ) -> Result<()> {
+    async fn send(&mut self, message: WriteMessage) -> Result<()> {
         let (completed, result) = oneshot::channel();
-        let ordinal = if self.trace.is_some() {
-            self.traced_commands = self
-                .traced_commands
-                .checked_add(1)
-                .context("trace command ordinal exhausted")?;
-            self.traced_commands
-        } else {
-            0
-        };
-        if let Some(trace) = &self.trace {
-            trace.record(trace::Record {
-                kind: trace::Kind::CommandQueued,
-                ordinal,
-                input_id,
-                count: 0,
-                outcome: trace::Outcome::Observed,
-                capture_request,
-            });
-        }
-        let terminal = trace::Terminal::new(
-            &self.trace,
-            trace::Record {
-                kind: trace::Kind::CommandQueued,
-                ordinal,
-                input_id,
-                count: 0,
-                outcome: trace::Outcome::Canceled,
-                capture_request,
-            },
-        );
-        let sent = self
-            .commands
-            .send(WriteCommand {
-                message,
-                completed,
-                ordinal,
-                input_id,
-                capture_request,
-            })
-            .await;
-        terminal.finish(if sent.is_ok() {
-            trace::Outcome::Accepted
-        } else {
-            trace::Outcome::Rejected
-        });
-        sent.context("RFB writer closed")?;
+        self.commands
+            .send(WriteCommand { message, completed })
+            .await
+            .context("RFB writer closed")?;
         result.await.context("RFB writer closed")?.map(|_| ())
     }
 }
@@ -712,36 +562,8 @@ async fn write_messages<W: AsyncWrite + Unpin>(
     mut write: W,
     mut clipboard: clipboard::Clipboard,
     mut commands: mpsc::Receiver<WriteCommand>,
-    trace: trace::Sink,
 ) {
     while let Some(command) = commands.recv().await {
-        // Ordinal zero is reserved for internal clipboard protocol replies.
-        let trace = if command.ordinal == 0 {
-            None
-        } else {
-            trace.clone()
-        };
-        if let Some(trace) = &trace {
-            trace.record(trace::Record {
-                kind: trace::Kind::WriteStarted,
-                ordinal: command.ordinal,
-                input_id: command.input_id,
-                count: 0,
-                outcome: trace::Outcome::Observed,
-                capture_request: command.capture_request,
-            });
-        }
-        let terminal = trace::Terminal::new(
-            &trace,
-            trace::Record {
-                kind: trace::Kind::WriteCompleted,
-                ordinal: command.ordinal,
-                input_id: command.input_id,
-                count: 0,
-                outcome: trace::Outcome::Canceled,
-                capture_request: command.capture_request,
-            },
-        );
         let mut failed = false;
         let result = async {
             // Clipboard negotiation, ownership and response selection share the
@@ -770,11 +592,6 @@ async fn write_messages<W: AsyncWrite + Unpin>(
             Ok(text)
         }
         .await;
-        terminal.finish(if result.is_err() {
-            trace::Outcome::Error
-        } else {
-            trace::Outcome::Accepted
-        });
         let _ = command.completed.send(result);
         if failed {
             break;
@@ -812,284 +629,191 @@ async fn decode<R: AsyncRead + Unpin>(
     layout: Arc<Mutex<Option<Screen>>>,
     commands: &mpsc::Sender<WriteCommand>,
     events: &mpsc::Sender<Result<Event>>,
-    trace: &trace::Sink,
     audio: &audio::Sink,
 ) -> Result<()> {
     let Surface {
         mut frame,
         pixels: pixel_layout,
     } = surface;
-    let mut update_ordinal = 0u64;
     loop {
         let message = read.read_u8().await.context("read RFB message")?;
         match message {
             0 => {
                 read.read_u8().await?;
                 let count = read.read_u16().await?;
-                if trace.is_some() {
-                    update_ordinal = update_ordinal
-                        .checked_add(1)
-                        .context("trace update ordinal exhausted")?;
-                }
-                trace::emit(
-                    trace,
-                    trace::Kind::UpdateHeader,
-                    update_ordinal,
-                    None,
-                    u32::from(count),
-                    trace::Outcome::Ambiguous,
-                );
-                let update_terminal = trace::Terminal::new(
-                    trace,
-                    trace::Record {
-                        kind: trace::Kind::UpdateDecoded,
-                        ordinal: update_ordinal,
-                        input_id: None,
-                        count: u32::from(count),
-                        outcome: trace::Outcome::Canceled,
-                        capture_request: false,
-                    },
-                );
-                let decoded = async {
-                    let mut changed = false;
-                    for rectangle_index in 0..count {
-                        let x = read.read_u16().await?;
-                        let y = read.read_u16().await?;
-                        let width = read.read_u16().await?;
-                        let height = read.read_u16().await?;
-                        let encoding = read.read_i32().await?;
-                        match encoding {
-                            audio::ENCODING => {
-                                audio.available.send_replace(true);
+                for rectangle_index in 0..count {
+                    let x = read.read_u16().await?;
+                    let y = read.read_u16().await?;
+                    let width = read.read_u16().await?;
+                    let height = read.read_u16().await?;
+                    let encoding = read.read_i32().await?;
+                    match encoding {
+                        audio::ENCODING => {
+                            audio.available.send_replace(true);
+                        }
+                        0 => {
+                            bounds(&frame, x, y, width, height)?;
+                            let stride = usize::from(frame.width) * 4;
+                            let row_bytes = usize::from(width) * 4;
+                            if row_bytes == stride {
+                                // Full-width rows are contiguous in the frame. Read
+                                // several per call, in pieces that stay in cache for
+                                // the conversion that follows.
+                                let start = usize::from(y) * stride;
+                                let rows =
+                                    &mut frame.pixels[start..start + usize::from(height) * stride];
+                                let piece = (RAW_READ_BYTES / stride).max(1) * stride;
+                                for pixels in rows.chunks_mut(piece) {
+                                    read.read_exact(pixels).await?;
+                                    pixel_layout.to_rgba(pixels);
+                                }
+                            } else {
+                                for row in usize::from(y)..usize::from(y) + usize::from(height) {
+                                    let start = row * stride + usize::from(x) * 4;
+                                    let pixels = &mut frame.pixels[start..start + row_bytes];
+                                    read.read_exact(pixels).await?;
+                                    pixel_layout.to_rgba(pixels);
+                                }
                             }
-                            0 => {
-                                changed |= width > 0 && height > 0;
-                                bounds(&frame, x, y, width, height)?;
-                                let stride = usize::from(frame.width) * 4;
-                                let row_bytes = usize::from(width) * 4;
-                                if row_bytes == stride {
-                                    // Full-width rows are contiguous in the frame. Read
-                                    // several per call, in pieces that stay in cache for
-                                    // the conversion that follows.
-                                    let start = usize::from(y) * stride;
-                                    let rows = &mut frame.pixels
-                                        [start..start + usize::from(height) * stride];
-                                    let piece = (RAW_READ_BYTES / stride).max(1) * stride;
-                                    for pixels in rows.chunks_mut(piece) {
-                                        read.read_exact(pixels).await?;
-                                        pixel_layout.to_rgba(pixels);
-                                    }
+                        }
+                        1 => {
+                            bounds(&frame, x, y, width, height)?;
+                            let source_x = read.read_u16().await?;
+                            let source_y = read.read_u16().await?;
+                            bounds(&frame, source_x, source_y, width, height)?;
+                            let stride = usize::from(frame.width) * 4;
+                            let row_bytes = usize::from(width) * 4;
+                            // Bottom-up copying handles vertical overlap; copy_within handles horizontal overlap.
+                            for index in 0..usize::from(height) {
+                                let row = if y > source_y {
+                                    usize::from(height) - 1 - index
                                 } else {
-                                    for row in usize::from(y)..usize::from(y) + usize::from(height)
-                                    {
-                                        let start = row * stride + usize::from(x) * 4;
-                                        let pixels = &mut frame.pixels[start..start + row_bytes];
-                                        read.read_exact(pixels).await?;
-                                        pixel_layout.to_rgba(pixels);
-                                    }
+                                    index
+                                };
+                                let source = (usize::from(source_y) + row) * stride
+                                    + usize::from(source_x) * 4;
+                                let destination =
+                                    (usize::from(y) + row) * stride + usize::from(x) * 4;
+                                frame
+                                    .pixels
+                                    .copy_within(source..source + row_bytes, destination);
+                            }
+                        }
+                        -239 => {
+                            let count = usize::from(width) * usize::from(height);
+                            ensure!(
+                                width <= 1024 && height <= 1024 && count <= MAX_CURSOR_PIXELS,
+                                "RFB cursor is too large"
+                            );
+                            ensure!(
+                                (width == 0 && height == 0)
+                                    || (width > 0 && height > 0 && x < width && y < height),
+                                "invalid RFB cursor hotspot or dimensions"
+                            );
+                            let mut pixels = vec![0; count * 4];
+                            read.read_exact(&mut pixels).await?;
+                            pixel_layout.to_rgba(&mut pixels);
+                            let mask_stride = usize::from(width).div_ceil(8);
+                            let mut mask = vec![0; mask_stride * usize::from(height)];
+                            read.read_exact(&mut mask).await?;
+                            for row in 0..usize::from(height) {
+                                for column in 0..usize::from(width) {
+                                    let opaque = mask[row * mask_stride + column / 8]
+                                        & (0x80 >> (column % 8))
+                                        != 0;
+                                    pixels[(row * usize::from(width) + column) * 4 + 3] =
+                                        if opaque { 255 } else { 0 };
                                 }
                             }
-                            1 => {
-                                changed |= width > 0 && height > 0;
-                                bounds(&frame, x, y, width, height)?;
-                                let source_x = read.read_u16().await?;
-                                let source_y = read.read_u16().await?;
-                                bounds(&frame, source_x, source_y, width, height)?;
-                                let stride = usize::from(frame.width) * 4;
-                                let row_bytes = usize::from(width) * 4;
-                                // Bottom-up copying handles vertical overlap; copy_within handles horizontal overlap.
-                                for index in 0..usize::from(height) {
-                                    let row = if y > source_y {
-                                        usize::from(height) - 1 - index
-                                    } else {
-                                        index
-                                    };
-                                    let source = (usize::from(source_y) + row) * stride
-                                        + usize::from(source_x) * 4;
-                                    let destination =
-                                        (usize::from(y) + row) * stride + usize::from(x) * 4;
-                                    frame
-                                        .pixels
-                                        .copy_within(source..source + row_bytes, destination);
-                                }
+                            events
+                                .send(Ok(Event::Cursor(Cursor {
+                                    width,
+                                    height,
+                                    hotspot_x: x,
+                                    hotspot_y: y,
+                                    pixels,
+                                })))
+                                .await
+                                .context("RFB receiver dropped")?;
+                        }
+                        -223 => {
+                            ensure!(
+                                rectangle_index + 1 == count,
+                                "RFB DesktopSize must be the final rectangle"
+                            );
+                            ensure!(x == 0 && y == 0, "invalid RFB DesktopSize origin");
+                            dimensions(width, height)?;
+                            if (width, height) != (frame.width, frame.height) {
+                                frame = Frame::new(width, height).context("invalid RFB resize")?;
                             }
-                            -239 => {
-                                let count = usize::from(width) * usize::from(height);
-                                ensure!(
-                                    width <= 1024 && height <= 1024 && count <= MAX_CURSOR_PIXELS,
-                                    "RFB cursor is too large"
-                                );
-                                ensure!(
-                                    (width == 0 && height == 0)
-                                        || (width > 0 && height > 0 && x < width && y < height),
-                                    "invalid RFB cursor hotspot or dimensions"
-                                );
-                                let mut pixels = vec![0; count * 4];
-                                read.read_exact(&mut pixels).await?;
-                                pixel_layout.to_rgba(&mut pixels);
-                                let mask_stride = usize::from(width).div_ceil(8);
-                                let mut mask = vec![0; mask_stride * usize::from(height)];
-                                read.read_exact(&mut mask).await?;
-                                for row in 0..usize::from(height) {
-                                    for column in 0..usize::from(width) {
-                                        let opaque = mask[row * mask_stride + column / 8]
-                                            & (0x80 >> (column % 8))
-                                            != 0;
-                                        pixels[(row * usize::from(width) + column) * 4 + 3] =
-                                            if opaque { 255 } else { 0 };
-                                    }
-                                }
-                                events
-                                    .send(Ok(Event::Cursor(Cursor {
-                                        width,
-                                        height,
-                                        hotspot_x: x,
-                                        hotspot_y: y,
-                                        pixels,
-                                    })))
-                                    .await
-                                    .context("RFB receiver dropped")?;
+                        }
+                        -308 => {
+                            let count = read.read_u8().await?;
+                            let mut padding = [0; 3];
+                            read.read_exact(&mut padding).await?;
+                            let mut screens = Vec::with_capacity(usize::from(count));
+                            for _ in 0..count {
+                                let id = read.read_u32().await?;
+                                let screen_x = read.read_u16().await?;
+                                let screen_y = read.read_u16().await?;
+                                let screen_width = read.read_u16().await?;
+                                let screen_height = read.read_u16().await?;
+                                let flags = read.read_u32().await?;
+                                screens.push((
+                                    Screen { id, flags },
+                                    screen_x,
+                                    screen_y,
+                                    screen_width,
+                                    screen_height,
+                                ));
                             }
-                            -223 => {
-                                ensure!(
-                                    rectangle_index + 1 == count,
-                                    "RFB DesktopSize must be the final rectangle"
-                                );
-                                ensure!(x == 0 && y == 0, "invalid RFB DesktopSize origin");
+                            // A rejected request has undefined dimensions and screen fields.
+                            if x != 1 || y == 0 {
                                 dimensions(width, height)?;
+                                ensure!(!screens.is_empty(), "RFB desktop layout has no screens");
+                                for (index, (screen, sx, sy, sw, sh)) in screens.iter().enumerate()
+                                {
+                                    ensure!(
+                                        *sw > 0
+                                            && *sh > 0
+                                            && u32::from(*sx) + u32::from(*sw) <= u32::from(width)
+                                            && u32::from(*sy) + u32::from(*sh) <= u32::from(height),
+                                        "RFB screen outside desktop layout"
+                                    );
+                                    ensure!(
+                                        !screens[..index]
+                                            .iter()
+                                            .any(|previous| previous.0.id == screen.id),
+                                        "duplicate RFB screen ID"
+                                    );
+                                }
+                                *layout
+                                    .lock()
+                                    .map_err(|_| anyhow::anyhow!("RFB layout lock poisoned"))? =
+                                    Some(screens[0].0);
                                 if (width, height) != (frame.width, frame.height) {
                                     frame =
                                         Frame::new(width, height).context("invalid RFB resize")?;
                                 }
                             }
-                            -308 => {
-                                let count = read.read_u8().await?;
-                                let mut padding = [0; 3];
-                                read.read_exact(&mut padding).await?;
-                                let mut screens = Vec::with_capacity(usize::from(count));
-                                for _ in 0..count {
-                                    let id = read.read_u32().await?;
-                                    let screen_x = read.read_u16().await?;
-                                    let screen_y = read.read_u16().await?;
-                                    let screen_width = read.read_u16().await?;
-                                    let screen_height = read.read_u16().await?;
-                                    let flags = read.read_u32().await?;
-                                    screens.push((
-                                        Screen { id, flags },
-                                        screen_x,
-                                        screen_y,
-                                        screen_width,
-                                        screen_height,
-                                    ));
-                                }
-                                // A rejected request has undefined dimensions and screen fields.
-                                if x != 1 || y == 0 {
-                                    dimensions(width, height)?;
-                                    ensure!(
-                                        !screens.is_empty(),
-                                        "RFB desktop layout has no screens"
-                                    );
-                                    for (index, (screen, sx, sy, sw, sh)) in
-                                        screens.iter().enumerate()
-                                    {
-                                        ensure!(
-                                            *sw > 0
-                                                && *sh > 0
-                                                && u32::from(*sx) + u32::from(*sw)
-                                                    <= u32::from(width)
-                                                && u32::from(*sy) + u32::from(*sh)
-                                                    <= u32::from(height),
-                                            "RFB screen outside desktop layout"
-                                        );
-                                        ensure!(
-                                            !screens[..index]
-                                                .iter()
-                                                .any(|previous| previous.0.id == screen.id),
-                                            "duplicate RFB screen ID"
-                                        );
-                                    }
-                                    *layout.lock().map_err(|_| {
-                                        anyhow::anyhow!("RFB layout lock poisoned")
-                                    })? = Some(screens[0].0);
-                                    if (width, height) != (frame.width, frame.height) {
-                                        frame = Frame::new(width, height)
-                                            .context("invalid RFB resize")?;
-                                    }
-                                }
-                                if x == 1 {
-                                    events
-                                        .send(Ok(Event::ResizeResult {
-                                            width,
-                                            height,
-                                            status: y,
-                                        }))
-                                        .await
-                                        .context("RFB receiver dropped")?;
-                                }
+                            if x == 1 {
+                                events
+                                    .send(Ok(Event::ResizeResult {
+                                        width,
+                                        height,
+                                        status: y,
+                                    }))
+                                    .await
+                                    .context("RFB receiver dropped")?;
                             }
-                            other => bail!("unsupported RFB encoding {other}"),
                         }
+                        other => bail!("unsupported RFB encoding {other}"),
                     }
-                    Ok::<bool, anyhow::Error>(changed)
                 }
-                .await;
-                let changed = match decoded {
-                    Ok(changed) => changed,
-                    Err(error) => {
-                        update_terminal.finish(trace::Outcome::Error);
-                        return Err(error);
-                    }
-                };
-                update_terminal.finish(if count == 0 {
-                    trace::Outcome::Empty
-                } else if changed {
-                    trace::Outcome::Pixels
-                } else {
-                    trace::Outcome::Metadata
-                });
-                trace::emit(
-                    trace,
-                    trace::Kind::CloneStarted,
-                    update_ordinal,
-                    None,
-                    0,
-                    trace::Outcome::Observed,
-                );
-                let copied = frame.clone();
-                trace::emit(
-                    trace,
-                    trace::Kind::CloneCompleted,
-                    update_ordinal,
-                    None,
-                    0,
-                    trace::Outcome::Observed,
-                );
-                trace::emit(
-                    trace,
-                    trace::Kind::EventQueued,
-                    update_ordinal,
-                    None,
-                    0,
-                    trace::Outcome::Observed,
-                );
-                let terminal = trace::Terminal::new(
-                    trace,
-                    trace::Record {
-                        kind: trace::Kind::EventQueued,
-                        ordinal: update_ordinal,
-                        input_id: None,
-                        count: 0,
-                        outcome: trace::Outcome::Canceled,
-                        capture_request: false,
-                    },
-                );
-                let sent = events.send(Ok(Event::Frame(copied))).await;
-                terminal.finish(if sent.is_ok() {
-                    trace::Outcome::Accepted
-                } else {
-                    trace::Outcome::Rejected
-                });
-                sent.context("RFB receiver dropped")?;
+                events
+                    .send(Ok(Event::Frame(frame.clone())))
+                    .await
+                    .context("RFB receiver dropped")?;
             }
             2 => events
                 .send(Ok(Event::Bell))
@@ -1116,9 +840,6 @@ async fn decode<R: AsyncRead + Unpin>(
                             bytes,
                         },
                         completed,
-                        ordinal: 0,
-                        input_id: None,
-                        capture_request: false,
                     })
                     .await
                     .context("RFB writer closed")?;
@@ -1195,8 +916,13 @@ mod teardown_actor_tests {
             name: "test".into(),
             protocol_version: (3, 8),
         };
-        let (reader, writer, _) =
-            start_tasks(read, tokio::io::sink(), Frame::new(16, 16).unwrap(), info);
+        let (reader, writer, _) = start_tasks(
+            read,
+            tokio::io::sink(),
+            Frame::new(16, 16).unwrap(),
+            info,
+            Layout::Rgbx,
+        );
         (reader, writer, peer, bytes, dropped)
     }
     async fn consumed(bytes: &AtomicUsize, wanted: usize) {

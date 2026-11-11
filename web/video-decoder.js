@@ -57,11 +57,9 @@ export function parseVideoPacket(buffer) {
 }
 
 export class VideoDecoderAdapter {
-  constructor({ timeoutMs = 5000, configureTimeoutMs = null } = {}) {
+  constructor({ timeoutMs = 5000 } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error('Invalid decoder timeout');
-    if (configureTimeoutMs !== null && (!Number.isFinite(configureTimeoutMs) || configureTimeoutMs <= 0)) throw new Error('Invalid decoder configuration timeout');
     this.timeoutMs = timeoutMs;
-    this.configureTimeoutMs = configureTimeoutMs;
     this.generation = 0;
     this.pending = new Map();
     this.reset();
@@ -113,15 +111,7 @@ export class VideoDecoderAdapter {
         hardwareAcceleration: 'prefer-software', optimizeForLatency: true,
         // No description means H.264 Annex B rather than AVC length prefixes.
       };
-      let supported;
-      if (this.configureTimeoutMs === null) supported = await globalThis.VideoDecoder.isConfigSupported(configuration);
-      else {
-        let timer;
-        try {
-          supported = await Promise.race([globalThis.VideoDecoder.isConfigSupported(configuration),
-            new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Video decoder configuration timed out')), this.configureTimeoutMs); })]);
-        } finally { clearTimeout(timer); }
-      }
+      const supported = await globalThis.VideoDecoder.isConfigSupported(configuration);
       if (generation !== this.generation) throw new Error('Video decoder reset during configuration');
       if (!supported.supported) throw new Error(`Unsupported software-preferred H.264 configuration: ${packet.codec}`);
       if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();

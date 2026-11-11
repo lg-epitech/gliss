@@ -117,7 +117,6 @@ jobs:
           python3 -m zipfile -e "$wheel" wheel
           install -m 0755 wheel/*.data/scripts/gliss-server "staging/$name/gliss-server"
           cp LICENSE THIRD_PARTY_NOTICES.md licenses/rust-dependencies.md "staging/$name/"
-          cp web/vendor/fflate-LICENSE "staging/$name/fflate-LICENSE"
           tar -C staging -czf "dist/$name.tar.gz" "$name"
           ls -l dist
 
