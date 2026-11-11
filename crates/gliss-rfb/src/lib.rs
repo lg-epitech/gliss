@@ -329,24 +329,9 @@ async fn read_text<R: AsyncRead + Unpin>(stream: &mut R, max: usize) -> Result<S
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Server text made safe to put in an error message, which ends up in a log.
-///
-/// Control characters and line separators are written as escapes, so the text
-/// stays on the line it is reported on, and the length is bounded.
+/// Server text for an error message, which ends up in a log.
 fn reported(text: &str) -> String {
-    let mut safe = String::new();
-    for (index, character) in text.chars().enumerate() {
-        if index == MAX_REPORTED_TEXT {
-            safe.push_str("...");
-            break;
-        }
-        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
-            safe.extend(character.escape_default());
-        } else {
-            safe.push(character);
-        }
-    }
-    safe
+    gliss_core::printable(text, MAX_REPORTED_TEXT)
 }
 
 async fn negotiate_security<S: AsyncRead + AsyncWrite + Unpin>(
