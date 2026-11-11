@@ -1,5 +1,4 @@
-//! Diagnostic fixture only: exact copied rect/render functions from demo.rs.
-//! Source SHA-256: 024e5e1da0c99dfb5d5eb78ad0bd895811d678824c078d47c48127f858cdfab3.
+//! Diagnostic fixture only: rect/render functions copied from demo.rs.
 //! Uses the unchanged public VideoEncoder and native decoder; no configuration changes.
 //! Run: CARGO_BUILD_JOBS=2 cargo run --release -p gliss-video --example marker-probe -- 150
 

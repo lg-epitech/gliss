@@ -92,7 +92,7 @@ struct Args {
     video_intra_period: Option<u32>,
     #[arg(long, default_value_t = 60)]
     fps: u32,
-    /// Experimental media window; the stable default waits for each frame ACK.
+    /// Frames that may be queued or written before the browser acknowledges one.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
     in_flight_frames: u8,
     /// Queued and unacknowledged media bytes; one oversized packet may progress alone.
@@ -285,8 +285,8 @@ async fn run(args: Args) -> Result<()> {
     if args.token.as_ref().is_none_or(|token| token.len() < 24) {
         bail!("GLISS_TOKEN must contain at least 24 characters");
     }
-    if args.fps == 0 || args.fps > 120 || args.max_clients == 0 || args.max_clients > 128 {
-        bail!("fps must be 1..120; max-clients must be 1..128");
+    if args.fps == 0 || args.fps > 60 || args.max_clients == 0 || args.max_clients > 128 {
+        bail!("fps must be 1..60; max-clients must be 1..128");
     }
     if args.session_ttl == 0 || args.session_ttl > 3600 {
         bail!("session-ttl must be 1..3600 seconds");
@@ -303,8 +303,8 @@ async fn run(args: Args) -> Result<()> {
         bail!("non-loopback bind requires an exact HTTPS --origin and a TLS reverse proxy");
     }
     let video_timing = configured_video_timing(&args)?;
-    if args.fps > 60 || !(1_000..=50_000_000).contains(&args.h264_bitrate) {
-        bail!("software H264 requires fps <= 60 and bitrate 1000..50000000");
+    if !(1_000..=50_000_000).contains(&args.h264_bitrate) {
+        bail!("h264-bitrate must be 1000..50000000");
     }
     demo::validate_workload(&args.workload)?;
     let origins = match &args.origin {
@@ -904,7 +904,11 @@ async fn source(app: &App) -> Result<Source> {
             loop {
                 let event = match reader.read_event().await {
                     Ok(event) => event,
-                    Err(_) => {
+                    Err(error) => {
+                        // The viewer only learns that the display is gone; the
+                        // operator needs to know why.
+                        let reason = gliss_core::printable(&format!("{error:#}"), MAX_LOGGED_ERROR);
+                        tracing::warn!("VNC connection ended: {reason}");
                         reader_notices.failed("The VM display disconnected.");
                         break;
                     }

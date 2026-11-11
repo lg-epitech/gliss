@@ -130,7 +130,7 @@ export class VideoDecoderAdapter {
             return;
           }
           const { width, height, sequence, inputId, keyframe, bytes } = entry.packet;
-          entry.resolve({ width, height, videoFrame: frame, sequence, inputId, keyframe, tiles: 1, bytes });
+          entry.resolve({ width, height, videoFrame: frame, sequence, inputId, keyframe, bytes });
         },
         error: error => { if (generation === this.generation) this._fail(error); },
       });
