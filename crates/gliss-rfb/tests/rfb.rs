@@ -1268,3 +1268,26 @@ async fn an_update_changes_the_desktop_size_at_most_once() {
         assert!(error.contains("size more than once"), "{error}");
     }
 }
+
+#[tokio::test]
+async fn a_cursor_above_128_pixels_a_side_is_read_off_the_wire_and_not_reported() {
+    let mut script = vec![0, 0, 0, 5];
+    for (width, height) in [(129, 1), (1, 129), (1024, 1024), (128, 128), (129, 129)] {
+        script.extend(cursor_rectangle(width, height));
+    }
+    // The bell is only found if every cursor was consumed to its last byte.
+    script.push(2);
+    let (mut reader, _writer) = scripted(2, 1, script).await;
+    let mut cursors = Vec::new();
+    loop {
+        match event(&mut reader).await.unwrap() {
+            Event::Cursor(cursor) => {
+                cursors.push((cursor.width, cursor.height, cursor.pixels.len()))
+            }
+            Event::Bell => break,
+            _ => {}
+        }
+    }
+    assert_eq!(cursors, [(128, 128, 128 * 128 * 4)]);
+    assert_eq!(gliss_rfb::MAX_CURSOR_SIDE, 128);
+}

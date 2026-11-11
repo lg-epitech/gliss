@@ -86,7 +86,12 @@ const ENCODINGS: [i32; 7] = [0, 1, -239, -223, -308, clipboard::ENCODING, audio:
 /// Most bytes of a full-width Raw rectangle taken by one read.
 const RAW_READ_BYTES: usize = 256 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
-const MAX_CURSOR_PIXELS: usize = 1024 * 1024;
+/// Longest side of a cursor the wire may carry. A larger one is a protocol error.
+const MAX_WIRE_CURSOR_SIDE: u16 = 1024;
+/// Longest side of a cursor reported as an [`Event::Cursor`]. Browsers ignore a
+/// cursor image above 128x128, so a larger shape is read off the wire and
+/// dropped instead of being held in memory and sent on.
+pub const MAX_CURSOR_SIDE: u16 = 128;
 /// Pixels one framebuffer update may write or move, as a multiple of the frame
 /// area. A server draws each pixel once and may scroll the frame first, which
 /// is twice the area; four leaves room for overlapping rectangles. Without a
@@ -589,6 +594,15 @@ fn dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
+/// Read and discard `length` bytes without holding them.
+async fn skip<R: AsyncRead + Unpin>(read: &mut R, length: usize) -> Result<()> {
+    let skipped = tokio::io::copy(&mut read.take(length as u64), &mut tokio::io::sink()).await?;
+    if skipped != length as u64 {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
+    Ok(())
+}
+
 /// What one framebuffer update has done so far, and what it may still do.
 struct Update {
     /// Whether a pixel or the size changed.
@@ -729,7 +743,7 @@ async fn decode<R: AsyncRead + Unpin>(
                         -239 => {
                             let count = usize::from(width) * usize::from(height);
                             ensure!(
-                                width <= 1024 && height <= 1024 && count <= MAX_CURSOR_PIXELS,
+                                width <= MAX_WIRE_CURSOR_SIDE && height <= MAX_WIRE_CURSOR_SIDE,
                                 "RFB cursor is too large"
                             );
                             ensure!(
@@ -737,10 +751,18 @@ async fn decode<R: AsyncRead + Unpin>(
                                     || (width > 0 && height > 0 && x < width && y < height),
                                 "invalid RFB cursor hotspot or dimensions"
                             );
+                            let mask_stride = usize::from(width).div_ceil(8);
+                            if width > MAX_CURSOR_SIDE || height > MAX_CURSOR_SIDE {
+                                // The bytes still have to leave the wire, but
+                                // nothing downstream would use the shape.
+                                let unused = count * 4 + mask_stride * usize::from(height);
+                                skip(&mut read, unused).await?;
+                                tokio::task::yield_now().await;
+                                continue;
+                            }
                             let mut pixels = vec![0; count * 4];
                             read.read_exact(&mut pixels).await?;
                             pixel_layout.to_rgba(&mut pixels);
-                            let mask_stride = usize::from(width).div_ceil(8);
                             let mut mask = vec![0; mask_stride * usize::from(height)];
                             read.read_exact(&mut mask).await?;
                             for row in 0..usize::from(height) {
