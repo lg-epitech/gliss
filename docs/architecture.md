@@ -82,6 +82,8 @@ client.dispose(); // disconnects and removes its listeners
 
 `gliss-server --export-web DIR` writes the modules embedded in that binary, so the browser code always matches the server. The relay logs in with the access key (`POST /api/session`), then forwards text and binary messages unchanged between the browser and the server's `/ws`, presenting the session cookie and the server's own Origin. `onEvent` receives the server's `hello`, `clipboard`, `cursor`, `bell`, `resize_result`, `input_error`, `error`, `audio_status` and `pong` messages (and `stream_stats` when the server runs with `--stream-stats`) and the client's own `frame`, `audio_state` and `close` events; input messages are `key`, `pointer`, `clipboard` and `resize`.
 
+`hello` and `error` are delivered in order with the frames around them; every other server message is delivered when it arrives, without waiting for earlier frames to paint. An `error` does not always end the session: when the guest selects a display mode H.264 cannot encode, the picture pauses, one `error` says so, and the next `frame` means it is back. The server sends only the newest unsent cursor, clipboard, resize result and input error, so a slow connection skips intermediate ones, and it sends no cursor larger than 128×128.
+
 ### Audio
 
 The viewer's sound button calls `client.setAudioEnabled(true)` directly from a user gesture. Audio starts off for each connection; `client.setAudioEnabled(false)` stops playback and capture. The `audio_state` event reports `available`, `enabled`, `blocked` and an optional `message`. Closing or disposing the client releases the audio decoder, context and scheduled sources.
