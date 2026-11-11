@@ -171,7 +171,7 @@ fn app(address: &str, policy: &str) -> App {
     .unwrap();
     App {
         args,
-        video_timing: VideoTiming::new(10, 10, 3600).unwrap(),
+        video_timing: VideoTiming::new(10, 3600).unwrap(),
         tcp_listener: crate::tcp_listener::SocketPolicy::new(false),
         worker_shutdown: watch::channel(false).0,
         origins: Vec::new(),

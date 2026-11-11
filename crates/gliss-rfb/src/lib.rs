@@ -171,7 +171,7 @@ async fn connect_inner(
         .context("connect to RFB server")?;
     stream.set_nodelay(true)?;
     let (frame, info, layout) = handshake(&mut stream, password).await?;
-    // Preserve TCP's existing owned split: no generic split mutex in this path.
+    // Owned halves: a generic split would put a mutex between reading and writing.
     let (read, write) = stream.into_split();
     Ok(start_tasks(read, write, frame, info, layout))
 }

@@ -2,7 +2,7 @@ use super::*;
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
 
-// Independent pre-experiment production implementation, never used at runtime.
+// An independent copy of the encoder at its fixed two-second keyframe interval, never used at runtime.
 #[allow(dead_code)]
 mod frozen_screen {
     include!(concat!(
@@ -20,88 +20,6 @@ fn scene(width: u16, height: u16, step: usize) -> Frame {
         pixel.copy_from_slice(&[light, (y * 160 / usize::from(height)) as u8, light, 255]);
     }
     frame
-}
-
-#[test]
-fn native_rate_control_skips_are_not_packets_and_emitted_aus_remain_decodable() {
-    let timing = VideoTiming::new(30, 30, 60).unwrap();
-    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
-        320,
-        192,
-        200_000,
-        VideoProfile::Screen,
-        timing,
-        true,
-    )
-    .unwrap();
-    let mut decoder = Decoder::new().unwrap();
-    let mut sequence = 1_u32;
-    let mut skips = 0;
-    let mut random = 0x1257_934b_u32;
-    for _ in 0..240 {
-        let mut frame = Frame::new(320, 192).unwrap();
-        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
-            random ^= random << 13;
-            random ^= random >> 17;
-            random ^= random << 5;
-            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
-        }
-        if let Some(bytes) = encoder.encode_optional(&frame, sequence, 0).unwrap() {
-            let packet = parse_packet(&bytes).unwrap();
-            assert_eq!(packet.sequence, sequence);
-            assert!(!packet.payload.is_empty());
-            assert_eq!(
-                decoder
-                    .decode(packet.payload)
-                    .unwrap()
-                    .unwrap()
-                    .dimensions(),
-                (320, 192)
-            );
-            sequence += 1;
-        } else {
-            skips += 1;
-        }
-    }
-    assert!(
-        skips > 0,
-        "The bounded noise workload must exercise real encoder skips"
-    );
-    assert!(sequence > 2, "Skipping must still permit new pictures");
-}
-
-#[test]
-fn opt_in_skip_policy_survives_reset_and_resize_while_legacy_default_stays_off() {
-    let timing = VideoTiming::new(30, 30, 60).unwrap();
-    assert!(
-        !VideoEncoder::with_timing(64, 48, 4_000_000, VideoProfile::Screen, timing)
-            .unwrap()
-            .frame_skip_enabled()
-    );
-    let mut encoder = VideoEncoder::with_timing_and_frame_skip(
-        64,
-        48,
-        4_000_000,
-        VideoProfile::Screen,
-        timing,
-        true,
-    )
-    .unwrap();
-    for (id, width, height) in [(1, 64, 48), (2, 66, 50)] {
-        let bytes = encoder
-            .encode_optional(&scene(width, height, 0), id, 0)
-            .unwrap()
-            .unwrap();
-        assert!(parse_packet(&bytes).unwrap().keyframe);
-        assert!(encoder.frame_skip_enabled());
-    }
-    encoder.reset();
-    let bytes = encoder
-        .encode_optional(&scene(66, 50, 0), 3, 0)
-        .unwrap()
-        .unwrap();
-    assert!(parse_packet(&bytes).unwrap().keyframe);
-    assert!(encoder.frame_skip_enabled());
 }
 
 #[test]
@@ -233,23 +151,16 @@ fn packet_rejects_truncation_bad_flags_lengths_and_keyframe_claims() {
 #[test]
 fn default_video_packets_match_frozen_screen_implementation_through_reset_and_resize() {
     let mut current = VideoEncoder::new(96, 64, 15).unwrap();
-    let mut explicit =
-        VideoEncoder::with_profile(96, 64, 15, DEFAULT_BITRATE_BPS, VideoProfile::Screen).unwrap();
     let mut frozen = frozen_screen::VideoEncoder::new(96, 64, 15).unwrap();
     for index in 0..8 {
         let (width, height) = if index >= 6 { (98, 66) } else { (96, 64) };
         if index == 4 {
             current.reset();
-            explicit.reset();
             frozen.reset();
         }
         let source = scene(width, height, index * 2);
         let sequence = index as u32 + 10;
         let packet = current.encode(&source, sequence, sequence + 100).unwrap();
-        assert_eq!(
-            packet,
-            explicit.encode(&source, sequence, sequence + 100).unwrap()
-        );
         assert_eq!(
             packet,
             frozen.encode(&source, sequence, sequence + 100).unwrap()
@@ -258,99 +169,30 @@ fn default_video_packets_match_frozen_screen_implementation_through_reset_and_re
 }
 
 #[test]
-fn camera_profiles_native_decode_reset_and_resize_preserve_profile_and_opaque_output() {
-    for profile in [VideoProfile::CameraSceneOn, VideoProfile::CameraSceneOff] {
-        assert_eq!(profile.usage_name(), "camera-video-real-time");
-        assert_eq!(
-            profile.scene_change_detection(),
-            profile == VideoProfile::CameraSceneOn
-        );
-        let mut encoder = VideoEncoder::with_profile(96, 64, 15, 3_000_000, profile).unwrap();
-        let mut decoder = Decoder::new().unwrap();
-        for index in 0..4 {
-            let source = scene(96, 64, index * 11);
-            let bytes = encoder
-                .encode(&source, index as u32, index as u32 + 40)
-                .unwrap();
-            let packet = parse_packet(&bytes).unwrap();
-            assert_eq!(packet.input_id, index as u32 + 40);
-            if profile == VideoProfile::CameraSceneOff {
-                assert_eq!(
-                    packet.keyframe,
-                    index == 0,
-                    "no automatic scene IDR before periodic deadline"
-                );
-            }
-            let decoded = decoder.decode(packet.payload).unwrap().unwrap();
-            assert_eq!(decoded.dimensions(), (96, 64));
-            let mut pixels = vec![0; source.pixels.len()];
-            decoded.write_rgba8(&mut pixels);
-            assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
-        }
-        encoder.reset();
-        let reset = encoder.encode(&scene(96, 64, 5), 10, 50).unwrap();
-        let packet = parse_packet(&reset).unwrap();
-        assert!(packet.keyframe);
-        assert_eq!(encoder.profile(), profile);
-        assert_eq!(
-            Decoder::new()
-                .unwrap()
-                .decode(packet.payload)
-                .unwrap()
-                .unwrap()
-                .dimensions(),
-            (96, 64)
-        );
-        let resized = encoder.encode(&scene(98, 66, 6), 11, 51).unwrap();
-        let packet = parse_packet(&resized).unwrap();
-        assert!(packet.keyframe);
-        assert_eq!(encoder.profile(), profile);
-        assert_eq!(
-            Decoder::new()
-                .unwrap()
-                .decode(packet.payload)
-                .unwrap()
-                .unwrap()
-                .dimensions(),
-            (98, 66)
-        );
-        let mut malformed = resized.clone();
-        malformed[18] = 2;
-        assert!(parse_packet(&malformed).is_err());
-    }
-}
-
-#[test]
 fn custom_video_timing_rejects_each_unsupported_axis_and_accepts_boundaries() {
-    for (fps, timestamp_fps, intra_period) in [
-        (0, 30, 60),
-        (61, 30, 60),
-        (30, 0, 60),
-        (30, 61, 60),
-        (30, 30, 0),
-        (30, 30, 3601),
-        (u32::MAX, 30, 60),
-        (30, u32::MAX, 60),
-        (30, 30, u32::MAX),
+    for (fps, intra_period) in [
+        (0, 60),
+        (61, 60),
+        (30, 0),
+        (30, 3601),
+        (u32::MAX, 60),
+        (30, u32::MAX),
     ] {
-        assert!(VideoTiming::new(fps, timestamp_fps, intra_period).is_err());
+        assert!(VideoTiming::new(fps, intra_period).is_err());
     }
-    for (fps, timestamp_fps, intra_period) in [(1, 60, 1), (60, 1, 3600)] {
-        let timing = VideoTiming::new(fps, timestamp_fps, intra_period).unwrap();
+    for (fps, intra_period) in [(1, 1), (60, 3600)] {
+        let timing = VideoTiming::new(fps, intra_period).unwrap();
         assert_eq!(timing.fps(), fps);
-        assert_eq!(timing.timestamp_fps(), timestamp_fps);
         assert_eq!(timing.intra_period(), intra_period);
     }
-    assert!(VideoEncoder::with_profile(64, 48, u32::MAX, 3_000_000, VideoProfile::Screen).is_err());
+    assert!(VideoEncoder::with_bitrate(64, 48, u32::MAX, 3_000_000).is_err());
 }
 
 #[test]
-fn explicit_legacy_timing_matches_frozen_packets_at_both_nominal_rates() {
+fn explicit_two_second_interval_matches_frozen_packets_at_both_nominal_rates() {
     for fps in [15, 60] {
-        let timing = VideoTiming::new(fps, fps, fps * 2).unwrap();
-        let mut encoder =
-            VideoEncoder::with_timing(96, 64, DEFAULT_BITRATE_BPS, VideoProfile::Screen, timing)
-                .unwrap();
+        let timing = VideoTiming::new(fps, fps * 2).unwrap();
+        let mut encoder = VideoEncoder::with_timing(96, 64, DEFAULT_BITRATE_BPS, timing).unwrap();
         let mut frozen = frozen_screen::VideoEncoder::new(96, 64, fps).unwrap();
         for index in 0..8 {
             if index == 4 {
@@ -370,9 +212,8 @@ fn explicit_legacy_timing_matches_frozen_packets_at_both_nominal_rates() {
 
 #[test]
 fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
-    let timing = VideoTiming::new(15, 60, 4).unwrap();
-    let mut encoder =
-        VideoEncoder::with_timing(96, 64, 3_000_000, VideoProfile::CameraSceneOff, timing).unwrap();
+    let timing = VideoTiming::new(15, 4).unwrap();
+    let mut encoder = VideoEncoder::with_timing(96, 64, 3_000_000, timing).unwrap();
     for (width, height) in [(96, 64), (98, 66)] {
         let mut decoder = Decoder::new().unwrap();
         let source = scene(width, height, 0);
@@ -389,7 +230,6 @@ fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
                 (usize::from(width), usize::from(height))
             );
             assert_eq!(encoder.timing(), timing);
-            assert_eq!(encoder.profile(), VideoProfile::CameraSceneOff);
         }
     }
     encoder.reset();
@@ -406,84 +246,4 @@ fn custom_gop_decodes_and_survives_resize_and_explicit_reset() {
         (98, 66)
     );
     assert_eq!(encoder.timing(), timing);
-}
-
-#[test]
-fn positive_qp_bounds_validate_and_preserve_legacy_screen_defaults() {
-    for (min, max) in [(0, 51), (26, 0), (36, 35), (1, 52), (52, 52)] {
-        assert!(QpBounds::new(min, max).is_err());
-    }
-    let timing = VideoTiming::new(30, 30, 60).unwrap();
-    let mut legacy =
-        VideoEncoder::with_timing(96, 64, 500_000, VideoProfile::Screen, timing).unwrap();
-    let options = VideoOptions {
-        frame_skip: false,
-        qp_bounds: Some(QpBounds::new(26, 35).unwrap()),
-    };
-    let mut explicit =
-        VideoEncoder::with_options(96, 64, 500_000, VideoProfile::Screen, timing, options).unwrap();
-    assert_eq!(legacy.qp_bounds(), None);
-    for (sequence, width, height) in [(1, 96, 64), (2, 96, 64), (3, 98, 66)] {
-        let frame = scene(width, height, sequence as usize);
-        assert_eq!(
-            legacy.encode(&frame, sequence, 0).unwrap(),
-            explicit.encode(&frame, sequence, 0).unwrap()
-        );
-        assert_eq!(explicit.qp_bounds(), options.qp_bounds);
-    }
-    legacy.reset();
-    explicit.reset();
-    assert_eq!(
-        legacy.encode(&scene(98, 66, 0), 4, 0).unwrap(),
-        explicit.encode(&scene(98, 66, 0), 4, 0).unwrap()
-    );
-}
-
-#[test]
-fn wider_requested_qp_range_reduces_noise_bytes_without_skipping_or_breaking_decode() {
-    let timing = VideoTiming::new(30, 30, 60).unwrap();
-    let mut default =
-        VideoEncoder::with_timing(320, 192, 500_000, VideoProfile::Screen, timing).unwrap();
-    let mut wider = VideoEncoder::with_options(
-        320,
-        192,
-        500_000,
-        VideoProfile::Screen,
-        timing,
-        VideoOptions {
-            frame_skip: false,
-            qp_bounds: Some(QpBounds::new(26, 51).unwrap()),
-        },
-    )
-    .unwrap();
-    let mut decoder = Decoder::new().unwrap();
-    let mut sums = [0usize; 2];
-    let mut random = 0x1257_934bu32;
-    for sequence in 1..=30 {
-        let mut frame = Frame::new(320, 192).unwrap();
-        for pixel in frame.pixels.as_chunks_mut::<4>().0 {
-            random ^= random << 13;
-            random ^= random >> 17;
-            random ^= random << 5;
-            pixel.copy_from_slice(&[random as u8, (random >> 8) as u8, (random >> 16) as u8, 255]);
-        }
-        let a = default.encode(&frame, sequence, 0).unwrap();
-        let b = wider.encode(&frame, sequence, 0).unwrap();
-        sums[0] += a.len();
-        sums[1] += b.len();
-        let parsed = parse_packet(&b).unwrap();
-        assert_eq!(parsed.sequence, sequence);
-        assert_eq!(
-            decoder
-                .decode(parsed.payload)
-                .unwrap()
-                .unwrap()
-                .dimensions(),
-            (320, 192)
-        );
-    }
-    assert!(
-        sums[1] < sums[0],
-        "The bounded deterministic noise case must exercise the wider range"
-    );
 }
