@@ -56,6 +56,7 @@ export async function startServer(options={}){
   if(options.origin)args.push('--origin',options.origin);
   if(options.sessionTtl)args.push('--session-ttl',String(options.sessionTtl));
   if(options.h264Bitrate)args.push('--h264-bitrate',String(options.h264Bitrate));
+  if(options.videoIntraPeriod)args.push('--video-intra-period',String(options.videoIntraPeriod));
   if(options.inFlightFrames!==undefined)args.push('--in-flight-frames',String(options.inFlightFrames));
   if(options.inFlightBytes!==undefined)args.push('--in-flight-bytes',String(options.inFlightBytes));
   if(options.streamStats)args.push('--stream-stats');
