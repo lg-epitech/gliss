@@ -97,6 +97,16 @@ pub const MAX_CURSOR_SIDE: u16 = 128;
 /// is twice the area; four leaves room for overlapping rectangles. Without a
 /// bound, 16-byte CopyRect rectangles each move a whole frame.
 const UPDATE_AREA_BUDGET: usize = 4;
+/// Work one update does between two returns to the runtime, in pixels written
+/// or moved. Other tasks on the worker wait at most this long plus one
+/// rectangle, whatever the server sends and however fast it arrives. A fixed
+/// return for every rectangle would bound the wait the same but costs about a
+/// microsecond each: QEMU sends thousands of one-line rectangles for a
+/// scrolling terminal, and that measured 19% more CPU for the whole server.
+const YIELD_WORK: usize = 65_536;
+/// What a rectangle counts for besides its pixels, so that rectangles that
+/// draw nothing add up too: 128 of them between two returns.
+const RECTANGLE_WORK: usize = YIELD_WORK / 128;
 /// Most characters of server text kept in an error message. A refusal reason
 /// is one sentence; the protocol allows 64 KiB of it.
 const MAX_REPORTED_TEXT: usize = 256;
@@ -618,6 +628,8 @@ struct Update {
     resized: bool,
     /// Pixels the remaining rectangles may write or move.
     budget: usize,
+    /// Work done since decoding last returned to the runtime.
+    work: usize,
 }
 
 impl Update {
@@ -626,6 +638,7 @@ impl Update {
             changed: false,
             resized: false,
             budget: Self::budget(frame),
+            work: 0,
         }
     }
 
@@ -641,6 +654,7 @@ impl Update {
             .checked_sub(pixels)
             .context("RFB update exceeds its pixel budget")?;
         self.changed |= pixels > 0;
+        self.work += pixels;
         Ok(())
     }
 
@@ -660,6 +674,19 @@ impl Update {
         // The rectangles that follow draw the new desktop.
         self.budget = Self::budget(frame);
         Ok(())
+    }
+}
+
+impl Update {
+    /// Called before each rectangle: lets other tasks run once the rectangles
+    /// so far have done [`YIELD_WORK`]. The bytes of an update may all be
+    /// buffered already, so no read would wait and nothing else would yield.
+    async fn share_worker(&mut self) {
+        self.work += RECTANGLE_WORK;
+        if self.work >= YIELD_WORK {
+            self.work = 0;
+            tokio::task::yield_now().await;
+        }
     }
 }
 
@@ -689,6 +716,7 @@ async fn decode<R: AsyncRead + Unpin>(
                 let count = read.read_u16().await?;
                 let mut update = Update::new(&frame);
                 for rectangle_index in 0..count {
+                    update.share_worker().await;
                     let x = read.read_u16().await?;
                     let y = read.read_u16().await?;
                     let width = read.read_u16().await?;
@@ -765,7 +793,6 @@ async fn decode<R: AsyncRead + Unpin>(
                                 // nothing downstream would use the shape.
                                 let unused = count * 4 + mask_stride * usize::from(height);
                                 skip(&mut read, unused).await?;
-                                tokio::task::yield_now().await;
                                 continue;
                             }
                             let mut pixels = vec![0; count * 4];
@@ -861,10 +888,6 @@ async fn decode<R: AsyncRead + Unpin>(
                         }
                         other => bail!("unsupported RFB encoding {other}"),
                     }
-                    // A rectangle can cost a whole frame of copying and its
-                    // bytes may all be buffered already, so no read would
-                    // wait: other tasks on this worker get their turn here.
-                    tokio::task::yield_now().await;
                 }
                 // Copying the frame is the most expensive step of an update
                 // and starts an encode downstream: only a new picture pays it.
