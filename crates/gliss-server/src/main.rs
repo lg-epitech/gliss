@@ -685,9 +685,9 @@ async fn login(
     if !origin_allowed(&app, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
-    if !app.logins.attempt(peer.ip(), Instant::now()) {
+    let Some(charge) = app.logins.attempt(peer.ip(), Instant::now()) else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
-    }
+    };
     if !is_json(&headers) {
         return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
     }
@@ -715,7 +715,7 @@ async fn login(
     ))) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    app.logins.succeeded(peer.ip());
+    app.logins.succeeded(charge);
     let secure = if app.origins[0].starts_with("https://") {
         "; Secure"
     } else {

@@ -9,7 +9,10 @@
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -18,7 +21,7 @@ use std::{
 /// searched at this rate. It is the number the single shared counter had.
 pub const FAILURES_PER_WINDOW: u32 = 30;
 const WINDOW: Duration = Duration::from_secs(60);
-/// Addresses followed at once: about 150 KiB. An entry lasts a minute, so
+/// Addresses followed at once: about 200 KiB. An entry lasts a minute, so
 /// only thousands of addresses failing together reach this. The addresses
 /// beyond it share one allowance, so the total stays limited.
 const MAX_ADDRESSES: usize = 4096;
@@ -42,21 +45,34 @@ impl Client {
 }
 
 struct Allowance {
+    /// Which allowance this is of all that were ever begun.
+    number: u64,
     since: Instant,
     failures: u32,
+}
+
+/// One failure taken from an allowance: which client it was counted as, and
+/// in which of that client's minutes. It is not `Clone`: the failure can be
+/// given back once.
+pub struct Charge {
+    client: Client,
+    allowance: u64,
 }
 
 #[derive(Default)]
 pub struct Logins {
     clients: Mutex<HashMap<Client, Allowance>>,
+    /// Allowances begun so far. Each has its own number, so a [`Charge`]
+    /// names the one it was taken from whatever was begun since.
+    begun: AtomicU64,
 }
 
 impl Logins {
     /// Takes one failure from the allowance of `address` before its request
-    /// is looked at, and returns false when none is left. Counting first
+    /// is looked at, and returns nothing when none is left. Counting first
     /// means requests in flight together cannot exceed the allowance.
     /// [`Logins::succeeded`] gives the failure back.
-    pub fn attempt(&self, address: IpAddr, now: Instant) -> bool {
+    pub fn attempt(&self, address: IpAddr, now: Instant) -> Option<Charge> {
         let mut clients = self.clients.lock().unwrap_or_else(|lock| lock.into_inner());
         let mut client = Client::of(address);
         if !clients.contains_key(&client) && clients.len() >= MAX_ADDRESSES {
@@ -65,35 +81,40 @@ impl Logins {
                 client = Client::Others;
             }
         }
-        let allowance = clients.entry(client).or_insert(Allowance {
+        // Only called under the lock, which orders the numbers.
+        let begin = || Allowance {
+            number: self.begun.fetch_add(1, Ordering::Relaxed),
             since: now,
             failures: 0,
-        });
+        };
+        let allowance = clients.entry(client).or_insert_with(begin);
         if now.saturating_duration_since(allowance.since) >= WINDOW {
-            *allowance = Allowance {
-                since: now,
-                failures: 0,
-            };
+            *allowance = begin();
         }
         if allowance.failures >= FAILURES_PER_WINDOW {
-            return false;
+            return None;
         }
         allowance.failures += 1;
-        true
+        Some(Charge {
+            client,
+            allowance: allowance.number,
+        })
     }
 
-    /// The attempt presented the right key: it was not a failure.
-    pub fn succeeded(&self, address: IpAddr) {
+    /// The attempt presented the right key: it was not a failure. Its charge
+    /// goes back to the allowance it came from. If that minute is over there
+    /// is nothing to give back: the client's next allowance never counted it.
+    pub fn succeeded(&self, charge: Charge) {
         let mut clients = self.clients.lock().unwrap_or_else(|lock| lock.into_inner());
-        // Counted under the address itself, or with the others when there was no room.
-        for client in [Client::of(address), Client::Others] {
-            if let Some(allowance) = clients.get_mut(&client) {
-                allowance.failures = allowance.failures.saturating_sub(1);
-                if allowance.failures == 0 {
-                    clients.remove(&client);
-                }
-                return;
-            }
+        let Some(allowance) = clients.get_mut(&charge.client) else {
+            return;
+        };
+        if allowance.number != charge.allowance {
+            return;
+        }
+        allowance.failures = allowance.failures.saturating_sub(1);
+        if allowance.failures == 0 {
+            clients.remove(&charge.client);
         }
     }
 }
@@ -113,7 +134,7 @@ mod tests {
     /// How many of `tries` failed logins are looked at.
     fn admitted(logins: &Logins, from: &str, tries: u32, now: Instant) -> u32 {
         (0..tries)
-            .filter(|_| logins.attempt(address(from), now))
+            .filter(|_| logins.attempt(address(from), now).is_some())
             .count() as u32
     }
 
@@ -124,23 +145,64 @@ mod tests {
             admitted(&logins, "203.0.113.7", 1000, now),
             FAILURES_PER_WINDOW
         );
-        assert!(!logins.attempt(address("203.0.113.7"), now));
-        assert!(logins.attempt(address("203.0.113.8"), now));
-        assert!(logins.attempt(address("2001:db8::1"), now));
+        assert!(logins.attempt(address("203.0.113.7"), now).is_none());
+        assert!(logins.attempt(address("203.0.113.8"), now).is_some());
+        assert!(logins.attempt(address("2001:db8::1"), now).is_some());
     }
 
     #[test]
     fn successful_logins_leave_the_allowance_and_the_table_as_they_were() {
         let (logins, now) = (Logins::default(), Instant::now());
         for _ in 0..1000 {
-            assert!(logins.attempt(address("203.0.113.7"), now));
-            logins.succeeded(address("203.0.113.7"));
+            let charge = logins.attempt(address("203.0.113.7"), now).unwrap();
+            logins.succeeded(charge);
         }
         assert!(logins.clients.lock().unwrap().is_empty());
         assert_eq!(
             admitted(&logins, "203.0.113.7", 40, now),
             FAILURES_PER_WINDOW
         );
+    }
+
+    #[test]
+    fn a_success_after_its_minute_ended_gives_nothing_back() {
+        let (logins, start) = (Logins::default(), Instant::now());
+        let from = address("203.0.113.7");
+        assert!(logins.attempt(from, start).is_some());
+        // The right key, counted as the minute ends and slow to send its body.
+        let slow = logins.attempt(from, start + WINDOW - Duration::from_millis(1));
+        // The next minute's allowance is used up meanwhile.
+        let next = start + WINDOW;
+        assert_eq!(
+            admitted(&logins, "203.0.113.7", 40, next),
+            FAILURES_PER_WINDOW
+        );
+        logins.succeeded(slow.unwrap());
+        assert_eq!(admitted(&logins, "203.0.113.7", 40, next), 0);
+    }
+
+    #[test]
+    fn a_success_gives_back_where_it_was_counted() {
+        let (logins, start) = (Logins::default(), Instant::now());
+        for host in 0..MAX_ADDRESSES as u32 {
+            let host = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + host));
+            assert!(logins.attempt(host, start).is_some());
+        }
+        // No room: the right key from another address is counted with the others.
+        let from = address("203.0.113.7");
+        let half = start + WINDOW / 2;
+        let shared = logins.attempt(from, half);
+        // A minute after the table filled there is room, and the address
+        // uses up an allowance of its own before the first attempt succeeds.
+        let later = start + WINDOW;
+        assert_eq!(
+            admitted(&logins, "203.0.113.7", 40, later),
+            FAILURES_PER_WINDOW
+        );
+        logins.succeeded(shared.unwrap());
+        assert_eq!(admitted(&logins, "203.0.113.7", 40, later), 0);
+        // What it took from the shared allowance is back: only its own entry is left.
+        assert_eq!(logins.clients.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -175,11 +237,15 @@ mod tests {
     fn the_table_is_bounded_and_addresses_beyond_it_share_one_allowance() {
         let (logins, start) = (Logins::default(), Instant::now());
         for host in 0..MAX_ADDRESSES as u32 {
-            assert!(logins.attempt(IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + host)), start));
+            let host = IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + host));
+            assert!(logins.attempt(host, start).is_some());
         }
         // No room: the next 10000 addresses are counted together.
         let beyond = (0..10_000u32)
-            .filter(|host| logins.attempt(IpAddr::V4(Ipv4Addr::from(0x0b00_0000 + host)), start))
+            .filter(|host| {
+                let host = IpAddr::V4(Ipv4Addr::from(0x0b00_0000 + host));
+                logins.attempt(host, start).is_some()
+            })
             .count() as u32;
         assert_eq!(beyond, FAILURES_PER_WINDOW);
         assert_eq!(logins.clients.lock().unwrap().len(), MAX_ADDRESSES + 1);
