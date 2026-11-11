@@ -19,7 +19,7 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{Sink, SinkExt, Stream, StreamExt};
 use gliss_core::{Frame, Input, MAX_CLIPBOARD};
 use gliss_rfb::Event;
 use gliss_video::{VideoEncoder, VideoTiming};
@@ -924,8 +924,9 @@ async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()>
         result = tokio::time::timeout_at(deadline, source(&app)) => result.context("display session expired during source setup")??,
         _ = worker_shutdown.wait_for(|stopped| *stopped) => bail!("worker stopped during source setup"),
     };
+    let (sink, receiver) = socket.split();
     let result = tokio::select! {
-        result = tokio::time::timeout_at(deadline, stream_session(socket, app.clone(), &mut source)) => result.context("display session expired").and_then(|result| result),
+        result = tokio::time::timeout_at(deadline, stream_session(sink, receiver, app.clone(), &mut source)) => result.context("display session expired").and_then(|result| result),
         _ = worker_shutdown.wait_for(|stopped| *stopped) => Err(anyhow::anyhow!("worker stopped during stream")),
     };
     drop(source.input);
@@ -990,9 +991,25 @@ fn replace_latest(
     *latest = capture;
 }
 
-async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -> Result<()> {
+/// The clock of a session's deadlines. It is tokio's, which a test can pause,
+/// so that every deadline of a session moves with the same clock.
+fn session_now() -> Instant {
+    tokio::time::Instant::now().into_std()
+}
+
+/// Runs one viewer over the two halves of its WebSocket.
+async fn stream_session<Tx, Rx, E>(
+    mut sink: Tx,
+    mut receiver: Rx,
+    app: Arc<App>,
+    source: &mut Source,
+) -> Result<()>
+where
+    Tx: Sink<Message, Error = E> + Unpin + Send + 'static,
+    Rx: Stream<Item = Result<Message, E>> + Unpin + Send + 'static,
+    E: std::error::Error + Send + Sync + 'static,
+{
     let hello = Message::Text(with_stream_metadata(json!({"type":"hello","protocol":"GLV1","codec":app.args.codec,"source":if app.args.demo {"demo"} else {"rfb"},"fps_limit":app.args.fps,"input_metadata":"latest forwarded input; not proof of causal display"}),&app).to_string().into());
-    let (mut sink, mut receiver) = socket.split();
     let (command_tx, mut commands) = mpsc::channel(16);
     let (media_tx, mut media) =
         mpsc::channel::<MediaPacket>(usize::from(app.args.in_flight_frames));
@@ -1083,9 +1100,9 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 write_tx.send(WriteComplete { generation: packet.generation, sequence: packet.sequence, written: None, duration: Duration::ZERO }).await.context("write completion channel closed")?;
                 continue;
             }
-            let started = Instant::now();
+            let started = session_now();
             tokio::time::timeout(Duration::from_secs(10), sink.send(Message::Binary(packet.bytes.into()))).await.context("media write timed out")??;
-            let completed = Instant::now();
+            let completed = session_now();
             write_tx.send(WriteComplete { generation: packet.generation, sequence: packet.sequence, written: Some(completed), duration: completed.saturating_duration_since(started) }).await.context("write completion channel closed")?;
         }
     });
@@ -1128,7 +1145,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                 window.waited_for_bytes(blocked.elapsed());
             }
             // Reserve before the writer sees the packet: ACK can race completion.
-            window.reserve(packet.sequence, packet.bytes.len(), Instant::now())?;
+            window.reserve(packet.sequence, packet.bytes.len(), session_now())?;
             app.bytes
                 .fetch_add(packet.bytes.len() as u64, Ordering::Relaxed);
             app.frames.fetch_add(1, Ordering::Relaxed);
@@ -1141,13 +1158,13 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
         }
         let deadline = window.oldest_deadline();
         let sleep_deadline = tokio::time::Instant::from_std(
-            deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(86400)),
+            deadline.unwrap_or_else(|| session_now() + Duration::from_secs(86400)),
         );
         tokio::select! {
             Some(result) = io_tasks.join_next() => { result.context("stream I/O task failed")??; break; }
             Some(command) = commands.recv() => {
                 match command {
-                    StreamCommand::Ack(sequence) => { window.acknowledge(sequence, Instant::now())?; }
+                    StreamCommand::Ack(sequence) => { window.acknowledge(sequence, session_now())?; }
                     StreamCommand::Resync => {
                         window.begin_resync(sequence)?;
                         generation.store(window.generation(), Ordering::Release);
