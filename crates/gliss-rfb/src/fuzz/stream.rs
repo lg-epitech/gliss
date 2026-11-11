@@ -614,9 +614,11 @@ impl Generator<'_> {
         if !*resized && !self.rng.chance(3) {
             let size = (self.side(), self.side());
             if size != (self.width, self.height) {
+                // What was drawn on the old desktop counts on the new one.
+                let drawn = usize::from(self.width) * usize::from(self.height) * 4 - *budget;
                 (self.width, self.height) = size;
                 *resized = true;
-                *budget = usize::from(size.0) * usize::from(size.1) * 4;
+                *budget = (usize::from(size.0) * usize::from(size.1) * 4).saturating_sub(drawn);
             }
         }
         (self.width, self.height)
@@ -1066,6 +1068,26 @@ impl Generator<'_> {
                 self.rectangle(0, 0, 1, 1, encoding);
                 self.fill(4);
             }
+            // The pixel budget across a change of size: whole copies of the
+            // old desktop, the change, then as many copies of the new desktop
+            // as it allows less what the old ones took, or one more.
+            17 => {
+                let before = (choice / 2 % 5) as u16;
+                let size = self.other_size();
+                let taken = usize::from(before) * usize::from(width) * usize::from(height);
+                let area = usize::from(size.0) * usize::from(size.1);
+                let after = ((area * 4).saturating_sub(taken) / area + (choice & 1)) as u16;
+                self.update_of(before + 1 + after);
+                for _ in 0..before {
+                    self.whole_copy();
+                }
+                self.sized(size);
+                (self.width, self.height) = size;
+                for _ in 0..after {
+                    self.whole_copy();
+                }
+            }
+            // A message type the protocol does not have.
             _ => {
                 self.field();
                 self.bytes.push(chosen(&[1, 4, 150, 254], choice));
@@ -1212,7 +1234,7 @@ fn generated(rng: &mut Rng) -> (Vec<u8>, Vec<usize>, Option<&'static str>) {
 }
 
 /// How many kinds of edge [`Generator::edge`] writes.
-const EDGES: usize = 18;
+const EDGES: usize = 19;
 /// How many kinds of edge [`refused_handshake`] writes.
 const HANDSHAKE_EDGES: usize = 9;
 /// The most forms one kind of edge has.

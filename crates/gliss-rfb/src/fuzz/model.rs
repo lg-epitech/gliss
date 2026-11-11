@@ -154,17 +154,20 @@ pub struct Desktop {
 
 /// What one framebuffer update has done so far.
 struct Update {
-    /// Pixels its remaining rectangles may write or move.
-    budget: usize,
+    /// Pixels its rectangles have written or moved.
+    drawn: usize,
     resized: bool,
     /// Whether a pixel or the size changed.
     changed: bool,
 }
 
 impl Update {
-    fn draw(&mut self, area: usize) -> Parsed<()> {
-        allowed(area <= self.budget)?;
-        self.budget -= area;
+    /// A rectangle of `area` pixels on a desktop that allows one update
+    /// `limit` pixels. What was drawn before a change of size counts too, so
+    /// on a smaller desktop there may be nothing left.
+    fn draw(&mut self, area: usize, limit: usize) -> Parsed<()> {
+        allowed(area <= limit.saturating_sub(self.drawn))?;
+        self.drawn += area;
         self.changed |= area > 0;
         Ok(())
     }
@@ -392,7 +395,7 @@ impl<'a> Reference<'a> {
         self.wire.u8()?;
         let count = self.wire.u16()?;
         let mut update = Update {
-            budget: self.budget(),
+            drawn: 0,
             resized: false,
             changed: false,
         };
@@ -405,7 +408,7 @@ impl<'a> Reference<'a> {
             match self.wire.i32()? {
                 0 => {
                     self.inside(x, y, width, height)?;
-                    update.draw(area)?;
+                    update.draw(area, self.budget())?;
                     for row in 0..usize::from(height) {
                         for column in 0..usize::from(width) {
                             let pixel = self.wire.take(4)?;
@@ -420,7 +423,7 @@ impl<'a> Reference<'a> {
                     let source_x = self.wire.u16()?;
                     let source_y = self.wire.u16()?;
                     self.inside(source_x, source_y, width, height)?;
-                    update.draw(area)?;
+                    update.draw(area, self.budget())?;
                     // All of the source is read before any of it is written.
                     let row_bytes = usize::from(width) * 4;
                     let mut source = Vec::with_capacity(area * 4);
@@ -514,13 +517,14 @@ impl<'a> Reference<'a> {
         Ok(())
     }
 
-    /// What one update may write or move, in pixels.
+    /// What one update may write or move on the desktop as it is now, in
+    /// pixels.
     fn budget(&self) -> usize {
         usize::from(self.width) * usize::from(self.height) * UPDATE_AREA_BUDGET
     }
 
-    /// An update may change the size once; the rectangles after that draw the
-    /// new desktop, so they get its budget.
+    /// An update may change the size once. The rectangles after that draw the
+    /// new desktop and are held to what it allows.
     fn set_size(&mut self, width: u16, height: u16, update: &mut Update) -> Parsed<()> {
         if (width, height) == (self.width, self.height) {
             return Ok(());
@@ -529,7 +533,6 @@ impl<'a> Reference<'a> {
         self.resize(width, height);
         update.resized = true;
         update.changed = true;
-        update.budget = self.budget();
         Ok(())
     }
 
