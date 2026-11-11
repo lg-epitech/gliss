@@ -161,11 +161,46 @@ fn variable(name: &str) -> Option<u64> {
     Some(value.unwrap_or_else(|_| panic!("{name} must be a number, not {text:?}")))
 }
 
-/// FNV-1a, so that each target has its own default seed.
-fn hash(text: &str) -> u64 {
-    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+/// FNV-1a: each target's default seed, and the fingerprint of a long result
+/// in a vector file.
+pub fn fingerprint(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
     })
+}
+
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Checks the vector file `name` in `test-support/fuzz` against `current`,
+/// what the Rust side makes of the same inputs today. The Node tests run the
+/// browser's parsers over these files, so the two sides are compared without
+/// one test run needing the other. `GLISS_FUZZ_WRITE_VECTORS` rewrites the
+/// file instead, after a deliberate change of format or behaviour.
+pub fn assert_vectors(name: &str, current: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test-support/fuzz")
+        .join(name);
+    if std::env::var_os("GLISS_FUZZ_WRITE_VECTORS").is_some() {
+        std::fs::write(&path, current).unwrap();
+        return;
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(
+        committed == current,
+        "{} is not what this build produces; if that is intended, rewrite it with \
+         GLISS_FUZZ_WRITE_VECTORS=1 and run the Node tests",
+        path.display()
+    );
+}
+
+/// Where a campaign writes vectors for the Node tests to read: the file
+/// `name` in the directory `GLISS_FUZZ_VECTORS` names, if it names one.
+pub fn campaign_vectors(name: &str) -> Option<std::fs::File> {
+    let directory = std::path::PathBuf::from(std::env::var_os("GLISS_FUZZ_VECTORS")?);
+    std::fs::create_dir_all(&directory).unwrap();
+    Some(std::fs::File::create(directory.join(name)).unwrap())
 }
 
 /// Says how to replay the iteration that panicked.
@@ -198,7 +233,7 @@ const STUCK: Duration = Duration::from_secs(300);
 /// `GLISS_FUZZ_START` the first iteration number. An iteration that never
 /// returns aborts the process with its seed, since a test cannot be cancelled.
 pub fn run(target: &str, default_iterations: u64, mut iteration: impl FnMut(&mut Rng, u64)) {
-    let seed = variable("GLISS_FUZZ_SEED").unwrap_or_else(|| hash(target));
+    let seed = variable("GLISS_FUZZ_SEED").unwrap_or_else(|| fingerprint(target.as_bytes()));
     let start = variable("GLISS_FUZZ_START").unwrap_or(0);
     let count = variable("GLISS_FUZZ_ITERATIONS").unwrap_or(default_iterations);
     let progress = Arc::new(AtomicU64::new(start));

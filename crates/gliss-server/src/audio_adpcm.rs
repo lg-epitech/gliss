@@ -97,6 +97,10 @@ pub fn decode(bytes: &[u8], frames: usize) -> Result<Vec<f32>> {
 }
 
 #[cfg(test)]
+#[path = "fuzz/adpcm.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
