@@ -1,4 +1,3 @@
-import { Decoder } from './decoder.js';
 import { VideoDecoderAdapter } from './video-decoder.js';
 import { decodeProbe } from './probe.js';
 import { AudioPlayer, isAudioPacket } from './audio-player.js';
@@ -8,29 +7,27 @@ for(let n=1;n<=24;n++)keysyms[`F${n}`]=0xffbd+n;
 
 export class GlissClient {
   constructor(canvas, onStatus=()=>{}, onEvent=()=>{}, {url}={}) {
-    this.canvas=canvas; this.url=url; this.listeners=new AbortController(); this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new Decoder(); this.onStatus=onStatus; this.onEvent=onEvent;
+    this.canvas=canvas; this.url=url; this.listeners=new AbortController(); this.ctx=canvas.getContext('2d',{alpha:false}); this.decoder=new VideoDecoderAdapter(); this.onStatus=onStatus; this.onEvent=onEvent;
     this.socket=null; this.inputId=0; this.keys=new Map(); this.buttons=0; this.point={x:0,y:0}; this.chain=Promise.resolve(); this.epoch=0;
     this.metrics={frames:0,bytes:0,decodeMs:[],presentTimes:[],forwardedInputAgeMs:[],pixelEchoLatencyMs:[],pixelEchoEvents:[],errors:0};
     this.pendingInputs=new Map(); this.pixelInputs=new Map();
-    this.renderStrategy='damage';this.needsFullPaint=false;this.codec=null;this.pendingPaint=null;
+    this.codec=null;this.pendingPaint=null;
     this.profiler=null;this.profilingStart=null;
     this.audio=new AudioPlayer(state=>{
       if(!state.enabled&&this.audioRequested){this.audioRequested=false;this.audioControl(false);}
       this.onEvent(state);
     });this.audioRequested=false;
-    // Canvas restoration clears its bitmap, including regions outside damage.
-    canvas.addEventListener('contextrestored',()=>{this.needsFullPaint=true;},{signal:this.listeners.signal});
     this.bindInput();
   }
   async connect() {
-    this.disconnect(); this.decoder=new Decoder(); this.chain=Promise.resolve();
-    let decoder=this.decoder;const epoch=++this.epoch;
+    this.disconnect(); this.decoder=new VideoDecoderAdapter(); this.chain=Promise.resolve();
+    const decoder=this.decoder,epoch=++this.epoch;
     const socket=new WebSocket(this.url??`${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws`);
     this.socket=socket; socket.binaryType='arraybuffer';
     socket.onopen=()=>{if(epoch===this.epoch){this.onStatus('Connected');this.canvas.focus();}};
     socket.onclose=event=>{
       if(epoch!==this.epoch)return;
-      ++this.epoch;this.pendingPaint?.();decoder.close?.();
+      ++this.epoch;this.pendingPaint?.();decoder.close();
       this.keys.clear();this.buttons=0;this.pendingInputs.clear();this.pixelInputs.clear();
       this.profilingStart=null;this.profiler?.stop('disconnect');
       this.audioRequested=false;this.audio.dispose();this.onStatus('Desktop disconnected');
@@ -51,35 +48,17 @@ export class GlissClient {
       if(typeof event.data==='string'){
         if(textError)throw textError;
         const message=textMessage;
-        if(message.type==='hello'){
-          this.codec=message.codec;
-          if(message.codec==='h264'){decoder=new VideoDecoderAdapter();this.decoder=decoder;}
-          else if(message.codec==='hybrid'){
-            // Negotiate before loading optional media modules, leaving room for
-            // the WebSocket on bounded HTTP/1 connection relays.
-            const {HybridDecoder}=await import('./hybrid-decoder.js');
-            if(epoch!==this.epoch)return;
-            decoder=new HybridDecoder();this.decoder=decoder;
-          }else if(message.codec==='hybrid-grid'){
-            const {HybridGridDecoder}=await import('./hybrid-grid-decoder.js');
-            if(epoch!==this.epoch)return;
-            decoder=new HybridGridDecoder();this.decoder=decoder;
-          }else if(message.codec==='hybrid-continuity'){
-            const {HybridContinuityDecoder}=await import('./hybrid-continuity-decoder.js');
-            if(epoch!==this.epoch)return;
-            decoder=new HybridContinuityDecoder();this.decoder=decoder;
-          }
-        }
+        if(message.type==='hello')this.codec=message.codec;
         this.onEvent(message);return;
       }
       const started=performance.now();let ownedVideoFrame=null;
       try {
         const frame=await decoder.decode(event.data);
-        ownedVideoFrame=frame.videoFrame??null;
+        ownedVideoFrame=frame.videoFrame;
         if(epoch!==this.epoch){return;}
         const decoded=performance.now(),decodeMs=decoded-started;
         this.metrics.decodeMs.push(decodeMs);
-        if(this.canvas.width!==frame.width||this.canvas.height!==frame.height){this.canvas.width=frame.width;this.canvas.height=frame.height;this.needsFullPaint=true;}
+        if(this.canvas.width!==frame.width||this.canvas.height!==frame.height){this.canvas.width=frame.width;this.canvas.height=frame.height;}
         // Disconnect can release this wait while a hidden document suspends RAF.
         await new Promise(resolve=>{
           let cancel;
@@ -91,17 +70,8 @@ export class GlissClient {
         });
         if(epoch!==this.epoch){return;}
         const paintStarted=performance.now();
-        if(frame.videoFrame)this.ctx.drawImage(frame.videoFrame,0,0);
-        else if(this.renderStrategy==='damage'&&!this.needsFullPaint&&frame.damage!==undefined){
-          const area=frame.damage;
-          if(area){
-            const image=new ImageData(frame.pixels,frame.width,frame.height);
-            if(area.width===frame.width&&area.height===frame.height)this.ctx.putImageData(image,0,0);
-            else this.ctx.putImageData(image,0,0,area.x,area.y,area.width,area.height);
-          }
-        }else this.ctx.putImageData(new ImageData(frame.pixels,frame.width,frame.height),0,0);
-        ownedVideoFrame?.close();ownedVideoFrame=null;
-        this.needsFullPaint=false;
+        this.ctx.drawImage(ownedVideoFrame,0,0);
+        ownedVideoFrame.close();ownedVideoFrame=null;
         // This is CPU submission + requestAnimationFrame, not physical photon presentation.
         const presented=performance.now();
         this.presentationState={codec:this.codec,sequence:frame.sequence,width:frame.width,height:frame.height,presentedAtMs:presented,wholeFrame:true};
@@ -173,7 +143,7 @@ export class GlissClient {
   disconnect(){
     ++this.epoch;this.pendingPaint?.();
     this.profilingStart=null;this.profiler?.stop('disconnect');this.release();this.audioRequested=false;
-    this.socket?.close();this.decoder.close?.();this.pendingInputs.clear();this.pixelInputs.clear();
+    this.socket?.close();this.decoder.close();this.pendingInputs.clear();this.pixelInputs.clear();
     this.audio.dispose();
   }
   // Disconnects and removes every listener, for viewers embedded in a longer-lived page.

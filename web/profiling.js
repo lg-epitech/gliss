@@ -2,7 +2,6 @@
 const MAX_DURATION = 60000, MAX_FRAMES = 1024, MAX_SERVER = 60, MAX_BYTES = 262144;
 const TIMINGS = ['encode_ms', 'encode_cpu_ms', 'encode_worker_wait_ms', 'source_age_ms', 'write_ms', 'enqueue_to_ack_ms', 'byte_capacity_wait_ms'];
 const COUNTERS = ['encoded_frames', 'written_frames', 'acknowledged_frames', 'observed_capture_replacements', 'resyncs'];
-const CODECS = ['h264', 'batch', 'global', 'global-cached', 'sparse', 'deflate', 'raw', 'rle', 'hybrid', 'hybrid-grid', 'hybrid-continuity'];
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1e15;
 const integer = value => number(value) && Number.isSafeInteger(value);
 const round = value => Math.round(value * 1000) / 1000;
@@ -54,7 +53,7 @@ export class StreamProfiler {
     this.#clearTimeout = adapters.clearTimeout ?? globalThis.clearTimeout.bind(globalThis);
     this.#clearInterval = adapters.clearInterval ?? globalThis.clearInterval.bind(globalThis);
     this.#sample = adapters.sample;this.#send = adapters.sendProbe;this.#onStop = adapters.onStop;
-    this.#codec = CODECS.includes(adapters.codec) ? adapters.codec : null;
+    this.#codec = adapters.codec === 'h264' ? adapters.codec : null;
     this.#start = this.#now();if (!number(this.#start)) throw new Error('Profiling clock unavailable');
     this.#end = this.#start + duration;this.#probeInterval = probes;this.#nextProbe = this.#start + (probes ?? MAX_DURATION);
     this.#prefix = 'gliss-profile-' + (++nonce) + '-' + (globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)) + '-';

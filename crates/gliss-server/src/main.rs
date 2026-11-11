@@ -20,7 +20,6 @@ use axum::{
 };
 use clap::Parser;
 use futures_util::{SinkExt, StreamExt};
-use gliss_codec::{Encoder, Mode};
 use gliss_core::{Frame, Input, MAX_CLIPBOARD};
 use gliss_rfb::Event;
 use gliss_video::{VideoEncoder, VideoProfile, VideoTiming};
@@ -80,7 +79,7 @@ struct Args {
     /// Exact browser origin, required when listening outside loopback. Use TLS at your proxy.
     #[arg(long)]
     origin: Option<String>,
-    #[arg(long, default_value = "deflate")]
+    #[arg(long, default_value = "h264", value_parser = ["h264"])]
     codec: String,
     #[arg(long, default_value_t = 4_000_000)]
     h264_bitrate: u32,
@@ -102,17 +101,6 @@ struct Args {
     /// Requested maximum H.264 QP; must accompany video-qp-min.
     #[arg(long, requires = "video_qp_min", value_parser = clap::value_parser!(u8).range(1..=51))]
     video_qp_max: Option<u8>,
-    /// Explicit exact-base experiment for the Hybrid codecs.
-    #[arg(long, default_value = "global", value_parser = ["global", "global-cached"])]
-    hybrid_base: String,
-    /// Explicit native usage/scene experiment for the Hybrid codecs.
-    #[arg(long, default_value = "screen", value_parser = ["screen", "camera-scene-on", "camera-scene-off"])]
-    hybrid_video_profile: String,
-    /// GLH2/GLH4 mask edge; requires hybrid-grid or hybrid-continuity, defaults to 32.
-    #[arg(long, value_parser = parse_mask_grid)]
-    hybrid_mask_grid: Option<u16>,
-    #[arg(long, default_value_t = 64)]
-    tile_size: u16,
     #[arg(long, default_value_t = 60)]
     fps: u32,
     /// Experimental media window; the stable default waits for each frame ACK.
@@ -176,10 +164,7 @@ mod audio_option_tests {
 
 struct App {
     args: Args,
-    mode: Option<Mode>,
-    hybrid_config: gliss_hybrid::HybridConfig,
-    hybrid_mask_grid: Option<u16>,
-    video_timing: Option<VideoTiming>,
+    video_timing: VideoTiming,
     tcp_listener: Arc<tcp_listener::SocketPolicy>,
     worker_shutdown: watch::Sender<bool>,
     origins: Vec<String>,
@@ -220,29 +205,9 @@ const WEB_ASSETS: &[(&str, &str, &str)] = &[
         include_str!("../../../web/audio-adpcm.js"),
     ),
     (
-        "decoder.js",
-        "text/javascript",
-        include_str!("../../../web/decoder.js"),
-    ),
-    (
         "video-decoder.js",
         "text/javascript",
         include_str!("../../../web/video-decoder.js"),
-    ),
-    (
-        "hybrid-decoder.js",
-        "text/javascript",
-        include_str!("../../../web/hybrid-decoder.js"),
-    ),
-    (
-        "hybrid-grid-decoder.js",
-        "text/javascript",
-        include_str!("../../../web/hybrid-grid-decoder.js"),
-    ),
-    (
-        "hybrid-continuity-decoder.js",
-        "text/javascript",
-        include_str!("../../../web/hybrid-continuity-decoder.js"),
     ),
     (
         "probe.js",
@@ -297,28 +262,9 @@ async fn run(args: Args) -> Result<()> {
     {
         bail!("non-loopback bind requires an exact HTTPS --origin and a TLS reverse proxy");
     }
-    let mode = if matches!(
-        args.codec.as_str(),
-        "h264" | "hybrid" | "hybrid-grid" | "hybrid-continuity"
-    ) {
-        None
-    } else {
-        Some(args.codec.parse::<Mode>()?)
-    };
-    let hybrid_config = configured_hybrid(&args)?;
-    let hybrid_mask_grid = configured_mask_grid(&args)?;
     let video_timing = configured_video_timing(&args)?;
-    if let Some(mode) = mode {
-        Encoder::new(mode, args.tile_size)?;
-    } else if args.fps > 60 || !(1_000..=50_000_000).contains(&args.h264_bitrate) {
+    if args.fps > 60 || !(1_000..=50_000_000).contains(&args.h264_bitrate) {
         bail!("software H264 requires fps <= 60 and bitrate 1000..50000000");
-    }
-    if matches!(
-        args.codec.as_str(),
-        "hybrid" | "hybrid-grid" | "hybrid-continuity"
-    ) && args.tile_size != 64
-    {
-        bail!("the experimental hybrid exact base requires tile-size 64");
     }
     demo::validate_workload(&args.workload)?;
     let origins = match &args.origin {
@@ -335,9 +281,6 @@ async fn run(args: Args) -> Result<()> {
     let app = Arc::new(App {
         tcp_listener: tcp_listener.clone(),
         args,
-        mode,
-        hybrid_config,
-        hybrid_mask_grid,
         video_timing,
         worker_shutdown,
         origins,
@@ -391,26 +334,6 @@ async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
-fn parse_mask_grid(value: &str) -> Result<u16, String> {
-    match value {
-        "16" => Ok(16),
-        "32" => Ok(32),
-        _ => Err("hybrid-mask-grid must be 16 or 32".to_owned()),
-    }
-}
-
-fn configured_mask_grid(args: &Args) -> Result<Option<u16>> {
-    if matches!(args.codec.as_str(), "hybrid-grid" | "hybrid-continuity") {
-        Ok(Some(args.hybrid_mask_grid.unwrap_or(32)))
-    } else {
-        ensure!(
-            args.hybrid_mask_grid.is_none(),
-            "hybrid-mask-grid requires --codec hybrid-grid or hybrid-continuity"
-        );
-        Ok(None)
-    }
-}
-
 fn explicit_video_timing(args: &Args) -> bool {
     args.video_fps.is_some()
         || args.video_timestamp_fps.is_some()
@@ -450,7 +373,7 @@ mod option_tests {
                 "{path}"
             );
         }
-        for path in ["client.js", "decoder.js", "video-decoder.js"] {
+        for path in ["client.js", "video-decoder.js", "audio-player.js"] {
             assert!(
                 WEB_ASSETS.iter().any(|(name, _, _)| *name == path),
                 "{path}"
@@ -502,39 +425,24 @@ fn configured_video_qp(args: &Args) -> Result<Option<gliss_video::QpBounds>> {
 /// The longest interval the encoder accepts: two minutes of frames at 30 fps.
 const DEFAULT_INTRA_PERIOD: u32 = 3600;
 
-fn configured_video_timing(args: &Args) -> Result<Option<VideoTiming>> {
-    let qp = configured_video_qp(args)?;
-    if args.video_frame_skip || qp.is_some() {
-        ensure!(
-            args.codec == "h264",
-            "video frame skipping and QP bounds require h264"
-        );
-    }
-    if args.codec != "h264" {
-        ensure!(
-            !explicit_video_timing(args),
-            "video-fps, video-timestamp-fps and video-intra-period require --codec h264"
-        );
-        return Ok(None);
-    }
+fn configured_video_timing(args: &Args) -> Result<VideoTiming> {
+    configured_video_qp(args)?;
     // A WebSocket stream loses nothing, and its client asks for a keyframe after a
     // decode error. A periodic keyframe there only costs a burst of bytes and
     // resets the picture to a coarser quality, so it is as rare as the encoder allows.
-    Ok(Some(VideoTiming::new(
+    VideoTiming::new(
         args.video_fps.unwrap_or(args.fps),
         args.video_timestamp_fps.unwrap_or(args.fps),
         args.video_intra_period.unwrap_or(DEFAULT_INTRA_PERIOD),
-    )?))
+    )
 }
 
 fn with_video_metadata(
     mut value: serde_json::Value,
     args: &Args,
-    timing: Option<VideoTiming>,
+    timing: VideoTiming,
 ) -> serde_json::Value {
-    if explicit_video_timing(args)
-        && let Some(timing) = timing
-    {
+    if explicit_video_timing(args) {
         value["video_config"] = json!({
             "fps": timing.fps(),
             "timestamp_fps": timing.timestamp_fps(),
@@ -550,53 +458,7 @@ fn with_video_metadata(
     value
 }
 
-fn configured_hybrid(args: &Args) -> Result<gliss_hybrid::HybridConfig> {
-    use gliss_hybrid::{BaseMode, HybridConfig, VideoProfile};
-    let base = match args.hybrid_base.as_str() {
-        "global" => BaseMode::Global,
-        "global-cached" => BaseMode::GlobalCached,
-        _ => bail!("hybrid-base must be global or global-cached"),
-    };
-    let video = match args.hybrid_video_profile.as_str() {
-        "screen" => VideoProfile::Screen,
-        "camera-scene-on" => VideoProfile::CameraSceneOn,
-        "camera-scene-off" => VideoProfile::CameraSceneOff,
-        _ => bail!("invalid hybrid-video-profile"),
-    };
-    let config = HybridConfig { base, video };
-    if !matches!(
-        args.codec.as_str(),
-        "hybrid" | "hybrid-grid" | "hybrid-continuity"
-    ) && config != HybridConfig::default()
-    {
-        bail!("nondefault hybrid options require --codec hybrid, hybrid-grid or hybrid-continuity");
-    }
-    Ok(config)
-}
-
-fn hybrid_metadata(codec: &str, config: gliss_hybrid::HybridConfig) -> Option<serde_json::Value> {
-    matches!(codec, "hybrid" | "hybrid-grid" | "hybrid-continuity").then(|| {
-        json!({"base_mode":config.base.name(),"video_profile":config.video.name(),"video_usage":config.video.usage_name(),"scene_change_detection":config.video.scene_change_detection()})
-    })
-}
-
-fn with_hybrid_metadata(
-    mut value: serde_json::Value,
-    codec: &str,
-    config: gliss_hybrid::HybridConfig,
-) -> serde_json::Value {
-    if let Some(metadata) = hybrid_metadata(codec, config) {
-        value["hybrid_config"] = metadata;
-    }
-    value
-}
-
-fn with_stream_metadata(value: serde_json::Value, app: &App) -> serde_json::Value {
-    let mut value = with_hybrid_metadata(value, &app.args.codec, app.hybrid_config);
-    if let Some(grid) = app.hybrid_mask_grid {
-        value["hybrid_config"]["mask_grid"] = json!(grid);
-        value["hybrid_config"]["base_tile"] = json!(64);
-    }
+fn with_stream_metadata(mut value: serde_json::Value, app: &App) -> serde_json::Value {
     value["tcp_listener"] = json!(app.tcp_listener.snapshot());
     value["audio_packet_ms"] = json!(app.args.audio_packet_ms.millis());
     with_video_metadata(value, &app.args, app.video_timing)
@@ -645,225 +507,6 @@ mod session_tests {
 }
 
 #[cfg(test)]
-mod hybrid_option_tests {
-    use super::*;
-    fn args(extra: &[&str]) -> Result<Args, clap::Error> {
-        Args::try_parse_from(
-            [
-                "gliss-server",
-                "--demo",
-                "--token",
-                "01234567890123456789012345678901",
-            ]
-            .into_iter()
-            .chain(extra.iter().copied()),
-        )
-    }
-    #[test]
-    fn old_codec_and_hybrid_defaults_retain_global_screen() {
-        let ordinary = args(&[]).unwrap();
-        assert_eq!(ordinary.codec, "deflate");
-        assert_eq!(
-            configured_hybrid(&ordinary).unwrap(),
-            gliss_hybrid::HybridConfig::default()
-        );
-        let hybrid = args(&["--codec", "hybrid"]).unwrap();
-        assert_eq!(
-            configured_hybrid(&hybrid).unwrap(),
-            gliss_hybrid::HybridConfig::default()
-        );
-        assert!(hybrid_metadata(&ordinary.codec, configured_hybrid(&ordinary).unwrap()).is_none());
-        let original = json!({"codec":"deflate","protocol":"GLS1"});
-        assert_eq!(
-            with_hybrid_metadata(
-                original.clone(),
-                &ordinary.codec,
-                configured_hybrid(&ordinary).unwrap()
-            ),
-            original
-        );
-    }
-    #[test]
-    fn explicit_hybrid_options_select_and_describe_the_encoder_configuration() {
-        use gliss_hybrid::{BaseMode, VideoProfile};
-        for (name, profile) in [
-            ("screen", VideoProfile::Screen),
-            ("camera-scene-on", VideoProfile::CameraSceneOn),
-            ("camera-scene-off", VideoProfile::CameraSceneOff),
-        ] {
-            let selected = args(&[
-                "--codec",
-                "hybrid",
-                "--hybrid-base",
-                "global-cached",
-                "--hybrid-video-profile",
-                name,
-            ])
-            .unwrap();
-            let config = configured_hybrid(&selected).unwrap();
-            assert_eq!(config.base, BaseMode::GlobalCached);
-            assert_eq!(config.video, profile);
-            let metadata = hybrid_metadata(&selected.codec, config).unwrap();
-            assert_eq!(metadata["base_mode"], "global-cached");
-            assert_eq!(metadata["video_profile"], name);
-            assert_eq!(metadata["video_usage"], profile.usage_name());
-            assert_eq!(
-                metadata["scene_change_detection"],
-                profile.scene_change_detection()
-            );
-        }
-    }
-    #[test]
-    fn nondefault_hybrid_options_require_hybrid_but_explicit_defaults_are_compatible() {
-        for codec in ["deflate", "global", "h264"] {
-            for options in [
-                ["--hybrid-base", "global-cached"],
-                ["--hybrid-video-profile", "camera-scene-on"],
-                ["--hybrid-video-profile", "camera-scene-off"],
-            ] {
-                let selected = args(&["--codec", codec, options[0], options[1]]).unwrap();
-                assert!(configured_hybrid(&selected).is_err());
-            }
-            let selected = args(&[
-                "--codec",
-                codec,
-                "--hybrid-base",
-                "global",
-                "--hybrid-video-profile",
-                "screen",
-            ])
-            .unwrap();
-            assert_eq!(
-                configured_hybrid(&selected).unwrap(),
-                gliss_hybrid::HybridConfig::default()
-            );
-        }
-    }
-    #[test]
-    fn unsupported_profile_and_base_values_are_rejected_by_cli_admission() {
-        for options in [
-            ["--hybrid-base", "adaptive"],
-            ["--hybrid-video-profile", "screen-scene-off"],
-            ["--hybrid-video-profile", "camera"],
-            ["--hybrid-video-profile", "gpu"],
-        ] {
-            assert!(args(&["--codec", "hybrid", options[0], options[1]]).is_err());
-        }
-    }
-
-    #[test]
-    fn fine_grid_requires_its_own_codec_and_rejects_unsupported_edges() {
-        for edge in ["0", "17", "31", "64", "65536"] {
-            assert!(args(&["--codec", "hybrid-grid", "--hybrid-mask-grid", edge]).is_err());
-        }
-        for codec in ["deflate", "hybrid", "h264"] {
-            let selected = args(&["--codec", codec, "--hybrid-mask-grid", "16"]).unwrap();
-            assert!(configured_mask_grid(&selected).is_err());
-        }
-    }
-
-    #[test]
-    fn fine_grid_defaults_and_explicit_axes_are_separate_from_the_old_hybrid() {
-        let old = args(&["--codec", "hybrid"]).unwrap();
-        assert_eq!(configured_mask_grid(&old).unwrap(), None);
-        let new = args(&["--codec", "hybrid-grid"]).unwrap();
-        assert_eq!(configured_mask_grid(&new).unwrap(), Some(32));
-        assert_eq!(
-            configured_hybrid(&new).unwrap(),
-            gliss_hybrid::HybridConfig::default()
-        );
-        let explicit = args(&[
-            "--codec",
-            "hybrid-grid",
-            "--hybrid-mask-grid",
-            "16",
-            "--hybrid-base",
-            "global-cached",
-            "--hybrid-video-profile",
-            "camera-scene-off",
-        ])
-        .unwrap();
-        assert_eq!(configured_mask_grid(&explicit).unwrap(), Some(16));
-        assert_eq!(
-            configured_hybrid(&explicit).unwrap(),
-            gliss_hybrid::HybridConfig {
-                base: gliss_hybrid::BaseMode::GlobalCached,
-                video: gliss_hybrid::VideoProfile::CameraSceneOff
-            }
-        );
-    }
-
-    #[test]
-    fn continuity_codec_has_separate_grid_default_and_explicit_profile_axes() {
-        let selected = args(&["--codec", "hybrid-continuity"]).unwrap();
-        assert_eq!(configured_mask_grid(&selected).unwrap(), Some(32));
-        assert_eq!(
-            configured_hybrid(&selected).unwrap(),
-            gliss_hybrid::HybridConfig::default()
-        );
-        for grid in ["16", "32"] {
-            for (name, profile) in [
-                ("screen", gliss_hybrid::VideoProfile::Screen),
-                ("camera-scene-on", gliss_hybrid::VideoProfile::CameraSceneOn),
-                (
-                    "camera-scene-off",
-                    gliss_hybrid::VideoProfile::CameraSceneOff,
-                ),
-            ] {
-                let explicit = args(&[
-                    "--codec",
-                    "hybrid-continuity",
-                    "--hybrid-mask-grid",
-                    grid,
-                    "--hybrid-base",
-                    "global-cached",
-                    "--hybrid-video-profile",
-                    name,
-                ])
-                .unwrap();
-                assert_eq!(
-                    configured_mask_grid(&explicit).unwrap(),
-                    Some(grid.parse().unwrap())
-                );
-                let config = configured_hybrid(&explicit).unwrap();
-                assert_eq!(config.base, gliss_hybrid::BaseMode::GlobalCached);
-                assert_eq!(config.video, profile);
-                let metadata = hybrid_metadata(&explicit.codec, config).unwrap();
-                assert_eq!(metadata["base_mode"], "global-cached");
-                assert_eq!(metadata["video_profile"], name);
-                assert_eq!(
-                    metadata["scene_change_detection"],
-                    profile.scene_change_detection()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn continuity_cli_rejects_invalid_grid_and_preserves_other_codec_defaults() {
-        for edge in ["0", "17", "31", "64", "65536"] {
-            assert!(args(&["--codec", "hybrid-continuity", "--hybrid-mask-grid", edge]).is_err());
-        }
-        for options in [
-            ["--hybrid-base", "adaptive"],
-            ["--hybrid-video-profile", "screen-scene-off"],
-        ] {
-            assert!(args(&["--codec", "hybrid-continuity", options[0], options[1]]).is_err());
-        }
-        for codec in ["deflate", "hybrid", "h264"] {
-            let unchanged = args(&["--codec", codec]).unwrap();
-            assert_eq!(configured_mask_grid(&unchanged).unwrap(), None);
-            assert_eq!(
-                configured_hybrid(&unchanged).unwrap(),
-                gliss_hybrid::HybridConfig::default()
-            );
-            let invalid = args(&["--codec", codec, "--hybrid-mask-grid", "16"]).unwrap();
-            assert!(configured_mask_grid(&invalid).is_err());
-        }
-    }
-}
-
-#[cfg(test)]
 mod video_timing_option_tests {
     use super::*;
 
@@ -884,12 +527,12 @@ mod video_timing_option_tests {
     fn websocket_h264_keyframes_are_3600_encoded_frames_apart_at_any_fps() {
         for fps in ["15", "30", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
-            let timing = configured_video_timing(&args).unwrap().unwrap();
+            let timing = configured_video_timing(&args).unwrap();
             assert_eq!(timing.intra_period(), 3600);
         }
         let args = args(&["--codec", "h264", "--fps", "30"]).unwrap();
-        let timing = configured_video_timing(&args).unwrap().unwrap();
-        let mut encoder = StreamEncoder::Video {
+        let timing = configured_video_timing(&args).unwrap();
+        let mut encoder = StreamEncoder {
             encoder: None,
             timing,
             bitrate: 2_000_000,
@@ -915,10 +558,7 @@ mod video_timing_option_tests {
         for period in ["1", "4", "60", "240", "3600"] {
             let args = args(&["--codec", "h264", "--video-intra-period", period]).unwrap();
             assert_eq!(
-                configured_video_timing(&args)
-                    .unwrap()
-                    .unwrap()
-                    .intra_period(),
+                configured_video_timing(&args).unwrap().intra_period(),
                 period.parse::<u32>().unwrap()
             );
         }
@@ -928,29 +568,23 @@ mod video_timing_option_tests {
     fn default_rates_follow_capture_fps_and_metadata_stays_implicit() {
         for fps in ["15", "60"] {
             let args = args(&["--codec", "h264", "--fps", fps]).unwrap();
-            let timing = configured_video_timing(&args).unwrap().unwrap();
+            let timing = configured_video_timing(&args).unwrap();
             assert_eq!(timing, VideoTiming::new(args.fps, args.fps, 3600).unwrap());
             let original = json!({"codec": "h264", "fps_limit": args.fps});
             assert_eq!(
-                with_video_metadata(original.clone(), &args, Some(timing)),
+                with_video_metadata(original.clone(), &args, timing),
                 original
             );
-        }
-        for codec in ["deflate", "hybrid", "hybrid-grid", "hybrid-continuity"] {
-            let args = args(&["--codec", codec]).unwrap();
-            assert!(configured_video_timing(&args).unwrap().is_none());
-            let original = json!({"codec": codec});
-            assert_eq!(with_video_metadata(original.clone(), &args, None), original);
         }
     }
 
     #[test]
     fn explicit_video_rates_are_independent_and_describe_resolved_native_policy() {
         let args = args(&["--codec", "h264", "--fps", "60", "--video-fps", "15"]).unwrap();
-        let timing = configured_video_timing(&args).unwrap().unwrap();
+        let timing = configured_video_timing(&args).unwrap();
         assert_eq!(args.fps, 60);
         assert_eq!(timing, VideoTiming::new(15, 60, 3600).unwrap());
-        let metadata = with_video_metadata(json!({"fps_limit": args.fps}), &args, Some(timing));
+        let metadata = with_video_metadata(json!({"fps_limit": args.fps}), &args, timing);
         assert_eq!(
             metadata,
             json!({"fps_limit":60,"video_config":{
@@ -971,12 +605,12 @@ mod video_timing_option_tests {
             ),
         ] {
             let args = self::args(&["--codec", "h264", "--fps", "15", option, value]).unwrap();
-            assert_eq!(configured_video_timing(&args).unwrap(), Some(expected));
+            assert_eq!(configured_video_timing(&args).unwrap(), expected);
         }
     }
 
     #[test]
-    fn video_timing_cli_bounds_and_codec_scope_are_enforced() {
+    fn video_timing_cli_bounds_are_enforced() {
         for option in ["--video-fps", "--video-timestamp-fps"] {
             for value in ["0", "61", "4294967295", "-1", "x"] {
                 assert!(args(&["--codec", "h264", option, value]).is_err());
@@ -985,28 +619,12 @@ mod video_timing_option_tests {
         for value in ["0", "3601", "4294967295", "-1", "x"] {
             assert!(args(&["--codec", "h264", "--video-intra-period", value]).is_err());
         }
-        for codec in [
-            "deflate",
-            "global",
-            "hybrid",
-            "hybrid-grid",
-            "hybrid-continuity",
-        ] {
-            for option in [
-                "--video-fps",
-                "--video-timestamp-fps",
-                "--video-intra-period",
-            ] {
-                let args = args(&["--codec", codec, option, "60"]).unwrap();
-                assert!(configured_video_timing(&args).is_err());
-            }
-        }
     }
 
     #[test]
     fn lazy_video_encoder_retains_custom_timing_across_reset_and_resize() {
         let timing = VideoTiming::new(15, 60, 120).unwrap();
-        let mut encoder = StreamEncoder::Video {
+        let mut encoder = StreamEncoder {
             encoder: None,
             timing,
             bitrate: 3_000_000,
@@ -1018,14 +636,7 @@ mod video_timing_option_tests {
             let bytes = encoder.encode(&frame, sequence, 2).unwrap();
             let packet = gliss_video::parse_packet(&bytes).unwrap();
             assert_eq!(packet.keyframe, sequence != 2);
-            let StreamEncoder::Video {
-                encoder: Some(native),
-                ..
-            } = &encoder
-            else {
-                panic!("lazy encoder missing")
-            };
-            assert_eq!(native.timing(), timing);
+            assert_eq!(encoder.encoder.as_ref().unwrap().timing(), timing);
         }
         encoder.reset();
         let bytes = encoder.encode(&Frame::new(66, 50).unwrap(), 4, 3).unwrap();
@@ -1033,7 +644,7 @@ mod video_timing_option_tests {
     }
 
     #[test]
-    fn frame_skip_is_opt_in_and_rejects_other_codecs() {
+    fn frame_skip_is_opt_in() {
         let default = args(&["--codec", "h264"]).unwrap();
         assert!(!default.video_frame_skip);
         let enabled = args(&["--codec", "h264", "--video-frame-skip", "true"]).unwrap();
@@ -1046,8 +657,6 @@ mod video_timing_option_tests {
             )["video_frame_skip"],
             true
         );
-        let rejected = args(&["--codec", "deflate", "--video-frame-skip", "true"]).unwrap();
-        assert!(configured_video_timing(&rejected).is_err());
         assert!(args(&["--codec", "h264", "--video-frame-skip", "unknown"]).is_err());
     }
 }
@@ -1430,7 +1039,7 @@ fn replace_latest(
 }
 
 async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -> Result<()> {
-    let hello = Message::Text(with_stream_metadata(json!({"type":"hello","protocol":match app.mode {Some(Mode::Batch) => "GLB1", Some(Mode::Global | Mode::GlobalCached) => "GLB2", Some(Mode::Sparse) => "GLB3", Some(_) => "GLS1", None if app.args.codec == "hybrid" => "GLH1", None if app.args.codec == "hybrid-grid" => "GLH2", None if app.args.codec == "hybrid-continuity" => "GLH4", None => "GLV1"},"codec":app.args.codec,"source":if app.args.demo {"demo"} else {"rfb"},"fps_limit":app.args.fps,"input_metadata":"latest forwarded input; not proof of causal display"}),&app).to_string().into());
+    let hello = Message::Text(with_stream_metadata(json!({"type":"hello","protocol":"GLV1","codec":app.args.codec,"source":if app.args.demo {"demo"} else {"rfb"},"fps_limit":app.args.fps,"input_metadata":"latest forwarded input; not proof of causal display"}),&app).to_string().into());
     let (mut sink, mut receiver) = socket.split();
     let (command_tx, mut commands) = mpsc::channel(16);
     let (media_tx, mut media) =
@@ -1440,7 +1049,6 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     let generation = Arc::new(AtomicU64::new(0));
     let mut io_tasks = JoinSet::<Result<()>>::new();
     let input = source.input.clone();
-    let video = app.args.codec == "h264";
     let audio_request = source.audio.request.clone();
     let writer_audio_request = audio_request.subscribe();
     let mut audio_status = source.audio.status.clone();
@@ -1466,7 +1074,7 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
                             if let Input::Clipboard { text, .. } = &command && text.len() > MAX_CLIPBOARD {
                                 bail!("clipboard too large");
                             }
-                            if video && matches!(command, Input::Resize { width, height, .. } if width < 16 || height < 16 || width > 3840 || height > 2160 || width % 2 != 0 || height % 2 != 0) {
+                            if matches!(command, Input::Resize { width, height, .. } if width < 16 || height < 16 || width > 3840 || height > 2160 || width % 2 != 0 || height % 2 != 0) {
                                 Some(StreamCommand::Reply(Message::Text(json!({"type":"input_error","message":"Software H264 requires even desktop dimensions from 16x16 through 3840x2160."}).to_string().into())))
                             } else {
                                 input.try_send(command).context("input queue full")?;
@@ -1529,55 +1137,13 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
             write_tx.send(WriteComplete { generation: packet.generation, sequence: packet.sequence, written: Some(completed), duration: completed.saturating_duration_since(started) }).await.context("write completion channel closed")?;
         }
     });
-    let mut encoder = Some(match app.mode {
-        Some(mode) => StreamEncoder::Desktop(Encoder::new(mode, app.args.tile_size)?),
-        None if app.args.codec == "hybrid" => {
-            StreamEncoder::Hybrid(Box::new(gliss_hybrid::HybridEncoder::with_config(
-                app.args.fps,
-                app.args.h264_bitrate,
-                app.hybrid_config,
-            )?))
-        }
-        None if app.args.codec == "hybrid-grid" => {
-            use gliss_hybrid_grid::{BaseMode, HybridGridConfig, HybridGridEncoder};
-            StreamEncoder::HybridGrid(Box::new(HybridGridEncoder::with_config(
-                app.hybrid_mask_grid.context("Missing admitted GLH2 grid")?,
-                app.args.fps,
-                app.args.h264_bitrate,
-                HybridGridConfig {
-                    base: match app.hybrid_config.base {
-                        gliss_hybrid::BaseMode::Global => BaseMode::Global,
-                        gliss_hybrid::BaseMode::GlobalCached => BaseMode::GlobalCached,
-                    },
-                    video: app.hybrid_config.video,
-                },
-            )?))
-        }
-        None if app.args.codec == "hybrid-continuity" => {
-            use gliss_hybrid_continuity::{
-                BaseMode, HybridContinuityConfig, HybridContinuityEncoder,
-            };
-            StreamEncoder::HybridContinuity(Box::new(HybridContinuityEncoder::with_config(
-                app.hybrid_mask_grid.context("Missing admitted GLH4 grid")?,
-                app.args.fps,
-                app.args.h264_bitrate,
-                HybridContinuityConfig {
-                    base: match app.hybrid_config.base {
-                        gliss_hybrid::BaseMode::Global => BaseMode::Global,
-                        gliss_hybrid::BaseMode::GlobalCached => BaseMode::GlobalCached,
-                    },
-                    video: app.hybrid_config.video,
-                },
-            )?))
-        }
-        None => StreamEncoder::Video {
-            encoder: None,
-            timing: app.video_timing.context("Missing admitted H.264 timing")?,
-            bitrate: app.args.h264_bitrate,
-            options: gliss_video::VideoOptions {
-                frame_skip: app.args.video_frame_skip,
-                qp_bounds: configured_video_qp(&app.args)?,
-            },
+    let mut encoder = Some(StreamEncoder {
+        encoder: None,
+        timing: app.video_timing,
+        bitrate: app.args.h264_bitrate,
+        options: gliss_video::VideoOptions {
+            frame_skip: app.args.video_frame_skip,
+            qp_bounds: configured_video_qp(&app.args)?,
         },
     });
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
@@ -1723,31 +1289,18 @@ async fn stream_session(socket: WebSocket, app: Arc<App>, source: &mut Source) -
     Ok(())
 }
 
-enum StreamEncoder {
-    Desktop(Encoder),
-    Hybrid(Box<gliss_hybrid::HybridEncoder>),
-    HybridGrid(Box<gliss_hybrid_grid::HybridGridEncoder>),
-    HybridContinuity(Box<gliss_hybrid_continuity::HybridContinuityEncoder>),
-    Video {
-        encoder: Option<Box<VideoEncoder>>,
-        timing: VideoTiming,
-        bitrate: u32,
-        options: gliss_video::VideoOptions,
-    },
+/// The native encoder is built from the first frame, whose size it needs.
+struct StreamEncoder {
+    encoder: Option<Box<VideoEncoder>>,
+    timing: VideoTiming,
+    bitrate: u32,
+    options: gliss_video::VideoOptions,
 }
 
 impl StreamEncoder {
     fn reset(&mut self) {
-        match self {
-            Self::Desktop(encoder) => encoder.reset(),
-            Self::Hybrid(encoder) => encoder.reset(),
-            Self::HybridGrid(encoder) => encoder.reset(),
-            Self::HybridContinuity(encoder) => encoder.reset(),
-            Self::Video {
-                encoder: Some(encoder),
-                ..
-            } => encoder.reset(),
-            _ => {}
+        if let Some(encoder) = &mut self.encoder {
+            encoder.reset();
         }
     }
 
@@ -1763,33 +1316,20 @@ impl StreamEncoder {
         sequence: u32,
         input_id: u32,
     ) -> Result<Option<Vec<u8>>> {
-        match self {
-            Self::Desktop(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
-            Self::Hybrid(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
-            Self::HybridGrid(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
-            Self::HybridContinuity(encoder) => encoder.encode(frame, sequence, input_id).map(Some),
-            Self::Video {
-                encoder,
-                timing,
-                bitrate,
-                options,
-            } => {
-                if encoder.is_none() {
-                    *encoder = Some(Box::new(VideoEncoder::with_options(
-                        frame.width,
-                        frame.height,
-                        *bitrate,
-                        VideoProfile::Screen,
-                        *timing,
-                        *options,
-                    )?));
-                }
-                encoder
-                    .as_mut()
-                    .unwrap()
-                    .encode_optional(frame, sequence, input_id)
-            }
+        if self.encoder.is_none() {
+            self.encoder = Some(Box::new(VideoEncoder::with_options(
+                frame.width,
+                frame.height,
+                self.bitrate,
+                VideoProfile::Screen,
+                self.timing,
+                self.options,
+            )?));
         }
+        self.encoder
+            .as_mut()
+            .unwrap()
+            .encode_optional(frame, sequence, input_id)
     }
 }
 
@@ -1862,15 +1402,6 @@ mod video_qp_option_tests {
         ] {
             assert!(parse(&extra).is_err());
         }
-        let other = [
-            "--codec",
-            "deflate",
-            "--video-qp-min",
-            "26",
-            "--video-qp-max",
-            "51",
-        ];
-        assert!(configured_video_timing(&parse(&other).unwrap()).is_err());
         assert!(
             configured_video_timing(
                 &parse(&[

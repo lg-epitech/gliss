@@ -416,67 +416,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gliss-codec"
-version = "0.1.0-alpha.9"
-dependencies = [
- "anyhow",
- "flate2",
- "gliss-core",
- "libc",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "gliss-core"
 version = "0.1.0-alpha.9"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "gliss-hybrid"
-version = "0.1.0-alpha.9"
-dependencies = [
- "anyhow",
- "gliss-codec",
- "gliss-core",
- "gliss-video",
- "libc",
- "openh264",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "gliss-hybrid-continuity"
-version = "0.1.0-alpha.9"
-dependencies = [
- "anyhow",
- "gliss-codec",
- "gliss-core",
- "gliss-hybrid-grid",
- "gliss-video",
- "libc",
- "openh264",
- "serde_json",
- "sha2",
-]
-
-[[package]]
-name = "gliss-hybrid-grid"
-version = "0.1.0-alpha.9"
-dependencies = [
- "anyhow",
- "gliss-codec",
- "gliss-core",
- "gliss-hybrid",
- "gliss-video",
- "libc",
- "openh264",
- "serde_json",
- "sha2",
 ]
 
 [[package]]
@@ -498,11 +441,7 @@ dependencies = [
  "axum",
  "clap",
  "futures-util",
- "gliss-codec",
  "gliss-core",
- "gliss-hybrid",
- "gliss-hybrid-continuity",
- "gliss-hybrid-grid",
  "gliss-rfb",
  "gliss-video",
  "hex",

@@ -12,11 +12,7 @@ serde.workspace = true
 serde_json.workspace = true
 gliss-core.workspace = true
 gliss-rfb.workspace = true
-gliss-codec.workspace = true
 gliss-video.workspace = true
-gliss-hybrid.workspace = true
-gliss-hybrid-grid.workspace = true
-gliss-hybrid-continuity = { path = "../gliss-hybrid-continuity" }
 libc = "0.2"
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4", features = ["derive", "env"] }

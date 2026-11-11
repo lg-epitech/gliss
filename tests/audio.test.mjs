@@ -132,13 +132,19 @@ test('audio: gesture enables real stereo PCM playback; mute releases audio and s
   assert.equal(await page.evaluate(() => window.client.audio.snapshot().scheduled), result.scheduled);
 });
 
+// Stalls the client's video decode until window.releaseVideo() supplies one flat frame.
+const stallVideo = page => page.evaluate(() => {
+  window.releaseVideo = null;
+  window.client.decoder.decode = () => new Promise(resolve => {window.releaseVideo = () => {
+    const surface = new OffscreenCanvas(1, 1), context = surface.getContext('2d');
+    context.fillStyle = 'rgb(20, 40, 60)';context.fillRect(0, 0, 1, 1);
+    resolve({width: 1, height: 1, videoFrame: new VideoFrame(surface, {timestamp: 0}), sequence: 1, inputId: 0, bytes: 4});
+  };});
+});
+
 test('control: a real WebSocket pong is delivered while the browser video decoder is stalled', async t => {
   const peer = await audioPeer(t), page = await openClient(t, peer);
-  await page.evaluate(() => {
-    window.releaseVideo = null;
-    window.client.decoder.decode = () => new Promise(resolve => {window.releaseVideo = () => resolve({width:1,height:1,
-      pixels:new Uint8ClampedArray([20,40,60,255]),sequence:1,inputId:0,bytes:4});});
-  });
+  await stallVideo(page);
   peer.send(Buffer.from('video'));
   await page.waitForFunction(() => window.releaseVideo !== null);
   peer.send({type:'pong',id:17});
@@ -151,18 +157,15 @@ test('control: a real WebSocket pong is delivered while the browser video decode
 test('audio: network bursts remain bounded and bypass a stalled video decode', async t => {
   const peer = await audioPeer(t), page = await openClient(t, peer);
   await page.click('#sound');await page.evaluate(() => window.soundRequest);
-  await page.evaluate(() => {
-    window.resumeVideo = null;
-    window.client.decoder.decode = () => new Promise(resolve => {window.resumeVideo = () => resolve({width: 1, height: 1, pixels: new Uint8ClampedArray([20, 40, 60, 255]), sequence: 1, inputId: 0, bytes: 4});});
-  });
+  await stallVideo(page);
   peer.send(Buffer.from('video'));
-  await page.waitForFunction(() => window.resumeVideo !== null);
+  await page.waitForFunction(() => window.releaseVideo !== null);
   for (let sequence = 0; sequence < 100; sequence++) peer.send(pcmPacket(sequence));
   await page.waitForFunction(() => window.client.audio.received === 100);
   const bounded = await page.evaluate(() => window.client.audio.snapshot());
   assert.ok(bounded.sources <= 12);assert.ok(bounded.queuedSeconds <= 0.2);assert.ok(bounded.dropped > 0);
   assert.equal(await page.evaluate(() => window.client.metrics.frames), 0);
-  await page.evaluate(() => window.resumeVideo());
+  await page.evaluate(() => window.releaseVideo());
   await page.waitForFunction(() => window.client.metrics.frames === 1);
   assert.equal(await page.evaluate(() => window.client.metrics.errors), 0);
   assert.deepEqual(await page.evaluate(() => Array.from(window.client.ctx.getImageData(0, 0, 1, 1).data)), [20, 40, 60, 255]);
