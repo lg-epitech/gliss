@@ -4,6 +4,50 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PIXELS: usize = 16_777_216;
 pub const MAX_CLIPBOARD: usize = 1_048_576;
 
+/// Text that came from outside the process, made safe for one line of a log.
+///
+/// Control characters and the Unicode line separators are written as escapes,
+/// so the text cannot start a line of its own or drive a terminal, and at
+/// most `limit` characters of it are kept.
+pub fn printable(text: &str, limit: usize) -> String {
+    let mut safe = String::new();
+    for (index, character) in text.chars().enumerate() {
+        if index == limit {
+            safe.push_str("...");
+            break;
+        }
+        if character.is_control() || matches!(character, '\u{2028}' | '\u{2029}') {
+            safe.extend(character.escape_default());
+        } else {
+            safe.push(character);
+        }
+    }
+    safe
+}
+
+#[cfg(test)]
+mod tests {
+    use super::printable;
+
+    #[test]
+    fn printable_text_stays_on_its_line_and_within_its_limit() {
+        assert_eq!(printable("bad password", 256), "bad password");
+        assert_eq!(
+            printable("caf\u{e9} \u{65e5}\u{672c}", 256),
+            "caf\u{e9} \u{65e5}\u{672c}"
+        );
+        assert_eq!(
+            printable("a\r\nb\tc\u{0}\u{1b}[31m\u{7f}\u{85}\u{2028}\u{2029}", 256),
+            r"a\r\nb\tc\u{0}\u{1b}[31m\u{7f}\u{85}\u{2028}\u{2029}"
+        );
+        // The limit counts characters of the input, and says when it cut.
+        assert_eq!(printable("abcdef", 6), "abcdef");
+        assert_eq!(printable("abcdefg", 6), "abcdef...");
+        assert_eq!(printable(&"\n".repeat(1000), 4), r"\n\n\n\n...");
+        assert_eq!(printable("", 0), "");
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     pub width: u16,

@@ -776,10 +776,57 @@ async fn upgrade(
         .on_upgrade(move |socket| async move {
             let _permit = permit;
             if let Err(error) = stream(socket, app, expires_at).await {
-                tracing::warn!("stream ended: {error:#}");
+                tracing::warn!("{}", stream_end_message(&error));
             }
         })
         .into_response()
+}
+
+/// Most characters of a session's last error kept in the log. The errors
+/// this server writes itself are a sentence or two.
+const MAX_LOGGED_ERROR: usize = 512;
+
+/// The log line for a session that ended with an error. The error can quote
+/// what the browser or the VNC server sent, so it is escaped and bounded.
+fn stream_end_message(error: &anyhow::Error) -> String {
+    let reason = gliss_core::printable(&format!("{error:#}"), MAX_LOGGED_ERROR);
+    format!("stream ended: {reason}")
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    #[test]
+    fn the_end_of_a_session_is_logged_on_one_bounded_line() {
+        // A browser names the message type it sends, and the name is quoted in the error.
+        let forged = format!(
+            "x\r\n2026-01-01T00:00:00Z  WARN forged line\u{1b}[31m\u{2028}{}",
+            "y".repeat(100_000)
+        );
+        let error = serde_json::from_value::<Input>(json!({ "type": forged })).unwrap_err();
+        let error = anyhow::Error::from(error).context("stream I/O task failed");
+        let line = stream_end_message(&error);
+        assert!(
+            line.starts_with(
+                r"stream ended: stream I/O task failed: unknown variant `x\r\n2026-01-01T00:00:00Z  WARN forged line\u{1b}[31m\u{2028}yyy"
+            ),
+            "{line:?}"
+        );
+        assert!(
+            !line
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'),
+            "{line:?}"
+        );
+        assert!(line.len() <= 600, "{} bytes", line.len());
+        // An ordinary reason is logged as it is.
+        let plain = anyhow::anyhow!("browser did not acknowledge oldest frame within 10s");
+        assert_eq!(
+            stream_end_message(&plain),
+            "stream ended: browser did not acknowledge oldest frame within 10s"
+        );
+    }
 }
 
 #[derive(Clone)]
