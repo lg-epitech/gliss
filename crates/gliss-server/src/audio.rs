@@ -585,6 +585,10 @@ pub async fn encode_with(
 }
 
 #[cfg(test)]
+#[path = "fuzz/audio.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
