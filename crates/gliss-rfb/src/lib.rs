@@ -555,7 +555,7 @@ async fn write_messages<W: AsyncWrite + Unpin>(
                     bytes,
                 } => {
                     clipboard.remote_copy();
-                    (None, Some(bytes.into_iter().map(char::from).collect()))
+                    (None, clipboard::latin1_text(&bytes))
                 }
             };
             if let Some(bytes) = bytes
