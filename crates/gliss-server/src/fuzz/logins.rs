@@ -1,6 +1,6 @@
-//! Fuzzes the allowance of failed logins: attempts and successes from any
-//! addresses at any times, next to a model that keeps one count for each
-//! client.
+//! Fuzzes the allowance of failed logins: attempts from any addresses at any
+//! times, each of which may succeed at any later moment, next to a model that
+//! keeps for each client the attempts counted against it.
 
 use std::{
     collections::HashMap,
@@ -32,9 +32,17 @@ fn counted(address: IpAddr) -> Counted {
     }
 }
 
-/// The time an allowance began and the failures taken from it since.
+/// One admitted attempt: who it was counted as, and its number among all
+/// attempts.
+type Counting = (Counted, u64);
+
+/// For each client, the time its minute began and the attempts admitted in
+/// it that have not succeeded.
 #[derive(Default)]
-struct Model(HashMap<Counted, (Instant, u32)>);
+struct Model {
+    clients: HashMap<Counted, (Instant, Vec<u64>)>,
+    attempts: u64,
+}
 
 impl Model {
     fn expired(since: Instant, now: Instant) -> bool {
@@ -43,38 +51,44 @@ impl Model {
             .is_some_and(|age| age >= WINDOW)
     }
 
-    fn attempt(&mut self, address: IpAddr, now: Instant) -> bool {
+    fn attempt(&mut self, address: IpAddr, now: Instant) -> Option<Counting> {
         let mut client = counted(address);
-        if !self.0.contains_key(&client) && self.0.len() >= MAX_ADDRESSES {
-            self.0.retain(|_, (since, _)| !Self::expired(*since, now));
-            if self.0.len() >= MAX_ADDRESSES {
+        if !self.clients.contains_key(&client) && self.clients.len() >= MAX_ADDRESSES {
+            self.clients
+                .retain(|_, (since, _)| !Self::expired(*since, now));
+            if self.clients.len() >= MAX_ADDRESSES {
                 client = Counted::Together;
             }
         }
-        let (since, failures) = self.0.entry(client).or_insert((now, 0));
+        let (since, failures) = self.clients.entry(client).or_insert((now, Vec::new()));
         if Self::expired(*since, now) {
-            (*since, *failures) = (now, 0);
+            // A new minute: what was counted in the last one is forgotten.
+            *since = now;
+            failures.clear();
         }
-        if *failures >= FAILURES_PER_WINDOW {
-            return false;
+        if failures.len() >= FAILURES_PER_WINDOW as usize {
+            return None;
         }
-        *failures += 1;
-        true
+        self.attempts += 1;
+        failures.push(self.attempts);
+        Some((client, self.attempts))
     }
 
-    fn succeeded(&mut self, address: IpAddr) {
-        let own = counted(address);
-        let client = if self.0.contains_key(&own) {
-            own
-        } else {
-            Counted::Together
-        };
-        if let Some((_, failures)) = self.0.get_mut(&client) {
-            *failures = failures.saturating_sub(1);
-            if *failures == 0 {
-                self.0.remove(&client);
+    /// The attempt is no failure after all, if it is still counted as one.
+    fn succeeded(&mut self, (client, attempt): Counting) {
+        if let Some((_, failures)) = self.clients.get_mut(&client) {
+            failures.retain(|counted| *counted != attempt);
+            if failures.is_empty() {
+                self.clients.remove(&client);
             }
         }
+    }
+
+    fn failures(&self) -> usize {
+        self.clients
+            .values()
+            .map(|(_, failures)| failures.len())
+            .sum()
     }
 }
 
@@ -92,10 +106,13 @@ fn address(rng: &mut Rng, pool: usize) -> IpAddr {
     }
 }
 
-/// One table through `steps` attempts and successes from `pool` addresses.
+/// One table through `steps` bursts of attempts and successes from `pool`
+/// addresses.
 fn session(rng: &mut Rng, pool: usize, steps: usize) {
     let logins = Logins::default();
     let mut model = Model::default();
+    // Attempts that were admitted and may still present the right key.
+    let mut open = Vec::new();
     let start = Instant::now() + Duration::from_secs(3600);
     let mut now = start;
     for _ in 0..steps {
@@ -105,24 +122,45 @@ fn session(rng: &mut Rng, pool: usize, steps: usize) {
             1 => now = start + Duration::from_secs(rng.below(120) as u64),
             _ => {}
         }
-        let address = address(rng, pool);
-        if rng.chance(5) {
-            logins.succeeded(address);
-            model.succeeded(address);
+        if rng.chance(5) && !open.is_empty() {
+            // An attempt succeeds: the newest, as a login that is answered at
+            // once, or any older one, whatever has happened since it was counted.
+            let which = if rng.chance(2) {
+                open.len() - 1
+            } else {
+                rng.below(open.len())
+            };
+            let (charge, counting) = open.swap_remove(which);
+            logins.succeeded(charge);
+            model.succeeded(counting);
         } else {
+            let address = address(rng, pool);
             // A burst from one address, as a client that guesses makes.
             for _ in 0..rng.pick(&[1, 1, 1, 5, 40]) {
-                assert_eq!(logins.attempt(address, now), model.attempt(address, now));
+                match (logins.attempt(address, now), model.attempt(address, now)) {
+                    (Some(charge), Some(counting)) => open.push((charge, counting)),
+                    (None, None) => {}
+                    (charge, _) => panic!(
+                        "an attempt was {} where the model says otherwise",
+                        if charge.is_some() {
+                            "admitted"
+                        } else {
+                            "refused"
+                        }
+                    ),
+                }
             }
         }
         let clients = logins.clients.lock().unwrap();
         assert!(clients.len() <= MAX_ADDRESSES + 1);
-        assert_eq!(clients.len(), model.0.len());
+        assert_eq!(clients.len(), model.clients.len());
         assert!(
             clients
                 .values()
                 .all(|allowance| (1..=FAILURES_PER_WINDOW).contains(&allowance.failures))
         );
+        let failures: u32 = clients.values().map(|allowance| allowance.failures).sum();
+        assert_eq!(failures as usize, model.failures());
     }
 }
 
