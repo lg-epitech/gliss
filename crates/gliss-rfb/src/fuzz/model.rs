@@ -221,6 +221,9 @@ impl<'a> Reference<'a> {
             stopped_at: 0,
         };
         reference.desktop = reference.handshake(password);
+        if let Ok(desktop) = &reference.desktop {
+            reference.clipboard = ClipboardModel::new(&desktop.name);
+        }
         reference
     }
 
@@ -642,6 +645,8 @@ fn inflated(data: &[u8], limit: usize) -> Option<Vec<u8>> {
 /// it, for a client that holds text only and asks for every remote text.
 #[derive(Default)]
 pub struct ClipboardModel {
+    /// QEMU passes text to the guest as it is: no CRLF and no terminator.
+    pub qemu: bool,
     capabilities: u32,
     /// The text the client provides when asked, as it goes on the wire.
     pub local: Option<Vec<u8>>,
@@ -650,8 +655,69 @@ pub struct ClipboardModel {
 }
 
 impl ClipboardModel {
+    pub fn new(server_name: &str) -> Self {
+        Self {
+            qemu: server_name == "QEMU" || server_name.starts_with("QEMU ("),
+            ..Self::default()
+        }
+    }
+
+    /// Whether text goes out through the extended clipboard.
+    pub fn extended(&self) -> bool {
+        let needed = CLIPBOARD_TEXT | CLIPBOARD_NOTIFY | CLIPBOARD_PROVIDE;
+        self.capabilities & needed == needed
+    }
+
     pub fn remote_copy(&mut self) {
         self.owned = false;
+    }
+
+    /// The text as the peer is sent it once it asks: `None` if it is refused.
+    pub fn wire_text(&self, text: &str) -> Option<Vec<u8>> {
+        if text.len() > MAX_CLIPBOARD {
+            return None;
+        }
+        let text = without_carriage_returns(text);
+        if !self.extended() {
+            // The base protocol carries Latin-1 only.
+            return text
+                .chars()
+                .map(|character| u8::try_from(u32::from(character)).ok())
+                .collect();
+        }
+        let mut wire = Vec::with_capacity(text.len() + 1);
+        if self.qemu {
+            wire.extend_from_slice(text.as_bytes());
+        } else {
+            for byte in text.bytes() {
+                if byte == b'\n' {
+                    wire.push(b'\r');
+                }
+                wire.push(byte);
+            }
+            wire.push(0);
+        }
+        // QEMU inflates at most 1 MiB, and that includes the length.
+        (wire.len() + 4 <= MAX_CLIPBOARD).then_some(wire)
+    }
+
+    /// A copy made on the client's side: what it sends at once, if the text
+    /// is accepted.
+    pub fn input(&mut self, text: &str) -> Option<Piece> {
+        let wire = self.wire_text(text)?;
+        if !self.extended() {
+            let mut message = vec![6, 0, 0, 0];
+            message.extend_from_slice(&(wire.len() as u32).to_be_bytes());
+            message.extend_from_slice(&wire);
+            return Some(Piece::Exact(message));
+        }
+        self.local = Some(wire);
+        self.owned = true;
+        // The text itself waits for the peer's request.
+        Some(Piece::Exact(client_message(
+            CLIPBOARD_NOTIFY | CLIPBOARD_TEXT,
+            &[],
+        )))
     }
 
     /// An extended clipboard message from the server: the most the client may
