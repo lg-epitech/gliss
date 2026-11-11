@@ -264,11 +264,14 @@ impl Window {
         if self.resyncing {
             return None;
         }
+        // The earliest write, not the first frame in the queue: the two
+        // differ if a later frame's write is reported first.
         let written = self
             .reservations
             .iter()
-            .find(|entry| !entry.acknowledged && entry.written.is_some())
-            .and_then(|entry| entry.written)?;
+            .filter(|entry| !entry.acknowledged)
+            .filter_map(|entry| entry.written)
+            .min()?;
         let since = self
             .retired_unacknowledged
             .map_or(written, |retired| retired.min(written));
@@ -366,6 +369,10 @@ impl Window {
         json!({"type":"stream_stats", "generation":self.generation, "in_flight_frames_limit":self.frame_limit, "in_flight_bytes_limit":self.byte_limit, "reserved_frames":self.reservations.len(), "unacknowledged_frames":self.reservations.iter().filter(|entry| !entry.acknowledged).count(), "reserved_bytes":self.reserved_bytes, "resyncing":self.resyncing, "capture_replacement_scope":"observed session replacements; watch coalescing is not counted", "counters":self.stats})
     }
 }
+
+#[cfg(test)]
+#[path = "fuzz/window.rs"]
+mod fuzz;
 
 #[cfg(test)]
 mod tests {
