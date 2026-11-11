@@ -84,16 +84,9 @@ async fn a_slow_server_that_keeps_reading_is_not_cut_off() {
     assert_eq!(started.elapsed(), Duration::from_secs(16 * 9));
 }
 
-#[tokio::test]
-async fn decoding_yields_to_the_runtime_for_every_rectangle() {
-    const RECTANGLES: u16 = 1000;
-    // One update, complete in memory, so no read ever waits for the network.
-    let mut wire = vec![0, 0];
-    wire.extend_from_slice(&RECTANGLES.to_be_bytes());
-    for _ in 0..RECTANGLES {
-        // An empty CopyRect: x, y, width, height, encoding 1, source x, source y.
-        wire.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
-    }
+/// Decodes `wire` from memory, where no read ever waits, on a desktop of
+/// `width`x`height`, and returns how often another task got to run meanwhile.
+async fn turns_of_another_task(width: u16, height: u16, wire: Vec<u8>) -> usize {
     let polls = Arc::new(AtomicUsize::new(0));
     let other_polls = polls.clone();
     // Stands for every other task on the worker: it runs only when decoding yields.
@@ -103,12 +96,56 @@ async fn decoding_yields_to_the_runtime_for_every_rectangle() {
             tokio::task::yield_now().await;
         }
     });
-    let (mut reader, _writer) = connection(std::io::Cursor::new(wire), tokio::io::sink());
+    let info = ServerInfo {
+        width,
+        height,
+        name: "test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader, _writer, _) = start_tasks(
+        std::io::Cursor::new(wire),
+        tokio::io::sink(),
+        Frame::new(width, height).unwrap(),
+        info,
+        Layout::Rgbx,
+    );
     reader.read_event().await.unwrap();
     other.abort();
-    let polls = polls.load(Ordering::Relaxed);
+    polls.load(Ordering::Relaxed)
+}
+
+/// One update of `count` CopyRect rectangles, each moving the top-left `width`x`height`.
+fn copies(count: u16, width: u16, height: u16) -> Vec<u8> {
+    let mut wire = vec![0, 0];
+    wire.extend_from_slice(&count.to_be_bytes());
+    for _ in 0..count {
+        wire.extend_from_slice(&[0, 0, 0, 0]);
+        wire.extend_from_slice(&width.to_be_bytes());
+        wire.extend_from_slice(&height.to_be_bytes());
+        wire.extend_from_slice(&[0, 0, 0, 1, 0, 0, 0, 0]);
+    }
+    wire
+}
+
+#[tokio::test]
+async fn decoding_returns_to_the_runtime_as_its_work_adds_up() {
+    // Each of these rectangles is a whole 256x256 frame: more than the work
+    // allowed between two returns, so every one of them is followed by one.
+    let large = turns_of_another_task(256, 256, copies(4, 256, 256)).await;
     assert!(
-        polls >= usize::from(RECTANGLES),
-        "another task ran {polls} times during {RECTANGLES} rectangles"
+        large >= 4,
+        "another task ran {large} times during 4 frames of copying"
+    );
+    // Rectangles that draw nothing cost little, and still add up.
+    let empty = turns_of_another_task(256, 256, copies(12_800, 0, 0)).await;
+    assert!(
+        (100..=110).contains(&empty),
+        "another task ran {empty} times during 12800 empty rectangles"
+    );
+    // Small rectangles count by their pixels: 3200 of 16x16 are 12.5 frames of work.
+    let small = turns_of_another_task(1024, 1024, copies(3200, 16, 16)).await;
+    assert!(
+        (30..=45).contains(&small),
+        "another task ran {small} times during 3200 small rectangles"
     );
 }
