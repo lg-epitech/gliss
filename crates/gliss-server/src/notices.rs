@@ -76,6 +76,13 @@ impl Notices {
         self.post(|pending| pending.display_error = Some(message));
     }
 
+    /// The display can be shown again: what [`Notices::display_error`] said
+    /// no longer holds, and is not sent if it has not been sent yet.
+    pub fn display_resumed(&self) {
+        let mut pending = self.pending.lock().unwrap_or_else(|lock| lock.into_inner());
+        pending.display_error = None;
+    }
+
     /// The display is gone for good.
     pub fn failed(&self, message: &'static str) {
         self.post(|pending| pending.failure = Some(message));
@@ -216,6 +223,25 @@ mod tests {
             ]
         );
         assert_eq!(pending_bytes(&notices), 0);
+    }
+
+    #[test]
+    fn an_unsent_display_error_is_dropped_when_the_display_resumes() {
+        let notices = Notices::default();
+        notices.display_error("paused".into());
+        notices.bell();
+        notices.display_resumed();
+        assert_eq!(
+            notices.next().now_or_never().unwrap().text,
+            r#"{"type":"bell"}"#
+        );
+        assert!(notices.next().now_or_never().is_none());
+        // A later error is sent as any other.
+        notices.display_error("paused again".into());
+        assert_eq!(
+            notices.next().now_or_never().unwrap().text,
+            r#"{"message":"paused again","type":"error"}"#
+        );
     }
 
     #[test]

@@ -1121,31 +1121,62 @@ fn session_now() -> Instant {
     tokio::time::Instant::now().into_std()
 }
 
-/// Sets aside a capture H.264 cannot encode and tells the browser, once for
-/// each such display mode. Nothing is cropped or padded to make it fit: the
-/// picture waits, and input keeps flowing so the mode can be changed.
+/// A display mode H.264 cannot encode, which holds the picture back.
+struct Pause {
+    mode: (u16, u16),
+    /// Whether the browser's event about it has been handed to the writer.
+    reported: bool,
+}
+
+/// Sets aside a capture H.264 cannot encode, for [`report_pause`] to tell the
+/// browser once for each such display mode. Nothing is cropped or padded to
+/// make it fit: the picture waits, and input keeps flowing so the mode can be
+/// changed.
 fn hold_unencodable(
     latest: &mut Option<Captured>,
-    unencodable: &mut Option<(u16, u16)>,
+    pause: &mut Option<Pause>,
     window: &mut scheduler::Window,
     notices: &notices::Notices,
 ) {
     let Some(capture) = latest.as_ref() else {
         return;
     };
-    let (width, height) = (capture.frame.width, capture.frame.height);
-    if gliss_video::encodable(width, height) {
-        if unencodable.take().is_some() {
+    let mode = (capture.frame.width, capture.frame.height);
+    if gliss_video::encodable(mode.0, mode.1) {
+        if pause.take().is_some() {
             window.picture_resumed();
+            // The frames from here on are a live picture. An event that has
+            // not been written yet would say it is paused after they arrive.
+            notices.display_resumed();
         }
         return;
     }
     *latest = None;
-    if unencodable.replace((width, height)) != Some((width, height)) {
-        notices.display_error(format!(
-            "The VM display is {width}x{height}. Video needs an even width and height from 16x16 through 3840x2160, so the picture is paused until the VM changes its resolution."
-        ));
+    if pause.as_ref().map(|pause| pause.mode) != Some(mode) {
+        *pause = Some(Pause {
+            mode,
+            reported: false,
+        });
     }
+}
+
+/// Tells the browser about a pause once nothing encoded before it is left to
+/// write: `frames_in_flight` says whether a frame is being encoded, waits for
+/// the window or is with the writer. Events and frames are written
+/// independently, and the browser takes a frame that follows this event as
+/// the picture coming back.
+fn report_pause(pause: &mut Option<Pause>, frames_in_flight: bool, notices: &notices::Notices) {
+    let Some(pause) = pause.as_mut().filter(|pause| !pause.reported) else {
+        return;
+    };
+    if frames_in_flight {
+        return;
+    }
+    pause.reported = true;
+    let (width, height) = pause.mode;
+    notices.display_error(format!(
+        "The VM display is {width}x{height}. Video needs an even width and height from 16x16 through 3840x2160, so the picture is paused until the VM changes its resolution."
+    ));
 }
 
 /// Runs one viewer over the two halves of its WebSocket.
@@ -1289,7 +1320,7 @@ where
     telemetry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut source_ended = None::<tokio::time::Instant>;
     // The display mode that is being held back, if the current one cannot be encoded.
-    let mut unencodable = None::<(u16, u16)>;
+    let mut pause = None::<Pause>;
     loop {
         let now = session_now();
         if window.resync_due(now).is_some_and(|due| due <= now) {
@@ -1309,7 +1340,7 @@ where
                 .reset();
             window.finish_resync()?;
             replace_latest(&mut latest, source.frames.borrow().clone(), &mut window);
-            hold_unencodable(&mut latest, &mut unencodable, &mut window, &source.notices);
+            hold_unencodable(&mut latest, &mut pause, &mut window, &source.notices);
             eligible = pacer.eligible();
         }
         if waiting
@@ -1332,6 +1363,8 @@ where
         } else if let Some(packet) = &mut waiting {
             packet.blocked_since.get_or_insert_with(Instant::now);
         }
+        let frames_in_flight = writer_jobs > 0 || waiting.is_some() || !encoder_jobs.is_empty();
+        report_pause(&mut pause, frames_in_flight, &source.notices);
         let deadline = window.oldest_deadline();
         let sleep_deadline = tokio::time::Instant::from_std(
             deadline.unwrap_or_else(|| session_now() + Duration::from_secs(86400)),
@@ -1374,7 +1407,7 @@ where
                     continue;
                 }
                 replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
-                hold_unencodable(&mut latest, &mut unencodable, &mut window, &source.notices);
+                hold_unencodable(&mut latest, &mut pause, &mut window, &source.notices);
                 eligible = pacer.eligible();
             }
             _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,

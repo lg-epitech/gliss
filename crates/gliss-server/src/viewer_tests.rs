@@ -188,7 +188,6 @@ async fn a_display_mode_h264_cannot_encode_pauses_the_picture_and_keeps_the_sess
     viewer
         .say(json!({"type":"ack","sequence":first.sequence}))
         .await;
-    let paused = |width: u16, height: u16| json!({"type":"error","message":format!("The VM display is {width}x{height}. Video needs an even width and height from 16x16 through 3840x2160, so the picture is paused until the VM changes its resolution.")});
     // Odd, too small and too large: each mode is reported when it appears.
     for (width, height) in [
         (65, 48),
@@ -258,6 +257,102 @@ async fn a_display_mode_h264_cannot_encode_pauses_the_picture_and_keeps_the_sess
     viewer.show(66, 50);
     let again = viewer.media().await;
     assert_eq!((again.width, again.height), (66, 50));
+    assert!(!viewer.session.is_finished());
+}
+
+fn paused(width: u16, height: u16) -> Value {
+    json!({"type":"error","message":format!("The VM display is {width}x{height}. Video needs an even width and height from 16x16 through 3840x2160, so the picture is paused until the VM changes its resolution.")})
+}
+
+impl Viewer {
+    /// Lets the session do everything it can do now. The clock is paused and
+    /// does not move while a frame is being encoded.
+    async fn settle(&self) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    /// Stops reading with the writer held: one answer fits between the server
+    /// and the browser, and the writer waits to hand over the next. Whatever
+    /// the session produces from here on waits behind them.
+    async fn hold_writer(&self, id: u64) {
+        self.say(json!({"type":"ping","id":id})).await;
+        self.say(json!({"type":"ping","id":id + 1})).await;
+        self.settle().await;
+    }
+
+    /// Reads the two answers [`Viewer::hold_writer`] left waiting.
+    async fn release_writer(&mut self, id: u64) {
+        assert_eq!(self.text().await, json!({"type":"pong","id":id}));
+        assert_eq!(self.text().await, json!({"type":"pong","id":id + 1}));
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pause_that_ends_before_its_error_is_sent_sends_no_error() {
+    let mut viewer = Viewer::connect(&[]).greeted().await;
+    viewer.show(64, 48);
+    let first = viewer.media().await;
+    viewer
+        .say(json!({"type":"ack","sequence":first.sequence}))
+        .await;
+    viewer.hold_writer(1).await;
+    // The mode cannot be encoded, and can again before the browser reads on.
+    viewer.show(65, 48);
+    viewer.settle().await;
+    viewer.show(66, 50);
+    viewer.settle().await;
+    viewer.release_writer(1).await;
+    // The picture is live: nothing says it is paused, before it or after.
+    let resumed = viewer.media().await;
+    assert_eq!(
+        (resumed.width, resumed.height, resumed.keyframe),
+        (66, 50, true)
+    );
+    viewer
+        .say(json!({"type":"ack","sequence":resumed.sequence}))
+        .await;
+    viewer.say(json!({"type":"ping","id":3})).await;
+    assert_eq!(viewer.text().await, json!({"type":"pong","id":3}));
+    viewer.settle().await;
+    assert!(viewer.from_server.try_recv().is_err());
+    // The next pause is reported as any other.
+    viewer.show(65, 48);
+    assert_eq!(viewer.text().await, paused(65, 48));
+    assert!(!viewer.session.is_finished());
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_pause_error_follows_every_frame_encoded_before_the_pause() {
+    let mut viewer = Viewer::connect(&[]).greeted().await;
+    viewer.show(64, 48);
+    let first = viewer.media().await;
+    viewer
+        .say(json!({"type":"ack","sequence":first.sequence}))
+        .await;
+    // Many times: the writer chooses among what is ready, and an order that
+    // is left to it comes out right now and then.
+    for round in 0..16 {
+        viewer.hold_writer(round * 2).await;
+        // A frame is encoded and waits for the writer when the mode changes.
+        viewer.show(64, 48);
+        viewer.settle().await;
+        viewer.show(65, 48);
+        viewer.settle().await;
+        viewer.release_writer(round * 2).await;
+        let last = viewer.media().await;
+        assert_eq!((last.width, last.height), (64, 48));
+        assert_eq!(viewer.text().await, paused(65, 48));
+        viewer
+            .say(json!({"type":"ack","sequence":last.sequence}))
+            .await;
+        // The picture comes back for the next round.
+        viewer.show(64, 48);
+        let resumed = viewer.media().await;
+        viewer
+            .say(json!({"type":"ack","sequence":resumed.sequence}))
+            .await;
+        viewer.settle().await;
+    }
     assert!(!viewer.session.is_finished());
 }
 
