@@ -142,6 +142,10 @@ fn cursor_text(cursor: &Cursor) -> String {
 }
 
 #[cfg(test)]
+#[path = "fuzz/notices.rs"]
+mod fuzz;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use futures_util::FutureExt;
