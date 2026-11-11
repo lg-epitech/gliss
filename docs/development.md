@@ -31,6 +31,31 @@ npm test
 
 Two more checks run on their own: the [video crate](../crates/gliss-video/README.md#validation) has decoder tests and a browser decode probe, and [verification/frame-ownership](../verification/frame-ownership/README.md) holds a Lean model of decoded-frame ownership in the client.
 
+## Fuzz tests
+
+The fuzzers are ordinary tests named `fuzz_...`: they run with `cargo test` and `npm test` on the stable toolchain, without cargo-fuzz. Each one writes inputs from a grammar of its protocol, compares what the code does with a reference model, then changes bytes of the input and compares again. Inputs come from a seeded generator in the test code, so every run is the same, and a failure prints the seed, the iteration and the variables that replay it alone. There is no coverage feedback: what a fuzzer reaches is what its grammar and its byte changes can write.
+
+| Variable | Effect |
+| --- | --- |
+| `GLISS_FUZZ_ITERATIONS` | Iterations of each fuzz test that runs, instead of its default. |
+| `GLISS_FUZZ_SEED` | Another sequence of inputs. The default seed is fixed for each target. |
+| `GLISS_FUZZ_START` | The first iteration number. With one iteration it replays a failure. |
+| `GLISS_FUZZ_VECTORS` | A directory. The Rust ADPCM and GLV1 fuzzers write their inputs and verdicts there, and the Node tests check the browser's decoders against them. |
+| `GLISS_FUZZ_WRITE_VECTORS` | Rewrite the vector files in `test-support/fuzz`, after a deliberate change of a wire format. |
+
+By default each fuzz test takes well under a second in a debug build. For a campaign, name one test and a count:
+
+```sh
+GLISS_FUZZ_ITERATIONS=30000 cargo test --locked -p gliss-rfb --lib fuzz_server_stream -- --nocapture
+export GLISS_FUZZ_VECTORS=/dev/shm/gliss-vectors
+GLISS_FUZZ_ITERATIONS=50000 cargo test --locked -p gliss-video --lib fuzz_ -- --nocapture
+GLISS_FUZZ_ITERATIONS=100000 node --test tests/fuzz-video.test.mjs
+```
+
+The tests are `fuzz_server_stream` and `fuzz_clipboard` in gliss-rfb; `fuzz_media_window`, `fuzz_session_cookie`, `fuzz_login_allowance`, `fuzz_held_keys`, `fuzz_guest_events`, `fuzz_audio_packets` and `fuzz_adpcm_blocks` in gliss-server; `fuzz_packet_parser` and `fuzz_encoded_packets` in gliss-video; and `tests/fuzz-audio.test.mjs` and `tests/fuzz-video.test.mjs` for the browser's parsers. `test-support/fuzz` holds the vectors both languages are checked with; a Rust test fails when they no longer match what the Rust side produces.
+
+When a campaign fails, reduce the input and keep it as a named test next to the fuzzer, with a sentence on what went wrong, so that every run checks it.
+
 ## Real QEMU audio smoke
 
 This opt-in test boots a temporary diskless Linux guest with an output-only HDA
