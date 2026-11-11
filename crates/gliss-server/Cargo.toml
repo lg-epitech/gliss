@@ -15,6 +15,9 @@ gliss-rfb.workspace = true
 gliss-video.workspace = true
 libc = "0.2"
 axum = { version = "0.8", features = ["ws"] }
+# Both come with axum. Named here to serve connections with a timer and a connection limit.
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
 clap = { version = "4", features = ["derive", "env"] }
 futures-util = "0.3"
 hmac = "0.12"
