@@ -1029,6 +1029,7 @@ fn session_now() -> Instant {
 fn hold_unencodable(
     latest: &mut Option<Captured>,
     unencodable: &mut Option<(u16, u16)>,
+    window: &mut scheduler::Window,
     notices: &notices::Notices,
 ) {
     let Some(capture) = latest.as_ref() else {
@@ -1036,7 +1037,9 @@ fn hold_unencodable(
     };
     let (width, height) = (capture.frame.width, capture.frame.height);
     if gliss_video::encodable(width, height) {
-        *unencodable = None;
+        if unencodable.take().is_some() {
+            window.picture_resumed();
+        }
         return;
     }
     *latest = None;
@@ -1190,6 +1193,15 @@ where
     // The display mode that is being held back, if the current one cannot be encoded.
     let mut unencodable = None::<(u16, u16)>;
     loop {
+        let now = session_now();
+        if window.resync_due(now).is_some_and(|due| due <= now) {
+            window.begin_resync(sequence, now)?;
+            generation.store(window.generation(), Ordering::Release);
+            if waiting.take().is_some() {
+                window.discarded_encode();
+            }
+        }
+        let resync_due = window.resync_due(now).map(tokio::time::Instant::from_std);
         if window.resyncing() && writer_jobs == 0 && encoder_jobs.is_empty() {
             // Old queued writes have been skipped, an already-started write finished,
             // and any old encode returned. Reset before admitting new dependencies.
@@ -1199,7 +1211,7 @@ where
                 .reset();
             window.finish_resync()?;
             replace_latest(&mut latest, source.frames.borrow().clone(), &mut window);
-            hold_unencodable(&mut latest, &mut unencodable, &source.notices);
+            hold_unencodable(&mut latest, &mut unencodable, &mut window, &source.notices);
             eligible = pacer.eligible();
         }
         if waiting
@@ -1231,11 +1243,8 @@ where
             Some(command) = commands.recv() => {
                 match command {
                     StreamCommand::Ack(sequence) => { window.acknowledge(sequence, session_now())?; }
-                    StreamCommand::Resync => {
-                        window.begin_resync(sequence)?;
-                        generation.store(window.generation(), Ordering::Release);
-                        if waiting.take().is_some() { window.discarded_encode(); }
-                    }
+                    // Started at the top of the loop, once the interval between resyncs allows.
+                    StreamCommand::Resync => window.request_resync(),
                     StreamCommand::Reply(message) => { control_tx.try_send(ControlPacket { message }).context("bounded control writer queue full or closed")?; }
                 }
             }
@@ -1267,10 +1276,11 @@ where
                     continue;
                 }
                 replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
-                hold_unencodable(&mut latest, &mut unencodable, &source.notices);
+                hold_unencodable(&mut latest, &mut unencodable, &mut window, &source.notices);
                 eligible = pacer.eligible();
             }
             _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,
+            _ = tokio::time::sleep_until(resync_due.unwrap_or(eligible)), if resync_due.is_some() => {}
             _ = tokio::time::sleep_until(eligible), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
                 pacer.started();
                 let captured = latest.take().unwrap();
