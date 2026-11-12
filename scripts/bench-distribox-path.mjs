@@ -7,11 +7,16 @@
 //
 // node scripts/bench-distribox-path.mjs --binary /abs/gliss-server [--binary /abs/other ...]
 //   [--label name ...] [--size 1920x1080] [--rounds 3] [--scenarios typing,burst,scroll,drag,video]
-//   [--typing-keys 24] [--output file.json] [--trace-refresh]
+//   [--typing-keys 24] [--output file.json] [--trace-refresh] [--link rtt=100,down=1.5]
 //
 // Scenarios: typing (isolated keys), burst (fast typing), scroll (60 Hz terminal
 // scroll with probe keys), drag (a window following the pointer), video (30 Hz
-// region); a 5 s idle window on the static scene is always recorded last.
+// region), pages (each key turns the whole terminal to a new page, about once a
+// second); a 5 s idle window on the static scene is always recorded last.
+// --link puts a WAN between the server and the browser: the run moves into a user and
+// network namespace of its own, the browser into a second one, and the kernel delays
+// and rate-limits the packets between them (startLink in the fixture has the model and
+// parseLink the settings). A relay stands in for Distribox's backend or a reverse proxy.
 // Latencies run from the client's send to the first painted frame whose marker strip
 // (test-support/qemu-display/init.c) shows the guest drew that input. A probe that
 // never shows is a miss, never a latency. --trace-refresh logs every change of QEMU's
@@ -20,18 +25,20 @@
 // to observe its markers or missed a probe.
 // Prerequisites: /dev/kvm, qemu-system-x86_64, a readable host kernel with matching
 // virtio-gpu/virtio_input modules, gcc with static libc, cpio, zstd, Playwright, and a
-// temporary directory on tmpfs.
-import {execFileSync} from 'node:child_process';
+// temporary directory on tmpfs. --link also needs unprivileged user namespaces,
+// unshare, nsenter, ip and tc, and the veth and sch_netem kernel modules.
+import {execFileSync, spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {existsSync, mkdtempSync, readFileSync, rmSync, statfsSync, writeFileSync} from 'node:fs';
 import {cpus, loadavg, release, tmpdir} from 'node:os';
 import {basename, isAbsolute, join, resolve} from 'node:path';
+import {chromium as playwrightChromium} from 'playwright';
 import {launchBrowser} from '../tests/helpers.mjs';
-import {TICK_MS, childPids, clock, cpuBetween, openViewer, pageClockOffset, processTimes, startDisplayVm,
-  startGliss} from '../test-support/qemu-display/fixture.mjs';
+import {TICK_MS, childPids, clock, cpuBetween, openViewer, pageClockOffset, parseLink, processTimes, startDisplayVm,
+  startGliss, startLink} from '../test-support/qemu-display/fixture.mjs';
 
 const options = {binary: [], label: [], size: '1920x1080', rounds: '3', scenarios: 'typing,burst,scroll,drag,video',
-  'typing-keys': '24', output: null, 'trace-refresh': false};
+  'typing-keys': '24', output: null, 'trace-refresh': false, link: null};
 const usage = message => {console.error(`${message}\nSee the header of scripts/bench-distribox-path.mjs`);process.exit(2);};
 for (let i = 2; i < process.argv.length; i++) {
   const match = /^--([a-z-]+)(?:=(.*))?$/.exec(process.argv[i]);
@@ -53,6 +60,15 @@ const binaries = options.binary.map((path, n) => {
   return {path, label: options.label[n] ?? basename(path), sha256: createHash('sha256').update(readFileSync(path)).digest('hex')};
 });
 if (new Set(binaries.map(binary => binary.label)).size !== binaries.length) usage('Binaries need distinct labels');
+let linkSettings = null;
+try {linkSettings = options.link && parseLink(options.link);} catch (error) {usage(error.message);}
+if (linkSettings && !process.env.GLISS_BENCH_NAMESPACE) {
+  // Start over as the only process of a new user and network namespace; the link is built there.
+  const inside = spawn('unshare', ['-Urn', process.execPath, ...process.argv.slice(1)], {stdio: 'inherit', env: {...process.env, GLISS_BENCH_NAMESPACE: '1'}});
+  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => inside.kill(signal));
+  const code = await new Promise(resolve => inside.on('exit', (code, signal) => resolve(code ?? (signal ? 1 : 0))).on('error', error => {console.error(`unshare: ${error.message}`);resolve(2);}));
+  process.exit(code);
+}
 
 // The browser runs with --disable-dev-shm-usage and keeps its shared memory in the
 // temporary directory. On a disk under I/O pressure the page then freezes for seconds.
@@ -108,6 +124,7 @@ const SCENARIOS = {
   scroll: {scene: F(2), marker: 5, plan: () => typed('scroll', 15, 440, 520, 8000)},
   drag: {scene: F(3), marker: 6, path: dragPath},
   video: {scene: F(4), marker: 5, plan: () => ({events: [], duration: 8000})},
+  pages: {scene: F(6), plan: () => typed('pages', 12, 900, 1500)},
   idle: {settle: 2000, plan: () => ({events: [], duration: 5000})},
 };
 for (const name of selected) if (!(name in SCENARIOS) || name === 'idle') usage(`Unknown scenario: ${name}`);
@@ -141,7 +158,7 @@ function refreshSummary(timeline, from, to) {
     meanMs: Object.entries(time).reduce((sum, [interval, spent]) => sum + interval * spent, 0) / total, shareAt30: (time[30] ?? 0) / total};
 }
 
-async function runScenario(name, {vm, server, viewer, chromium}) {
+async function runScenario(name, {vm, server, viewer, chromium, link}) {
   const spec = SCENARIOS[name], {page} = viewer;
   const play = (events, duration) => page.evaluate(([events, duration]) => window.glissBench.play(events, duration), [events, duration]);
   // F5, then the canvas itself must show the cleared counters before anything is timed.
@@ -156,12 +173,14 @@ async function runScenario(name, {vm, server, viewer, chromium}) {
   await sleep(Math.max(0, settled - clock()));
   if (spec.scene) await play(press(spec.scene), WARMUP_MS);  // the scene switch itself is not measured
   await page.evaluate(() => window.glissBench.take());
+  link?.restart();
   const before = processTimes(), from = clock();
   const plan = spec.plan?.();
   const span = spec.path
     ? await page.evaluate(([path, step]) => window.glissBench.drag(path, step), [spec.path(), TICK_MS])
     : await play(plan.events, plan.duration);
   const after = processTimes(), to = clock();
+  if (link?.failure()) throw new Error(link.failure());
   if (spec.path) await play([{at: 0, message: {type: 'pointer', x: width >> 1, y: height >> 1, buttons: 0}, tag: 'release'}], 0);
   await sleep(GRACE_MS);  // late frames may still answer the last probes
   const taken = await page.evaluate(() => window.glissBench.take());
@@ -274,7 +293,7 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]
 const results = {
   command: process.argv.slice(1), startedAt: new Date().toISOString(), size: options.size, rounds, scenarios: selected,
   server: ['--max-clients', '1', '--codec', 'h264', '--h264-bitrate', '2000000', '--fps', '30', '--in-flight-frames', '8'],
-  binaries, host: {kernel: release(), cpus: cpus().length, loadBefore: loadavg(), qemu: execFileSync('qemu-system-x86_64', ['--version'], {encoding: 'utf8'}).split('\n')[0]},
+  link: linkSettings, binaries, host: {kernel: release(), cpus: cpus().length, loadBefore: loadavg(), qemu: execFileSync('qemu-system-x86_64', ['--version'], {encoding: 'utf8'}).split('\n')[0]},
   runs: [], summary: {}, failures: [], warnings: [],
 };
 
@@ -284,6 +303,12 @@ async function main() {
   const vm = await startDisplayVm({directory, width, height, traceRefresh: options['trace-refresh']});
   started(vm.stop);spawned.add(vm);
   results.guest = {mode: vm.mode, kernel: vm.kernel};
+  let link;
+  if (linkSettings) {
+    link = await startLink({directory, link: linkSettings, chromium: process.env.CHROMIUM_PATH ?? playwrightChromium.executablePath()});
+    started(link.stop);
+    process.env.CHROMIUM_PATH = link.browser;
+  }
   const others = childPids(), browser = await launchBrowser({handleSIGINT: false, handleSIGTERM: false});
   started(() => browser.close());
   const chromium = childPids().filter(pid => !others.includes(pid));
@@ -291,12 +316,13 @@ async function main() {
 
   // One fresh server and page, as Distribox starts them per viewer.
   const session = async (binary, body) => {
-    const server = await startGliss({binary: binary.path, vnc: vm.vnc});
+    const server = await startGliss({binary: binary.path, vnc: vm.vnc, origin: link?.origin});
     started(server.stop);spawned.add(server);
-    const viewer = await openViewer(browser, server), closePage = () => viewer.page.close();
+    const viewer = await openViewer(browser, link ? await link.attach(server) : server), closePage = () => viewer.page.close();
     started(closePage);
-    await body({vm, server, viewer, chromium});
+    await body({vm, server, viewer, chromium, link});
     await finished(closePage);
+    await link?.detach();
     await finished(server.stop);spawned.delete(server);
     if (vm.exited()) throw new Error(`QEMU exited: ${vm.log.slice(-2000)}`);
     await sleep(500);  // QEMU notices the VNC client leaving before the next one connects
@@ -307,7 +333,7 @@ async function main() {
   for (let round = 0; round < rounds; round++) {
     for (const binary of round % 2 ? [...binaries].reverse() : binaries) {
       await session(binary, async context => {
-        const {viewer} = context, record = {round, label: binary.label, clock: viewer.clock, scenarios: {}};
+        const {viewer} = context, record = {round, label: binary.label, clock: viewer.clock, firstFrameMs: viewer.firstFrameMs, scenarios: {}};
         const where = `round ${round + 1} ${binary.label}`;
         results.runs.push(record);
         for (const name of selected) {

@@ -3,8 +3,9 @@
 // a draggable window and a video player, presented through virtio-gpu KMS and driven
 // by the PS/2 keyboard and virtio tablet that QEMU's VNC server feeds.
 //
-// Keys: F1 static, F2 scrolling terminal, F3 window drag, F4 video, F5 reset. Letter
-// keys are probes: each one types a cell into the terminal's input box.
+// Keys: F1 static, F2 scrolling terminal, F3 window drag, F4 video, F5 reset, F6 pages.
+// Letter keys are probes: each one types a cell into the terminal's input box, and in
+// the pages scene also turns the terminal to a new page.
 // Marker strips (22 cells of 16x16 px, aligned to H.264 macroblocks so they survive
 // lossy coding): white, black, 16 value bits (MSB first), 4 check bits.
 //   K = probe key presses since the last reset
@@ -34,7 +35,7 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { STATIC, SCROLL, DRAG, VIDEO, RESET };  // F1..F5
+enum { STATIC, SCROLL, DRAG, VIDEO, RESET, PAGES };  // F1..F6
 enum { CELL = 16, STRIP_CELLS = 22, STRIP_X = 16, K_Y = 16, F_Y = 48, P_Y = 80 };
 enum { CHAR_W = 9, LINE_H = 18, GLYPH_W = 7, GLYPH_H = 12, GLYPHS = 64, INPUT_LINES = 4 };
 enum { WINDOW_W = 600, WINDOW_H = 400, WINDOW_MIN_Y = 112, VIDEO_W = 640, VIDEO_H = 360 };
@@ -58,6 +59,7 @@ static int pointer_x, pointer_y, pending_x, pending_y;
 static unsigned keys, cursor, pointer_drawn;
 static unsigned shown_k = ~0u, shown_f = ~0u, shown_p = ~0u;
 static long scroll;
+static uint32_t paper = PAPER, ink;  // of the terminal's text; ink 0 colours each line
 static int64_t epoch;
 static uint64_t tick, frame_shown, video_frame, reported_second;
 static struct {
@@ -150,7 +152,7 @@ static void text_row(uint32_t *out, int width, long y, uint32_t paper, uint32_t 
 }
 
 static void draw_body(int from, int to) {
-  for (int y = from; y < to; y++) text_row(base + (body.y + y) * W + body.x, body.w, scroll + y, PAPER, 0);
+  for (int y = from; y < to; y++) text_row(base + (body.y + y) * W + body.x, body.w, scroll + y, paper, ink);
   add_damage(body);  // callers either repaint or move the whole viewport
 }
 
@@ -203,6 +205,17 @@ static void type_glyph(int code) {
   cell = cursor_cell(++cursor);
   fill(cell, CURSOR);
   add_damage(cell);
+}
+
+// A window switch or a page load: the whole terminal changes at once, to text that
+// shares no line with the page before, on the other of a dark and a light theme.
+// Two pages in four carry a picture.
+static void turn_page(void) {
+  scroll += (long)body.h * 7;
+  paper = keys & 1 ? 0xf2f0ea : PAPER;
+  ink = keys & 1 ? 0x24262b : 0;
+  draw_body(0, body.h);
+  if (keys % 4 >= 2) draw_video(keys * 37);
 }
 
 static void draw_marker(int y, unsigned value, unsigned *shown) {
@@ -350,7 +363,11 @@ static void set_scene(int next) {
     pointer_drawn = 0;
     clear_input();
   }
-  if (scene == VIDEO || next == RESET) draw_body(0, body.h);
+  if (scene == VIDEO || scene == PAGES || next == RESET) {
+    paper = PAPER;
+    ink = 0;
+    draw_body(0, body.h);
+  }
   scene = next == RESET ? STATIC : next;
   if (scene == DRAG) {
     place_window();
@@ -366,12 +383,13 @@ static void read_keyboard(void) {
     for (size_t n = 0; n < (size_t)size / sizeof(events[0]); n++) {
       int code = events[n].code;
       if (events[n].type != EV_KEY || events[n].value != 1) continue;  // presses only, no autorepeat
-      if (code >= KEY_F1 && code <= KEY_F5) {
+      if (code >= KEY_F1 && code <= KEY_F6) {
         set_scene(code - KEY_F1);
       } else if ((code >= KEY_Q && code <= KEY_P) || (code >= KEY_A && code <= KEY_L) ||
                  (code >= KEY_Z && code <= KEY_M)) {
         keys++;
         type_glyph(code);
+        if (scene == PAGES) turn_page();
       }
     }
 }
