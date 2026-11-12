@@ -37,7 +37,7 @@ export class GlissClient {
     socket.onmessage=event=>{if(epoch!==this.epoch)return;
       // Audio must keep running when video waits for a decoder or animation frame.
       if(isAudioPacket(event.data)){this.audio.push(event.data);return;}
-      const profiling=this.profiler,receivedAt=profiling?performance.now():null;
+      const arrived=performance.now(),profiling=this.profiler,receivedAt=profiling?arrived:null;
       const failed=error=>{if(epoch===this.epoch){this.metrics.errors++;this.onStatus(error.message);}};
       if(typeof event.data==='string'){
         // Two messages are about the picture and wait their turn among the frames: hello describes
@@ -93,7 +93,9 @@ export class GlissClient {
         const pixelTime=this.pixelInputs.get(echo);
         if(pixelTime!==undefined){this.metrics.pixelEchoLatencyMs.push(presented-pixelTime);(this.metrics.pixelEchoEvents??=[]).push({id:echo,latencyMs:presented-pixelTime,presentedAtMs:presented});this.pixelInputs.delete(echo);}
         for(const array of [this.metrics.decodeMs,this.metrics.presentTimes,this.metrics.forwardedInputAgeMs,this.metrics.pixelEchoLatencyMs,this.metrics.pixelEchoEvents??[],this.metrics.paintMs??[]])if(array.length>10000)array.splice(0,array.length-10000);
-        socket.send(JSON.stringify({type:'ack',sequence:frame.sequence}));
+        // `held` is how long the frame waited here for its decode and a paint. The server
+        // takes it off to learn when the frame arrived, which is all the link did.
+        socket.send(JSON.stringify({type:'ack',sequence:frame.sequence,held:Math.round(performance.now()-arrived)}));
         profiling?.frame({received:receivedAt,started,decoded,paintStarted,presented,bytes:frame.bytes});
         this.onEvent({type:'frame',frame,decodeMs});
       }catch(error){

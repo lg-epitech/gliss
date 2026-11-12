@@ -56,7 +56,10 @@ test('successful presentation closes its frame before acknowledging it',{timeout
   const f=fixture();try{
     await f.connect();const output=f.submit();await ready();f.flush();await output.done;
     assert.equal(output.closes,1);assert.deepEqual(f.operations,['draw','close','ack']);
-    assert.deepEqual(acks(output.socket),[{type:'ack',sequence:1}]);
+    const [ack,...others]=acks(output.socket);
+    assert.deepEqual([others,ack.type,ack.sequence],[[],'ack',1]);
+    // How long the frame was held here, so that the server can tell that from the link.
+    assert.ok(Number.isInteger(ack.held)&&ack.held>=0&&ack.held<3000,`held ${ack.held}`);
   }finally{await f.cleanup();}
 });
 

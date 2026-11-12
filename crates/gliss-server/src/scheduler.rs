@@ -1,5 +1,6 @@
 //! Bounded FIFO media reservations. An early ACK cannot release a write's bytes.
 
+use crate::link::Link;
 use anyhow::{Result, ensure};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -53,12 +54,15 @@ struct Stats {
     write_ms: Timing,
     enqueue_to_ack_ms: Timing,
     byte_capacity_wait_ms: Timing,
+    link_wait_ms: Timing,
 }
 
 struct Reservation {
     generation: u64,
     sequence: u32,
     bytes: usize,
+    /// Bytes in flight once this frame was added to them.
+    flight: usize,
     queued: Instant,
     written: Option<Instant>,
     acknowledged: bool,
@@ -67,6 +71,17 @@ struct Reservation {
 pub enum Ack {
     Accepted,
     Retired,
+}
+
+/// What a frame that is ready has to wait for on a link slower than the stream.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hold {
+    None,
+    /// The link is carrying the frames written before, until about then.
+    Until(Instant),
+    /// The browser has held a frame for longer than the frames ahead of it
+    /// explain: the next acknowledgement, not a time, shows that it caught up.
+    Acknowledgement,
 }
 
 pub struct Window {
@@ -83,6 +98,9 @@ pub struct Window {
     resync_requested: bool,
     /// When the next resync may start.
     resync_after: Option<Instant>,
+    link: Link,
+    /// Whether the link held a frame back since the last acknowledgement.
+    link_limited: bool,
     stats: Stats,
 }
 
@@ -104,6 +122,8 @@ impl Window {
             retired_unacknowledged: None,
             resync_requested: false,
             resync_after: None,
+            link: Link::default(),
+            link_limited: false,
             stats: Stats::default(),
         })
     }
@@ -120,6 +140,36 @@ impl Window {
         !self.resyncing
             && self.reservations.len() < self.frame_limit
             && self.reserved_bytes < self.byte_limit
+    }
+
+    /// Whether another frame should wait for the link. The frame and byte limits
+    /// bound how much may queue on the way to the browser; this keeps frames from
+    /// queueing at all on a link that is slower than the stream, where each
+    /// queued frame delays every later one.
+    pub fn link_hold(&mut self, now: Instant) -> Hold {
+        let overdue = self
+            .reservations
+            .iter()
+            .find(|entry| entry.generation == self.generation && !entry.acknowledged)
+            .is_some_and(|oldest| {
+                let out = now.saturating_duration_since(oldest.written.unwrap_or(oldest.queued));
+                self.link
+                    .overdue_after(now, oldest.flight)
+                    .is_some_and(|after| out > after)
+            });
+        let hold = match self.link.clear_at() {
+            _ if overdue => Hold::Acknowledgement,
+            Some(at) if at > now => Hold::Until(at),
+            _ => Hold::None,
+        };
+        self.link_limited |= hold != Hold::None;
+        hold
+    }
+
+    /// Bits a second the encoder should fit its frames to: what the link
+    /// carries, while it is or lately was behind.
+    pub fn link_bitrate(&self, now: Instant) -> Option<f64> {
+        self.link.rate_to_fit(now).map(|rate| rate * 8.0)
     }
 
     /// One oversized legal packet may make progress only in an empty window.
@@ -150,10 +200,12 @@ impl Window {
             .reserved_bytes
             .checked_add(bytes)
             .ok_or_else(|| anyhow::anyhow!("media byte accounting overflow"))?;
+        self.link.written(now, bytes);
         self.reservations.push_back(Reservation {
             generation: self.generation,
             sequence,
             bytes,
+            flight: self.reserved_bytes,
             queued: now,
             written: None,
             acknowledged: false,
@@ -220,7 +272,15 @@ impl Window {
         self.reserved_bytes -= entry.bytes;
     }
 
+    #[cfg(test)]
     pub fn acknowledge(&mut self, sequence: u32, now: Instant) -> Result<Ack> {
+        self.acknowledge_held(sequence, now, Duration::ZERO)
+    }
+
+    /// The browser acknowledged a frame that it says it held for `held` before
+    /// painting it: decoding, and the wait for a paint. The link is judged by
+    /// when the frame arrived, so a browser that is slow is not a slow link.
+    pub fn acknowledge_held(&mut self, sequence: u32, now: Instant, held: Duration) -> Result<Ack> {
         // Session TTL and FPS bound the stream far below a half-u32 sequence span.
         if self
             .retired_through
@@ -247,6 +307,21 @@ impl Window {
             .enqueue_to_ack_ms
             .observe(now.saturating_duration_since(entry.queued));
         self.stats.ack_before_write_completion += u64::from(entry.written.is_none());
+        let (acknowledged, written) = (entry.bytes, entry.written);
+        if let Some(written) = written {
+            let out = self
+                .reservations
+                .iter()
+                .filter(|entry| entry.generation == self.generation && !entry.acknowledged)
+                .map(|entry| entry.bytes)
+                .sum();
+            // No earlier than it was written, whatever the browser says.
+            let arrived = now.checked_sub(held).map_or(written, |at| at.max(written));
+            self.link
+                .acknowledged(arrived, written, acknowledged, out, self.link_limited, held);
+            self.link_limited = false;
+        }
+        let entry = &mut self.reservations[position];
         // A writer completion can race a received ACK; retain bytes until both.
         if entry.written.is_some() {
             self.remove(position);
@@ -364,9 +439,13 @@ impl Window {
     pub fn waited_for_bytes(&mut self, wait: Duration) {
         self.stats.byte_capacity_wait_ms.observe(wait);
     }
+    /// A capture waited this long for [`Window::link_hold`] to pass.
+    pub fn waited_for_link(&mut self, wait: Duration) {
+        self.stats.link_wait_ms.observe(wait);
+    }
 
     pub fn snapshot(&self) -> Value {
-        json!({"type":"stream_stats", "generation":self.generation, "in_flight_frames_limit":self.frame_limit, "in_flight_bytes_limit":self.byte_limit, "reserved_frames":self.reservations.len(), "unacknowledged_frames":self.reservations.iter().filter(|entry| !entry.acknowledged).count(), "reserved_bytes":self.reserved_bytes, "resyncing":self.resyncing, "capture_replacement_scope":"observed session replacements; watch coalescing is not counted", "counters":self.stats})
+        json!({"type":"stream_stats", "generation":self.generation, "in_flight_frames_limit":self.frame_limit, "in_flight_bytes_limit":self.byte_limit, "reserved_frames":self.reservations.len(), "unacknowledged_frames":self.reservations.iter().filter(|entry| !entry.acknowledged).count(), "reserved_bytes":self.reserved_bytes, "resyncing":self.resyncing, "link_bitrate":self.link.rate().map(|rate| rate * 8.0), "capture_replacement_scope":"observed session replacements; watch coalescing is not counted", "counters":self.stats})
     }
 }
 
@@ -377,6 +456,54 @@ mod fuzz;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 6 kB frames written every 33 ms that reach the browser 130 ms later,
+    /// to a browser that needs 100 ms to decode and paint each one. It says so
+    /// or not. Returns the rate the encoder is then told to fit.
+    fn slow_browser(says_how_long_it_held: bool) -> Option<f64> {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut window = Window::new(8, DEFAULT_BYTES).unwrap();
+        let (mut written, mut painted, mut free) = (Vec::<u64>::new(), 0usize, 0u64);
+        for now in 0..3000u64 {
+            // The browser paints the frames in turn, each 100 ms after it had
+            // both the frame and the time for it.
+            if let Some(arrived) = written.get(painted).map(|at| at + 130) {
+                let done = arrived.max(free) + 100;
+                if done <= now {
+                    let held = Duration::from_millis(done - arrived);
+                    let held = if says_how_long_it_held {
+                        held
+                    } else {
+                        Duration::ZERO
+                    };
+                    painted += 1;
+                    window
+                        .acknowledge_held(painted as u32, at(done), held)
+                        .unwrap();
+                    free = done;
+                }
+            }
+            if now.is_multiple_of(33) && window.can_encode() {
+                written.push(now);
+                let sequence = written.len() as u32;
+                window.reserve(sequence, 6_000, at(now)).unwrap();
+                window
+                    .written(0, sequence, at(now), Duration::ZERO)
+                    .unwrap();
+            }
+        }
+        assert!(painted > 20, "{painted} frames painted");
+        window.link_bitrate(at(3000))
+    }
+
+    #[test]
+    fn a_browser_that_is_slow_is_not_a_slow_link() {
+        assert_eq!(slow_browser(true), None);
+        // One that does not say how long it held the frames cannot be told
+        // from a link that carries them that slowly.
+        assert!(slow_browser(false).is_some_and(|bitrate| bitrate < 1_000_000.0));
+    }
 
     #[test]
     fn default_window_waits_for_both_orderings_of_ack_and_write() {
