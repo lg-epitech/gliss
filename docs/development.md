@@ -127,6 +127,25 @@ creates no disk images or libvirt definitions and removes its own temporary
 files and processes. The [Distribox path notes](distribox-path.md) describe
 what it measures and its limits.
 
+`--link` puts an emulated WAN between the server and the browser:
+
+```sh
+TMPDIR=/dev/shm node scripts/bench-distribox-path.mjs \
+  --binary "$PWD/target/release/gliss-server" --scenarios scroll,drag,video,pages \
+  --link rtt=100,down=1 --output /dev/shm/wan.json
+```
+
+The run then moves into a user and network namespace of its own, which needs
+no privilege, and the kernel delays and rate-limits the packets on their way
+to a browser in a second namespace. Besides the above it needs unprivileged
+user namespaces, `unshare`, `nsenter`, `ip`, `tc` and the `veth` and
+`sch_netem` kernel modules. The settings are the round trip in ms (`rtt`),
+the rates in Mbit/s towards the browser and back (`down`, `up`), the
+bottleneck's buffer in ms (`queue`), random loss in percent (`loss`) and the
+relay host's `tcp_slow_start_after_idle` (`idle`); `down=4/0.8@3` alternates
+between two rates every three seconds. The [WAN notes](wan-path.md) describe
+the model and what it measured.
+
 ## Streaming controls
 
 For bounded browser stage timings and native CPU diagnostics, see [desktop stream profiling](profiling.md).

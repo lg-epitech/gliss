@@ -5,7 +5,7 @@
 // else on the host is signalled. No libvirt, disk image or network is involved.
 import {spawn, execFileSync} from 'node:child_process';
 import {randomBytes} from 'node:crypto';
-import {closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
+import {chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, writeFileSync} from 'node:fs';
 import {release} from 'node:os';
 import {basename, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -113,15 +113,16 @@ export async function startDisplayVm({directory, width, height, traceRefresh = f
 
 // The exact command line and bare environment of Distribox's gliss_session()
 // (backend/app/services/gliss.py), for an explicit binary.
-export async function startGliss({binary, vnc}) {
+// `origin` is where the browser loads the page from when that is not the server itself.
+export async function startGliss({binary, vnc, origin}) {
   const port = await freePort(), token = randomBytes(24).toString('base64url'), url = `http://127.0.0.1:${port}`;
   const child = spawn(binary, ['--vnc', vnc, '--bind', `127.0.0.1:${port}`, '--max-clients', '1', '--codec', 'h264',
-    '--h264-bitrate', '2000000', '--fps', '30', '--in-flight-frames', '8'],
+    '--h264-bitrate', '2000000', '--fps', '30', '--in-flight-frames', '8', ...(origin ? ['--origin', origin] : [])],
   {env: {GLISS_TOKEN: token}, stdio: ['ignore', 'ignore', 'pipe']});
   let output = '', failure;
   child.on('error', error => {failure = error;});
   child.stderr.on('data', data => {output = (output + data).slice(-8192);});
-  const server = {url, token, pid: child.pid, output: () => output, stop: () => stopChild(child, 'SIGTERM'),
+  const server = {url, port, token, pid: child.pid, output: () => output, stop: () => stopChild(child, 'SIGTERM'),
     kill: () => child.kill('SIGKILL'), exited: () => child.exitCode !== null || child.signalCode !== null};
   for (const deadline = Date.now() + 15000; Date.now() < deadline; await sleep(30)) {
     if (failure || server.exited()) break;
@@ -224,10 +225,122 @@ export async function openViewer(browser, server, viewport = {width: 1920, heigh
   await page.goto(server.url);
   await page.evaluate(installRecorder);
   await page.locator('#token').fill(server.token);
+  const login = clock();
   await page.locator('#login button').click();
-  await page.waitForFunction(() => window.gliss?.metrics.frames > 0, null, {timeout: 15000});
+  await page.waitForFunction(() => window.gliss?.metrics.frames > 0, null, {timeout: 30000, polling: 20});
+  const firstFrameMs = clock() - login;
   await page.evaluate(() => window.glissBench.watchSocket());
-  return {page, errors, clock: await pageClockOffset(page)};
+  return {page, errors, firstFrameMs, clock: await pageClockOffset(page)};
+}
+
+// ---------------------------------------------------------------- link
+
+// "rtt=100,down=1.5,up=10,queue=200,loss=0.5": the round trip in ms, split evenly
+// between the directions; the rates towards the browser and back in Mbit/s, unlimited
+// when absent; how many ms of packets the bottleneck holds before it drops; random
+// loss towards the browser in percent. "down=4/0.8@3" alternates between two rates
+// every 3 s, counted from each restart(). "idle=0" turns off the relay host's
+// net.ipv4.tcp_slow_start_after_idle, which is on by default in Linux.
+export function parseLink(text) {
+  const link = {rtt: 0, down: null, up: null, queue: 200, loss: 0, period: 0, idle: 1};
+  for (const part of text.split(',')) {
+    const [name, value = ''] = part.split('='), [rates, period] = value.split('@');
+    if (name === 'down' && period) Object.assign(link, {down: rates.split('/').map(Number), period: Number(period) * 1000});
+    else if (name === 'down') link.down = [Number(value)];
+    else if (name in link && name !== 'period') link[name] = Number(value);
+    else throw new Error(`Unknown link setting: ${part}`);
+  }
+  const numbers = [link.rtt, link.queue, link.loss, link.period, link.up ?? 1, ...link.down ?? [1]];
+  if (numbers.some(number => !(number >= 0 && Number.isFinite(number))) || [link.up, ...link.down ?? []].includes(0) || link.loss >= 100 || ![0, 1].includes(link.idle) ||
+    (link.period ? link.down.length !== 2 : link.down?.length > 1)) throw new Error(`Invalid link: ${text}`);
+  return link;
+}
+
+// A WAN between the server and the browser, for a harness that runs in a user and
+// network namespace of its own (`unshare -Urn`, which needs no privilege). The browser
+// gets a second network namespace and a veth pair joins the two. On each end netem
+// holds every packet for half the round trip, then a second netem lets them out at
+// the direction's rate and drops what its buffer cannot hold. The kernel's own TCP
+// runs across it, so slow start, a restart after idle, loss recovery and the queue at
+// the bottleneck are real. QEMU and gliss-server stay on this namespace's loopback.
+//
+// The browser reaches the server through relay.mjs at `origin`, started by attach().
+// `browser` is a Chromium that runs in the far namespace and treats that plain-HTTP
+// origin as secure, which WebCodecs requires.
+export async function startLink({directory, link, chromium}) {
+  const SERVER = '10.77.0.1', BROWSER = '10.77.0.2', port = 8077, origin = `http://${SERVER}:${port}`;
+  const run = (...command) => execFileSync(command[0], command.slice(1), {stdio: ['ignore', 'ignore', 'pipe']});
+  run('ip', 'link', 'set', 'lo', 'up');
+  const far = spawn('unshare', ['-n', 'sleep', 'infinity'], {stdio: 'ignore'});
+  const inFar = (...command) => run('nsenter', '-t', String(far.pid), '-n', ...command);
+  try {
+    const here = readlinkSync('/proc/self/ns/net');
+    for (const deadline = Date.now() + 5000; readlinkSync(`/proc/${far.pid}/ns/net`) === here; await sleep(10)) {
+      if (Date.now() > deadline || far.exitCode !== null) throw new Error('unshare -n did not create a network namespace');
+    }
+    // No IPv6: its link-local address would arrive a second after the interface comes
+    // up, and Chromium aborts what it is loading when the set of addresses changes.
+    const noIpv6 = ['sh', '-c', 'echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6'];
+    run(...noIpv6);
+    inFar(...noIpv6);
+    run('sh', '-c', `echo ${link.idle} > /proc/sys/net/ipv4/tcp_slow_start_after_idle`);
+    run('ip', 'link', 'add', 'wan0', 'type', 'veth', 'peer', 'name', 'wan1', 'netns', String(far.pid));
+    // One TCP segment per packet: netem would hold and count a segmentation-offload batch as one.
+    run('ip', 'link', 'set', 'wan0', 'gso_max_segs', '1');
+    run('ip', 'addr', 'add', `${SERVER}/24`, 'dev', 'wan0');
+    run('ip', 'link', 'set', 'wan0', 'up');
+    inFar('ip', 'link', 'set', 'lo', 'up');
+    inFar('ip', 'link', 'set', 'wan1', 'gso_max_segs', '1');
+    inFar('ip', 'addr', 'add', `${BROWSER}/24`, 'dev', 'wan1');
+    inFar('ip', 'link', 'set', 'wan1', 'up');
+    const shape = (tc, device, rate, loss, verb) => {
+      if (verb === 'add') tc('tc', 'qdisc', 'add', 'dev', device, 'root', 'handle', '1:', 'netem', 'delay', `${link.rtt / 2}ms`, 'limit', '100000');
+      // 1500-byte packets: the buffer holds `queue` ms of them at this rate, and at least four.
+      const bottleneck = rate
+        ? ['rate', `${Math.round(rate * 1000)}kbit`, 'limit', String(Math.max(4, Math.ceil(rate * link.queue / 12)))]
+        : ['limit', '100000'];
+      tc('tc', 'qdisc', verb, 'dev', device, 'parent', '1:', 'handle', '2:', 'netem', ...bottleneck, ...(loss ? ['loss', `${loss}%`] : []));
+    };
+    shape(run, 'wan0', link.down?.[0], link.loss, 'add');
+    shape(inFar, 'wan1', link.up, 0, 'add');
+    const browser = join(directory, 'chromium-behind-link');
+    writeFileSync(browser, `#!/bin/sh\nexec nsenter -t ${far.pid} -n -- '${chromium}' --unsafely-treat-insecure-origin-as-secure=${origin} "$@"\n`);
+    chmodSync(browser, 0o755);
+
+    let relay, timer, failure;
+    const detach = async () => {if (relay) await stopChild(relay, 'SIGTERM');relay = undefined;};
+    return {origin, browser, link,
+      // Why the link no longer is what was asked for, if it is not.
+      failure: () => failure,
+      // The link starts over at its first rate; an alternating one changes every period from now.
+      restart() {
+        clearInterval(timer);
+        if (!link.period) return;
+        let phase = 0;
+        shape(run, 'wan0', link.down[0], link.loss, 'change');
+        // A failure here must not escape the timer: it would end the process before its cleanup.
+        timer = setInterval(() => {
+          try {
+            shape(run, 'wan0', link.down[++phase % 2], link.loss, 'change');
+          } catch (error) {
+            clearInterval(timer);
+            failure ??= `The link stopped changing its rate: ${error.stderr?.toString().trim() || error.message}`;
+          }
+        }, link.period);
+      },
+      async attach(server) {
+        await detach();
+        relay = spawn(process.execPath, [fileURLToPath(new URL('relay.mjs', import.meta.url)), SERVER, String(port), String(server.port)],
+          {stdio: ['ignore', 'ignore', 'inherit', 'ipc']});
+        await new Promise((resolve, reject) => {relay.once('message', resolve);relay.once('exit', () => reject(new Error('The link relay did not start')));});
+        return {...server, url: origin, relay: relay.pid};
+      },
+      detach,
+      async stop() {clearInterval(timer);await detach();await stopChild(far, 'SIGKILL');}};
+  } catch (error) {
+    far.kill('SIGKILL');
+    throw new Error(`Cannot build the link: ${error.stderr?.toString().trim() || error.message}`);
+  }
 }
 
 const TICK = 1000 / Number(execFileSync('getconf', ['CLK_TCK'], {encoding: 'utf8'}));
