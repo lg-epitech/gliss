@@ -137,6 +137,7 @@ the final run, the ablation summaries, the session log and the evaluator.
   deployments in general.
 - Distribox's WebSocket relay, a WAN and a real display are not in the path.
   Paint means Canvas submission in an animation frame, not light from a screen.
+  The [WAN notes](wan-path.md) add a link and a relay.
 - Frame age is short by the serial line's shortest delivery time, the same for
   every build.
 - A pointer position counts as shown when the window reaches or passes it, so

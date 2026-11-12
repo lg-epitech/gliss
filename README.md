@@ -9,4 +9,4 @@ Streams a VM's desktop to the browser. A Rust server captures the display and au
 | Scroll and video frame rate | 30 fps |
 | Bitrate during scroll / drag / video | 0.67 / 1.20 / 1.54 Mbit/s |
 
-Measured at 0.1.0-alpha.9 on one host; [how](docs/distribox-path.md). See also the [architecture](docs/architecture.md), [deployment and limits](docs/security.md) and [development](docs/development.md).
+Measured at 0.1.0-alpha.9 on one host; [how](docs/distribox-path.md). See also [the same over a WAN](docs/wan-path.md), the [architecture](docs/architecture.md), [deployment and limits](docs/security.md) and [development](docs/development.md).
