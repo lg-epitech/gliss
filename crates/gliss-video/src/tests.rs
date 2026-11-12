@@ -272,3 +272,41 @@ fn encodable_sizes_are_exactly_the_ones_the_encoder_accepts() {
     }
     assert!(encodable(3840, 2160) && !encodable(3842, 2160) && !encodable(65, 48));
 }
+
+#[test]
+fn a_lower_bitrate_makes_the_frames_that_follow_smaller() {
+    // Fine grain over a quarter of the picture, new in every frame: more than
+    // the lower target pays for, less than the higher one does.
+    let noise = |step: usize| {
+        let mut frame = scene(640, 360, 0);
+        let mut state = (step as u32).wrapping_mul(2654435761) + 1;
+        for y in 90..270 {
+            for byte in &mut frame.pixels[(y * 640 + 160) * 4..(y * 640 + 480) * 4] {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                *byte = 112 + (state >> 27) as u8;
+            }
+        }
+        frame
+    };
+    let bytes_after = |lowered: Option<u32>| {
+        let mut encoder = VideoEncoder::with_bitrate(640, 360, 30, 2_000_000).unwrap();
+        let mut total = 0;
+        for step in 0..60 {
+            if step == 20
+                && let Some(bitrate) = lowered
+            {
+                encoder.set_bitrate(bitrate);
+            }
+            let packet = encoder.encode(&noise(step), step as u32 + 1, 0).unwrap();
+            assert!(parse_packet(&packet).is_ok());
+            if step >= 30 {
+                total += packet.len();
+            }
+        }
+        total
+    };
+    let (kept, lowered) = (bytes_after(None), bytes_after(Some(400_000)));
+    assert!(lowered * 10 < kept * 8, "{lowered} bytes against {kept}");
+    // More than the encoder was made for is no change.
+    assert_eq!(bytes_after(Some(50_000_000)), kept);
+}

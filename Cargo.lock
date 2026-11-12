@@ -467,6 +467,7 @@ dependencies = [
  "anyhow",
  "gliss-core",
  "openh264",
+ "openh264-sys2",
 ]
 
 [[package]]
