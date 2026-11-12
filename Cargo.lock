@@ -417,14 +417,14 @@ dependencies = [
 
 [[package]]
 name = "gliss-core"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "gliss-rfb"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "des",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-server"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -462,7 +462,7 @@ dependencies = [
 
 [[package]]
 name = "gliss-video"
-version = "0.1.0-beta.1"
+version = "0.1.0-beta.2"
 dependencies = [
  "anyhow",
  "gliss-core",

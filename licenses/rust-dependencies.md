@@ -4405,10 +4405,10 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 Used by:
 
-- [gliss-core 0.1.0-beta.1](https://crates.io/crates/gliss-core)
-- [gliss-rfb 0.1.0-beta.1](https://crates.io/crates/gliss-rfb)
-- [gliss-server 0.1.0-beta.1](https://crates.io/crates/gliss-server)
-- [gliss-video 0.1.0-beta.1](https://crates.io/crates/gliss-video)
+- [gliss-core 0.1.0-beta.2](https://crates.io/crates/gliss-core)
+- [gliss-rfb 0.1.0-beta.2](https://crates.io/crates/gliss-rfb)
+- [gliss-server 0.1.0-beta.2](https://crates.io/crates/gliss-server)
+- [gliss-video 0.1.0-beta.2](https://crates.io/crates/gliss-video)
 
 ```text
 MIT License
