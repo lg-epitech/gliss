@@ -3,6 +3,7 @@ mod audio_adpcm;
 mod demo;
 mod held;
 mod http;
+mod link;
 mod logins;
 mod notices;
 mod pacer;
@@ -535,7 +536,7 @@ mod video_timing_option_tests {
         let frame = Frame::new(64, 48).unwrap();
         // Well past the former 240-frame interval, only the first frame is a keyframe.
         for sequence in 0..=300 {
-            let bytes = encoder.encode(&frame, sequence, 0).unwrap();
+            let bytes = encoder.encode(&frame, sequence, 0, 2_000_000).unwrap();
             assert_eq!(
                 gliss_video::parse_packet(&bytes).unwrap().keyframe,
                 sequence == 0,
@@ -543,7 +544,7 @@ mod video_timing_option_tests {
             );
         }
         encoder.reset();
-        let bytes = encoder.encode(&frame, 301, 0).unwrap();
+        let bytes = encoder.encode(&frame, 301, 0, 2_000_000).unwrap();
         assert!(gliss_video::parse_packet(&bytes).unwrap().keyframe);
     }
 
@@ -603,13 +604,15 @@ mod video_timing_option_tests {
         encoder.reset();
         for (sequence, width, height) in [(1, 64, 48), (2, 64, 48), (3, 66, 50)] {
             let frame = Frame::new(width, height).unwrap();
-            let bytes = encoder.encode(&frame, sequence, 2).unwrap();
+            let bytes = encoder.encode(&frame, sequence, 2, 3_000_000).unwrap();
             let packet = gliss_video::parse_packet(&bytes).unwrap();
             assert_eq!(packet.keyframe, sequence != 2);
             assert_eq!(encoder.encoder.as_ref().unwrap().timing(), timing);
         }
         encoder.reset();
-        let bytes = encoder.encode(&Frame::new(66, 50).unwrap(), 4, 3).unwrap();
+        let bytes = encoder
+            .encode(&Frame::new(66, 50).unwrap(), 4, 3, 3_000_000)
+            .unwrap();
         assert!(gliss_video::parse_packet(&bytes).unwrap().keyframe);
     }
 }
@@ -1059,7 +1062,8 @@ async fn stream(socket: WebSocket, app: Arc<App>, expires_at: u64) -> Result<()>
 }
 
 enum StreamCommand {
-    Ack(u32),
+    /// A frame's sequence, and how long the browser says it held the frame.
+    Ack(u32, Duration),
     Resync,
     Reply(Message),
 }
@@ -1216,7 +1220,10 @@ where
                     match value.get("type").and_then(|value| value.as_str()) {
                         Some("ack") => {
                             let sequence = value.get("sequence").and_then(|value| value.as_u64()).and_then(|value| u32::try_from(value).ok()).context("invalid media acknowledgement")?;
-                            Some(StreamCommand::Ack(sequence))
+                            // Optional: an older client does not say. More than the
+                            // acknowledgement timeout says nothing about the link.
+                            let held = value.get("held").and_then(|value| value.as_f64()).filter(|ms| ms.is_finite() && *ms > 0.0).map_or(Duration::ZERO, |ms| Duration::from_secs_f64(ms.min(10_000.0) / 1000.0));
+                            Some(StreamCommand::Ack(sequence, held))
                         }
                         Some("resync") => Some(StreamCommand::Resync),
                         Some("audio") => { audio::request(&audio_request, value)?; None }
@@ -1321,6 +1328,8 @@ where
     let mut source_ended = None::<tokio::time::Instant>;
     // The display mode that is being held back, if the current one cannot be encoded.
     let mut pause = None::<Pause>;
+    // Since when a capture has waited for the link to carry what is in flight.
+    let mut link_wait = None::<Instant>;
     loop {
         let now = session_now();
         if window.resync_due(now).is_some_and(|due| due <= now) {
@@ -1365,6 +1374,22 @@ where
         }
         let frames_in_flight = writer_jobs > 0 || waiting.is_some() || !encoder_jobs.is_empty();
         report_pause(&mut pause, frames_in_flight, &source.notices);
+        let ready =
+            window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some();
+        let hold = if ready {
+            window.link_hold(session_now())
+        } else {
+            scheduler::Hold::None
+        };
+        if hold != scheduler::Hold::None {
+            link_wait.get_or_insert_with(session_now);
+        } else if let Some(since) = link_wait.take() {
+            window.waited_for_link(session_now().saturating_duration_since(since));
+        }
+        let start = match hold {
+            scheduler::Hold::Until(clear) => eligible.max(tokio::time::Instant::from_std(clear)),
+            _ => eligible,
+        };
         let deadline = window.oldest_deadline();
         let sleep_deadline = tokio::time::Instant::from_std(
             deadline.unwrap_or_else(|| session_now() + Duration::from_secs(86400)),
@@ -1373,7 +1398,7 @@ where
             Some(result) = io_tasks.join_next() => { result.context("stream I/O task failed")??; break; }
             Some(command) = commands.recv() => {
                 match command {
-                    StreamCommand::Ack(sequence) => { window.acknowledge(sequence, session_now())?; }
+                    StreamCommand::Ack(sequence, held) => { window.acknowledge_held(sequence, session_now(), held)?; }
                     // Started at the top of the loop, once the interval between resyncs allows.
                     StreamCommand::Resync => window.request_resync(),
                     StreamCommand::Reply(message) => { control_tx.try_send(ControlPacket { message }).context("bounded control writer queue full or closed")?; }
@@ -1412,13 +1437,21 @@ where
             }
             _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,
             _ = tokio::time::sleep_until(resync_due.unwrap_or(eligible)), if resync_due.is_some() => {}
-            _ = tokio::time::sleep_until(eligible), if window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some() => {
+            _ = tokio::time::sleep_until(start), if ready && hold != scheduler::Hold::Acknowledgement => {
+                // The oldest frame may have become overdue during the wait.
+                if window.link_hold(session_now()) != scheduler::Hold::None { continue; }
                 pacer.started();
                 let captured = latest.take().unwrap();
                 let mut next_encoder = encoder.take().context("encoder is already busy")?;
                 sequence = sequence.wrapping_add(1);
                 let packet_sequence = sequence;
                 let packet_generation = window.generation();
+                // Nine tenths of what the link carries, if that is less than configured:
+                // frames that fit it are not held back for the frames before them.
+                let configured = app.args.h264_bitrate;
+                let bitrate = window.link_bitrate(session_now()).map_or(configured, |link| {
+                    ((link * 0.9) as u32).clamp(configured / 8, configured)
+                });
                 let permits = app.encoders.clone();
                 let queued = Instant::now();
                 let profile_encode = app.args.stream_stats;
@@ -1429,7 +1462,7 @@ where
                         let started = Instant::now();
                         let source_age = captured.published_at.map(|at| started.saturating_duration_since(at));
                         let cpu_started = profile_encode.then(profiling::thread_cpu_time).flatten();
-                        let packet = next_encoder.encode(&captured.frame, packet_sequence, captured.forwarded_input_id);
+                        let packet = next_encoder.encode(&captured.frame, packet_sequence, captured.forwarded_input_id, bitrate);
                         let work = started.elapsed();
                         let cpu_work = cpu_started.and_then(|at| profiling::thread_cpu_time()?.checked_sub(at));
                         Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
@@ -1466,7 +1499,15 @@ impl StreamEncoder {
         }
     }
 
-    fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
+    /// `bitrate` is what the encoder should aim at from this frame on, at most
+    /// the configured one.
+    fn encode(
+        &mut self,
+        frame: &Frame,
+        sequence: u32,
+        input_id: u32,
+        bitrate: u32,
+    ) -> Result<Vec<u8>> {
         if self.encoder.is_none() {
             self.encoder = Some(Box::new(VideoEncoder::with_timing(
                 frame.width,
@@ -1475,10 +1516,9 @@ impl StreamEncoder {
                 self.timing,
             )?));
         }
-        self.encoder
-            .as_mut()
-            .unwrap()
-            .encode(frame, sequence, input_id)
+        let encoder = self.encoder.as_mut().unwrap();
+        encoder.set_bitrate(bitrate);
+        encoder.encode(frame, sequence, input_id)
     }
 }
 
