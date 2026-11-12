@@ -11,6 +11,7 @@ use openh264::encoder::{
 };
 use openh264::formats::{RgbaSliceU8, YUVBuffer};
 use openh264::{OpenH264API, Timestamp, nal_units};
+use openh264_sys2::{ENCODER_OPTION_BITRATE, SBitrateInfo, SPATIAL_LAYER_ALL};
 
 pub const HEADER_LEN: usize = 24;
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
@@ -53,7 +54,11 @@ pub struct VideoEncoder {
     width: u16,
     height: u16,
     timing: VideoTiming,
+    /// The bitrate the encoder was made with, and the most it may aim at.
     bitrate: u32,
+    /// What it should aim at, and what the native encoder was last told.
+    target: u32,
+    applied: u32,
     encoded_frames: u64,
     force_keyframe: bool,
     sps: Vec<u8>,
@@ -131,6 +136,8 @@ impl VideoEncoder {
             height,
             timing,
             bitrate,
+            target: bitrate,
+            applied: bitrate,
             encoded_frames: 0,
             force_keyframe: true,
             sps: Vec::new(),
@@ -140,6 +147,34 @@ impl VideoEncoder {
 
     pub fn timing(&self) -> VideoTiming {
         self.timing
+    }
+
+    /// Aim at `bitrate` from the next frame on, for a link that carries less
+    /// than the encoder was made for. More than that is taken as that.
+    pub fn set_bitrate(&mut self, bitrate: u32) {
+        self.target = bitrate.clamp(1_000, self.bitrate);
+    }
+
+    /// Tell the native encoder about a target that moved by more than a tenth.
+    /// Smaller steps would only unsettle its rate control. It exists once it
+    /// has encoded a frame.
+    fn apply_bitrate(&mut self) -> Result<()> {
+        if self.encoded_frames == 0 || self.target.abs_diff(self.applied) <= self.applied / 10 {
+            return Ok(());
+        }
+        let mut info = SBitrateInfo {
+            iLayer: SPATIAL_LAYER_ALL,
+            iBitrate: self.target as i32,
+        };
+        // SAFETY: the encoder is initialised, and this option reads one SBitrateInfo.
+        let status = unsafe {
+            self.encoder
+                .raw_api()
+                .set_option(ENCODER_OPTION_BITRATE, (&raw mut info).cast())
+        };
+        ensure!(status == 0, "OpenH264 rejected bitrate {}", self.target);
+        self.applied = self.target;
+        Ok(())
     }
 
     /// Request an independently decodable IDR access unit on the next encode.
@@ -153,8 +188,14 @@ impl VideoEncoder {
         validate_dimensions(frame.width, frame.height)?;
         if (frame.width, frame.height) != (self.width, self.height) {
             // Construct first so a rejected resize leaves the old encoder intact.
+            // The new one codes its first frame, a keyframe, at the bitrate it
+            // is made with: the native encoder takes another target only once
+            // it has coded a frame, and one made for less cannot be raised.
+            let target = self.target;
             *self = Self::with_timing(frame.width, frame.height, self.bitrate, self.timing)?;
+            self.target = target;
         }
+        self.apply_bitrate()?;
         self.yuv.read_rgba8(RgbaSliceU8::new(
             &frame.pixels,
             (usize::from(frame.width), usize::from(frame.height)),

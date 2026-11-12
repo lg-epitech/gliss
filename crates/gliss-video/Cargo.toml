@@ -9,3 +9,5 @@ license.workspace = true
 anyhow.workspace = true
 gliss-core.workspace = true
 openh264 = { version = "=0.9.8", default-features = false, features = ["source"] }
+# The encoder option that changes the bitrate of a running stream is native only.
+openh264-sys2 = { version = "=0.9.8", default-features = false, features = ["source"] }
