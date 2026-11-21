@@ -2,6 +2,7 @@
 use crate::Captured;
 use anyhow::{Result, bail};
 use gliss_core::{Frame, Input};
+use gliss_rfb::PooledFrame;
 use std::{sync::Arc, time::Duration};
 use tokio::sync::{mpsc, watch};
 
@@ -145,7 +146,7 @@ pub async fn run(
             }
             _=interval.tick() => {
                 if dirty || workload!="static" {
-                    if tx.send(Some(Captured{frame:Arc::new(render(width,height,tick,id,workload,pointer)),forwarded_input_id:id,published_at:None})).is_err(){break;}
+                    if tx.send(Some(Captured{frame:Arc::new(PooledFrame::from_frame(render(width,height,tick,id,workload,pointer))),forwarded_input_id:id,published_at:None})).is_err(){break;}
                     dirty=false;tick=tick.wrapping_add(1);
                 }
             }

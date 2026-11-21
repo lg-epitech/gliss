@@ -41,6 +41,9 @@ impl Viewer {
             audio,
             audio_counters: Arc::new(audio::Counters::default()),
             frames: frame_rx,
+            frame_tx: None,
+            frames_closed: None,
+            damage: None,
             input,
             notices: notices.clone(),
             shutdown: None,
@@ -97,7 +100,9 @@ impl Viewer {
     /// The display shows a new picture of this size.
     fn show(&self, width: u16, height: u16) {
         self.frames.send_replace(Some(Captured {
-            frame: Arc::new(Frame::new(width, height).unwrap()),
+            frame: Arc::new(gliss_rfb::PooledFrame::from_frame(
+                Frame::new(width, height).unwrap(),
+            )),
             forwarded_input_id: 0,
             published_at: None,
         }));
