@@ -118,7 +118,9 @@ TMPDIR=/dev/shm node scripts/bench-distribox-path.mjs \
   --binary "$PWD/target/release/gliss-server" --rounds 3 --output /dev/shm/run.json
 ```
 
-Pass `--binary` again to compare builds in alternating order. It needs
+Pass `--binary` again to compare builds in alternating order. The default H.264
+target is 2 Mbit/s. Use `--h264-bitrate 8000000` for an 8 Mbit/s session. The
+benchmark needs
 `/dev/kvm`, QEMU, a readable host kernel with matching `virtio-gpu` and
 `virtio_input` modules, GCC with a static libc, cpio, zstd and the installed
 Playwright Chromium. The temporary directory must be on tmpfs, because the test

@@ -1,5 +1,10 @@
 # Measurements
 
+[distribox-rfb-reads-2026-11-21.json.gz](distribox-rfb-reads-2026-11-21.json.gz)
+contains the four-round comparison through Distribox’s Python relays, the socket
+read counts, the hill-climb samples and the fixtures used to reproduce them.
+See [Buffering QEMU framebuffer reads](../docs/distribox-rfb-reads.md).
+
 [distribox-path-2026-11-11.json.gz](distribox-path-2026-11-11.json.gz) holds the real-QEMU comparison described in [the Distribox path notes](../docs/distribox-path.md): every raw sample of the final three-build run, the per-step ablation summaries, the hill-climb session record and its evaluator. Inspect it with `gzip -dc benchmarks/distribox-path-2026-11-11.json.gz | python3 -m json.tool | less`.
 
 [wan-path-2026-11-12.json.gz](wan-path-2026-11-12.json.gz) holds the comparison behind an emulated WAN described in [the WAN notes](../docs/wan-path.md): every metric of the eight-link run, the hill-climb session record and its evaluator.
