@@ -1,5 +1,9 @@
 # Benchmarks
 
+[Round-2 Distribox CPU and latency optimizations](distribox-performance-round2.md)
+measures Gliss, QEMU, Chromium and Distribox relay CPU, interactive latency and
+emulated 1 Mbit/s WAN behavior across 8 Mbit/s and 2 Mbit/s targets.
+
 [Buffering QEMU framebuffer reads](distribox-rfb-reads.md) measures Gliss CPU
 per painted frame through both Distribox WebSocket relays at 1080p and an
 8 Mbit/s H.264 target.

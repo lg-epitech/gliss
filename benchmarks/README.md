@@ -1,5 +1,11 @@
 # Measurements
 
+[distribox-round2-2026-11-21.json.gz](distribox-round2-2026-11-21.json.gz)
+contains the four-round 8 Mbit/s and three-round 2 Mbit/s two-relay ABBA
+comparisons, the three-round 1 Mbit/s emulated WAN ABBA comparison, the
+hill-climb history and scorer, and the relay driver used to reproduce them.
+See [Round-2 Distribox CPU and latency optimizations](../docs/distribox-performance-round2.md).
+
 [distribox-rfb-reads-2026-11-21.json.gz](distribox-rfb-reads-2026-11-21.json.gz)
 contains the four-round comparison through Distribox’s Python relays, the socket
 read counts, the hill-climb samples and the fixtures used to reproduce them.
