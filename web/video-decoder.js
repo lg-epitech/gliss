@@ -19,7 +19,12 @@ function* nalUnits(bytes) {
     // A start code right behind another holds no unit. Read as one, it would hide the unit after it.
     if (startCode(bytes, begin)) throw new Error('Invalid Annex B access unit');
     let end = begin + 1;
-    while (end < bytes.length && !startCode(bytes, end)) end++;
+    while (end < bytes.length) {
+      const zero = bytes.indexOf(0, end);
+      if (zero === -1) { end = bytes.length; break; }
+      if (startCode(bytes, zero)) { end = zero; break; }
+      end = zero + 1;
+    }
     const nal = bytes.subarray(begin, end);
     if (nal[0] & 128) throw new Error('Invalid H.264 NAL header');
     yield nal;
