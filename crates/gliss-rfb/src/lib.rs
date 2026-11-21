@@ -7,7 +7,8 @@ pub mod audio;
 mod clipboard;
 
 use std::{
-    sync::{Arc, Mutex},
+    ops::Deref,
+    sync::{Arc, Mutex, Weak},
     time::Duration,
 };
 
@@ -16,9 +17,12 @@ use des::{
     Des,
     cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray},
 };
-use gliss_core::{Frame, Input, MAX_CLIPBOARD, MAX_PIXELS};
+use gliss_core::{Damage, Frame, Input, MAX_CLIPBOARD, MAX_PIXELS};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
+    io::{
+        AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt,
+        BufReader,
+    },
     net::TcpStream,
     sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
@@ -60,31 +64,170 @@ impl Layout {
         }
     }
 
-    /// Rewrite wire pixels as opaque RGBA in place.
-    fn to_rgba(self, pixels: &mut [u8]) {
-        let pixels = pixels.as_chunks_mut::<4>().0;
+    /// Copy wire pixels from `src` into `dst` as opaque RGBA in a single pass.
+    fn copy_to_rgba(self, dst: &mut [u8], src: &[u8]) {
+        debug_assert_eq!(dst.len(), src.len());
+        debug_assert!(dst.len().is_multiple_of(4));
         match self {
             Self::Rgbx => {
-                for pixel in pixels {
+                #[cfg(target_arch = "x86_64")]
+                if dst.len() >= 32 && std::arch::is_x86_feature_detected!("avx2") {
+                    let simd_len = dst.len() & !31;
+                    // SAFETY: AVX2 support checked above and both slices have length >= simd_len.
+                    unsafe {
+                        copy_rgbx_to_rgba_avx2(&mut dst[..simd_len], &src[..simd_len]);
+                    }
+                    copy_rgbx_to_rgba_scalar(&mut dst[simd_len..], &src[simd_len..]);
+                    return;
+                }
+                copy_rgbx_to_rgba_scalar(dst, src);
+            }
+            Self::Bgrx => {
+                #[cfg(target_arch = "x86_64")]
+                if dst.len() >= 32 && std::arch::is_x86_feature_detected!("avx2") {
+                    let simd_len = dst.len() & !31;
+                    // SAFETY: AVX2 support checked above and both slices have length >= simd_len.
+                    unsafe {
+                        copy_bgrx_to_rgba_avx2(&mut dst[..simd_len], &src[..simd_len]);
+                    }
+                    copy_bgrx_to_rgba_scalar(&mut dst[simd_len..], &src[simd_len..]);
+                    return;
+                }
+                copy_bgrx_to_rgba_scalar(dst, src);
+            }
+        }
+    }
+
+    /// Rewrite wire pixels as opaque RGBA in place.
+    fn to_rgba(self, pixels: &mut [u8]) {
+        match self {
+            Self::Rgbx => {
+                for pixel in pixels.as_chunks_mut::<4>().0 {
                     pixel[3] = 255;
                 }
             }
             Self::Bgrx => {
-                for pixel in pixels {
-                    let bgrx = u32::from_le_bytes(*pixel);
-                    let rgba = (bgrx & 0x0000_ff00)
-                        | ((bgrx >> 16) & 0xff)
-                        | ((bgrx & 0xff) << 16)
-                        | 0xff00_0000;
-                    *pixel = rgba.to_le_bytes();
+                #[cfg(target_arch = "x86_64")]
+                if pixels.len() >= 32 && std::arch::is_x86_feature_detected!("avx2") {
+                    let simd_len = pixels.len() & !31;
+                    // SAFETY: AVX2 support checked above and slice is truncated to a 32-byte multiple.
+                    unsafe {
+                        bgrx_to_rgba_avx2(&mut pixels[..simd_len]);
+                    }
+                    bgrx_to_rgba_scalar(&mut pixels[simd_len..]);
+                    return;
                 }
+                bgrx_to_rgba_scalar(pixels);
             }
         }
     }
 }
+
+fn copy_rgbx_to_rgba_scalar(dst: &mut [u8], src: &[u8]) {
+    for (out, inp) in dst
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.as_chunks::<4>().0)
+    {
+        *out = [inp[0], inp[1], inp[2], 255];
+    }
+}
+
+fn copy_bgrx_to_rgba_scalar(dst: &mut [u8], src: &[u8]) {
+    for (out, inp) in dst
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.as_chunks::<4>().0)
+    {
+        *out = [inp[2], inp[1], inp[0], 255];
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn copy_rgbx_to_rgba_avx2(dst: &mut [u8], src: &[u8]) {
+    use std::arch::x86_64::*;
+    let alpha = _mm256_set1_epi32(0xff00_0000u32 as i32);
+    let simd_len = dst.len().min(src.len()) & !31;
+    // SAFETY: `simd_len` is a multiple of 32 and within both slices.
+    unsafe {
+        let mut s = src.as_ptr();
+        let mut d = dst.as_mut_ptr();
+        let end = d.add(simd_len);
+        while d < end {
+            let v = _mm256_loadu_si256(s.cast());
+            _mm256_storeu_si256(d.cast(), _mm256_or_si256(v, alpha));
+            s = s.add(32);
+            d = d.add(32);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn copy_bgrx_to_rgba_avx2(dst: &mut [u8], src: &[u8]) {
+    use std::arch::x86_64::*;
+    let shuf = _mm256_setr_epi8(
+        2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11,
+        14, 13, 12, 15,
+    );
+    let alpha = _mm256_set1_epi32(0xff00_0000u32 as i32);
+    let simd_len = dst.len().min(src.len()) & !31;
+    // SAFETY: `simd_len` is a multiple of 32 and within both slices.
+    unsafe {
+        let mut s = src.as_ptr();
+        let mut d = dst.as_mut_ptr();
+        let end = d.add(simd_len);
+        while d < end {
+            let v = _mm256_loadu_si256(s.cast());
+            let swapped = _mm256_or_si256(_mm256_shuffle_epi8(v, shuf), alpha);
+            _mm256_storeu_si256(d.cast(), swapped);
+            s = s.add(32);
+            d = d.add(32);
+        }
+    }
+}
+
+fn bgrx_to_rgba_scalar(pixels: &mut [u8]) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
+        let bgrx = u32::from_le_bytes(*pixel);
+        let rgba =
+            (bgrx & 0x0000_ff00) | ((bgrx >> 16) & 0xff) | ((bgrx & 0xff) << 16) | 0xff00_0000;
+        *pixel = rgba.to_le_bytes();
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn bgrx_to_rgba_avx2(pixels: &mut [u8]) {
+    use std::arch::x86_64::*;
+    let shuf = _mm256_setr_epi8(
+        2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11,
+        14, 13, 12, 15,
+    );
+    let alpha = _mm256_set1_epi32(0xff00_0000u32 as i32);
+    let simd_len = pixels.len() & !31;
+    // SAFETY: `simd_len <= pixels.len()` is a multiple of 32 bytes.
+    unsafe {
+        let mut ptr = pixels.as_mut_ptr();
+        let end = ptr.add(simd_len);
+        while ptr < end {
+            let v = _mm256_loadu_si256(ptr.cast());
+            let swapped = _mm256_or_si256(_mm256_shuffle_epi8(v, shuf), alpha);
+            _mm256_storeu_si256(ptr.cast(), swapped);
+            ptr = ptr.add(32);
+        }
+    }
+}
 const ENCODINGS: [i32; 7] = [0, 1, -239, -223, -308, clipboard::ENCODING, audio::ENCODING];
-/// Most bytes of a full-width Raw rectangle taken by one read.
+/// Most bytes of a full-width Raw rectangle taken by one direct read so in-place
+/// SIMD conversion stays L2-cache-resident.
 const RAW_READ_BYTES: usize = 256 * 1024;
+/// Contiguous Raw rectangles at least as large as the 32 KiB read buffer bypass
+/// the buffer via `read_exact`; smaller rects convert straight from `fill_buf`.
+const DIRECT_READ_THRESHOLD: usize = 32 * 1024;
 const MAX_TEXT: usize = 64 * 1024;
 /// Longest side of a cursor the wire may carry. A larger one is a protocol error.
 const MAX_WIRE_CURSOR_SIDE: u16 = 1024;
@@ -150,9 +293,124 @@ pub enum Event {
     },
 }
 
+const POOL_CAPACITY: usize = 2;
+const HISTORY_LEN: usize = 4;
+
+struct PooledBuffer {
+    pixels: Vec<u8>,
+    generation: u64,
+}
+
+#[derive(Default)]
+struct FramePool {
+    buffers: Vec<PooledBuffer>,
+}
+
+impl FramePool {
+    fn take(&mut self, byte_len: usize) -> Option<PooledBuffer> {
+        // Drop buffers from older dimensions so memory stays bounded across resizes.
+        self.buffers.retain(|buf| buf.pixels.len() == byte_len);
+        // Prefer the most recent generation to minimize dirty tiles to sync.
+        let best = self
+            .buffers
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, buf)| buf.generation)
+            .map(|(index, _)| index)?;
+        Some(self.buffers.swap_remove(best))
+    }
+
+    fn put(&mut self, pixels: Vec<u8>, generation: u64) {
+        if self.buffers.len() >= POOL_CAPACITY
+            && let Some((oldest, _)) = self
+                .buffers
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, buf)| buf.generation)
+        {
+            self.buffers.swap_remove(oldest);
+        }
+        self.buffers.push(PooledBuffer { pixels, generation });
+    }
+}
+
+/// An immutable framebuffer snapshot whose pixel allocation returns to the RFB
+/// reader's pool when the last handle drops, avoiding per-frame `mmap`/`munmap`.
+#[derive(Debug)]
+pub struct PooledFrame {
+    frame: Frame,
+    damage: Damage,
+    generation: u64,
+    pool: Weak<Mutex<FramePool>>,
+}
+
+impl PooledFrame {
+    pub fn from_frame(frame: Frame) -> Self {
+        let damage = Damage::full(frame.width, frame.height);
+        Self {
+            frame,
+            damage,
+            generation: 0,
+            pool: Weak::new(),
+        }
+    }
+
+    pub fn damage(&self) -> &Damage {
+        &self.damage
+    }
+
+    pub fn into_frame(mut self) -> Frame {
+        self.pool = Weak::new();
+        std::mem::replace(
+            &mut self.frame,
+            Frame {
+                width: 0,
+                height: 0,
+                pixels: Vec::new(),
+            },
+        )
+    }
+}
+
+impl Deref for PooledFrame {
+    type Target = Frame;
+
+    fn deref(&self) -> &Self::Target {
+        &self.frame
+    }
+}
+
+impl Drop for PooledFrame {
+    fn drop(&mut self) {
+        if self.frame.pixels.is_empty() {
+            return;
+        }
+        if let Some(pool) = self.pool.upgrade() {
+            let pixels = std::mem::take(&mut self.frame.pixels);
+            if let Ok(mut guard) = pool.lock() {
+                guard.put(pixels, self.generation);
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum PooledEvent {
+    Frame(Arc<PooledFrame>),
+    Unchanged,
+    Clipboard(String),
+    Cursor(Cursor),
+    Bell,
+    ResizeResult {
+        width: u16,
+        height: u16,
+        status: u16,
+    },
+}
+
 /// Dropping this handle stops wire decoding. Cancelling `read_event` leaves it intact.
 pub struct RfbReader {
-    events: mpsc::Receiver<Result<Event>>,
+    events: mpsc::Receiver<Result<PooledEvent>>,
     audio: broadcast::Sender<audio::Event>,
     task: JoinHandle<()>,
 }
@@ -166,9 +424,21 @@ pub struct RfbWriter {
 }
 
 enum WriteMessage {
-    Bytes(Vec<u8>),
+    Inline { len: u8, bytes: [u8; 24] },
     ClipboardInput(String),
     ClipboardRemote { extended: bool, bytes: Vec<u8> },
+}
+
+impl WriteMessage {
+    fn inline(slice: &[u8]) -> Self {
+        debug_assert!(slice.len() <= 24);
+        let mut bytes = [0; 24];
+        bytes[..slice.len()].copy_from_slice(slice);
+        Self::Inline {
+            len: slice.len() as u8,
+            bytes,
+        }
+    }
 }
 
 struct WriteCommand {
@@ -204,9 +474,6 @@ async fn connect_inner(
     let (frame, info, layout) = handshake(&mut stream, password).await?;
     // Owned halves: a generic split would put a mutex between reading and writing.
     let (read, write) = stream.into_split();
-    // QEMU sends many small rectangle headers and partial rows during scroll.
-    // A large, contiguous Raw read bypasses the buffer when it is empty.
-    let read = BufReader::with_capacity(32 * 1024, read);
     Ok(start_tasks(read, write, frame, info, layout))
 }
 
@@ -290,6 +557,9 @@ where
     let read_layout = layout.clone();
     let (write_failed_tx, write_failed) = oneshot::channel();
     let read_task = tokio::spawn(async move {
+        // QEMU sends many small rectangle headers and partial rows during scroll.
+        // A 32 KiB buffer fits in L1d and lets `decode` fuse read + pixel conversion.
+        let read = BufReader::with_capacity(32 * 1024, read);
         let result = tokio::select! {
             result = decode(
                 read,
@@ -422,8 +692,34 @@ impl RfbReader {
         self.audio.subscribe()
     }
 
-    pub async fn read_event(&mut self) -> Result<Event> {
+    pub async fn read_pooled_event(&mut self) -> Result<PooledEvent> {
         self.events.recv().await.context("RFB reader closed")?
+    }
+
+    pub async fn read_event(&mut self) -> Result<Event> {
+        let event = self.read_pooled_event().await?;
+        Ok(match event {
+            PooledEvent::Frame(frame) => {
+                let frame = match Arc::try_unwrap(frame) {
+                    Ok(pooled) => pooled.into_frame(),
+                    Err(shared) => (**shared).clone(),
+                };
+                Event::Frame(frame)
+            }
+            PooledEvent::Unchanged => Event::Unchanged,
+            PooledEvent::Clipboard(text) => Event::Clipboard(text),
+            PooledEvent::Cursor(cursor) => Event::Cursor(cursor),
+            PooledEvent::Bell => Event::Bell,
+            PooledEvent::ResizeResult {
+                width,
+                height,
+                status,
+            } => Event::ResizeResult {
+                width,
+                height,
+                status,
+            },
+        })
     }
 }
 
@@ -450,7 +746,8 @@ impl RfbWriter {
             *self.audio_available.borrow(),
             "RFB server has not confirmed audio support"
         );
-        self.send(WriteMessage::Bytes(audio::control(enabled)))
+        let (bytes, len) = audio::control(enabled);
+        self.send(WriteMessage::inline(&bytes[..usize::from(len)]))
             .await
     }
 
@@ -465,7 +762,7 @@ impl RfbWriter {
             *self.audio_available.borrow(),
             "RFB server has not confirmed audio support"
         );
-        self.send(WriteMessage::Bytes(audio::format())).await
+        self.send(WriteMessage::inline(&audio::format())).await
     }
 
     pub fn supports_resize(&self) -> bool {
@@ -479,25 +776,23 @@ impl RfbWriter {
         height: u16,
     ) -> Result<()> {
         dimensions(width, height)?;
-        let mut bytes = vec![3, u8::from(incremental), 0, 0, 0, 0];
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
-        self.send(WriteMessage::Bytes(bytes)).await
+        let w = width.to_be_bytes();
+        let h = height.to_be_bytes();
+        let bytes = [3, u8::from(incremental), 0, 0, 0, 0, w[0], w[1], h[0], h[1]];
+        self.send(WriteMessage::inline(&bytes)).await
     }
 
     /// Clipboard text uses UTF-8 when negotiated, otherwise the base Latin-1 format.
     pub async fn send_input(&mut self, input: &Input) -> Result<()> {
-        let bytes = match input {
+        let message = match input {
             Input::Key { keysym, down, .. } => {
-                let mut bytes = vec![4, u8::from(*down), 0, 0];
-                bytes.extend_from_slice(&keysym.to_be_bytes());
-                bytes
+                let k = keysym.to_be_bytes();
+                WriteMessage::inline(&[4, u8::from(*down), 0, 0, k[0], k[1], k[2], k[3]])
             }
             Input::Pointer { x, y, buttons, .. } => {
-                let mut bytes = vec![5, *buttons];
-                bytes.extend_from_slice(&x.to_be_bytes());
-                bytes.extend_from_slice(&y.to_be_bytes());
-                bytes
+                let xb = x.to_be_bytes();
+                let yb = y.to_be_bytes();
+                WriteMessage::inline(&[5, *buttons, xb[0], xb[1], yb[0], yb[1]])
             }
             Input::Clipboard { text, .. } => {
                 ensure!(
@@ -513,19 +808,19 @@ impl RfbWriter {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("RFB layout lock poisoned"))?
                     .context("RFB server has not confirmed desktop resize support")?;
-                let mut bytes = vec![251, 0];
-                bytes.extend_from_slice(&width.to_be_bytes());
-                bytes.extend_from_slice(&height.to_be_bytes());
-                bytes.extend_from_slice(&[1, 0]);
-                bytes.extend_from_slice(&screen.id.to_be_bytes());
-                bytes.extend_from_slice(&[0; 4]);
-                bytes.extend_from_slice(&width.to_be_bytes());
-                bytes.extend_from_slice(&height.to_be_bytes());
-                bytes.extend_from_slice(&screen.flags.to_be_bytes());
-                bytes
+                let mut bytes = [0; 24];
+                bytes[0] = 251;
+                bytes[2..4].copy_from_slice(&width.to_be_bytes());
+                bytes[4..6].copy_from_slice(&height.to_be_bytes());
+                bytes[6] = 1;
+                bytes[8..12].copy_from_slice(&screen.id.to_be_bytes());
+                bytes[16..18].copy_from_slice(&width.to_be_bytes());
+                bytes[18..20].copy_from_slice(&height.to_be_bytes());
+                bytes[20..24].copy_from_slice(&screen.flags.to_be_bytes());
+                WriteMessage::Inline { len: 24, bytes }
             }
         };
-        self.send(WriteMessage::Bytes(bytes)).await
+        self.send(message).await
     }
 
     async fn send(&mut self, message: WriteMessage) -> Result<()> {
@@ -564,13 +859,26 @@ async fn write_messages<W: AsyncWrite + Unpin>(
             // Clipboard negotiation, ownership and response selection share the
             // same actor as input writes, so crossed updates cannot reorder a
             // cached provide after a newer notification.
-            let (bytes, text) = match command.message {
-                WriteMessage::Bytes(bytes) => (Some(bytes), None),
-                WriteMessage::ClipboardInput(text) => (Some(clipboard.input(&text)?), None),
+            let owned;
+            let (bytes, text): (Option<&[u8]>, Option<String>) = match command.message {
+                WriteMessage::Inline { len, ref bytes } => (Some(&bytes[..usize::from(len)]), None),
+                WriteMessage::ClipboardInput(text) => {
+                    owned = clipboard.input(&text)?;
+                    (Some(owned.as_slice()), None)
+                }
                 WriteMessage::ClipboardRemote {
                     extended: true,
                     bytes,
-                } => clipboard.receive(&bytes)?,
+                } => {
+                    let (reply, text) = clipboard.receive(&bytes)?;
+                    owned = reply.unwrap_or_default();
+                    let slice = if owned.is_empty() {
+                        None
+                    } else {
+                        Some(owned.as_slice())
+                    };
+                    (slice, text)
+                }
                 WriteMessage::ClipboardRemote {
                     extended: false,
                     bytes,
@@ -580,7 +888,7 @@ async fn write_messages<W: AsyncWrite + Unpin>(
                 }
             };
             if let Some(bytes) = bytes
-                && let Err(error) = write_progressing(&mut write, &bytes).await
+                && let Err(error) = write_progressing(&mut write, bytes).await
             {
                 // The caller and the reader each get the reason.
                 failure = Some(format!("{error:#}"));
@@ -633,6 +941,8 @@ struct Update {
     budget: usize,
     /// Work done since decoding last returned to the runtime.
     work: usize,
+    /// Tiles dirtied by this update.
+    damage: Damage,
 }
 
 impl Update {
@@ -642,6 +952,7 @@ impl Update {
             resized: false,
             budget: Self::budget(frame),
             work: 0,
+            damage: Damage::empty(frame.width, frame.height),
         }
     }
 
@@ -650,20 +961,29 @@ impl Update {
     }
 
     /// Account for a rectangle that writes or moves `width`x`height` pixels.
-    fn draws(&mut self, width: u16, height: u16) -> Result<()> {
+    fn draws(&mut self, x: u16, y: u16, width: u16, height: u16) -> Result<()> {
         let pixels = usize::from(width) * usize::from(height);
         self.budget = self
             .budget
             .checked_sub(pixels)
             .context("RFB update exceeds its pixel budget")?;
-        self.changed |= pixels > 0;
+        if pixels > 0 {
+            self.changed = true;
+            self.damage.mark_rect(x, y, width, height);
+        }
         self.work += pixels;
         Ok(())
     }
 
     /// Replace the frame when the size differs. Each replacement allocates a
     /// whole frame, so an update gets one.
-    fn resizes(&mut self, frame: &mut Frame, width: u16, height: u16) -> Result<()> {
+    fn resizes(
+        &mut self,
+        frame: &mut Arc<PooledFrame>,
+        width: u16,
+        height: u16,
+        pool: &Arc<Mutex<FramePool>>,
+    ) -> Result<()> {
         if (width, height) == (frame.width, frame.height) {
             return Ok(());
         }
@@ -675,12 +995,163 @@ impl Update {
         // allows less what the update has done already: a change of size
         // does not give an update a second budget.
         let spent = Self::budget(frame) - self.budget;
-        *frame = Frame::new(width, height).context("invalid RFB resize")?;
+        let resized_frame = Frame::new(width, height).context("invalid RFB resize")?;
+        *frame = Arc::new(PooledFrame {
+            frame: resized_frame,
+            damage: Damage::full(width, height),
+            generation: 0,
+            pool: Arc::downgrade(pool),
+        });
         self.resized = true;
         self.changed = true;
+        self.damage = Damage::full(width, height);
         self.budget = Self::budget(frame).saturating_sub(spent);
         Ok(())
     }
+}
+
+fn compute_sync_damage(
+    buf_generation: u64,
+    generation: u64,
+    width: u16,
+    height: u16,
+    history: &[(u64, Damage); HISTORY_LEN],
+) -> Damage {
+    if buf_generation == 0
+        || buf_generation >= generation
+        || generation - buf_generation > HISTORY_LEN as u64
+    {
+        return Damage::full(width, height);
+    }
+    let mut sync = Damage::empty(width, height);
+    for step in (buf_generation + 1)..=generation {
+        let (recorded, recorded_damage) = history[(step as usize) % HISTORY_LEN];
+        if recorded == step && recorded_damage.dimensions() == (width, height) {
+            sync.union_with(&recorded_damage);
+        } else {
+            return Damage::full(width, height);
+        }
+    }
+    sync
+}
+
+/// Ensures `frame` has exclusive ownership for in-place RFB decoding.
+///
+/// Fast path: when downstream consumers have already released the previous
+/// snapshot (`Arc::strong_count == 1`), decoding mutates the buffer in place
+/// with zero copies. Slow path: detaches into a pooled buffer synced by tile
+/// damage so live consumers keep an immutable snapshot.
+fn make_frame_mut<'a>(
+    frame: &'a mut Arc<PooledFrame>,
+    pool: &Arc<Mutex<FramePool>>,
+    history: &[(u64, Damage); HISTORY_LEN],
+    generation: u64,
+) -> &'a mut Frame {
+    if Arc::strong_count(frame) > 1 {
+        let width = frame.width;
+        let height = frame.height;
+        let byte_len = frame.pixels.len();
+        let recycled = pool.lock().ok().and_then(|mut guard| guard.take(byte_len));
+        let pixels = match recycled {
+            Some(mut buf) => {
+                let sync = compute_sync_damage(buf.generation, generation, width, height, history);
+                copy_damaged_pixels(&mut buf.pixels, &frame.pixels, width, &sync);
+                buf.pixels
+            }
+            None => frame.pixels.clone(),
+        };
+        *frame = Arc::new(PooledFrame {
+            frame: Frame {
+                width,
+                height,
+                pixels,
+            },
+            damage: Damage::empty(width, height),
+            generation,
+            pool: Arc::downgrade(pool),
+        });
+    }
+    &mut Arc::get_mut(frame).expect("unique RFB frame owner").frame
+}
+
+#[inline]
+async fn read_rect_header<R: AsyncBufRead + Unpin>(read: &mut R) -> Result<[u8; 12]> {
+    let buf = read.fill_buf().await?;
+    if buf.len() >= 12 {
+        let header: [u8; 12] = buf[..12].try_into().unwrap();
+        read.consume(12);
+        return Ok(header);
+    }
+    let mut header = [0u8; 12];
+    read.read_exact(&mut header).await?;
+    Ok(header)
+}
+
+/// Reads `dst.len()` wire bytes (a multiple of 4) and writes opaque RGBA into
+/// `dst` in one fused pass straight out of the `AsyncBufRead` buffer.
+async fn read_pixels_converted<R: AsyncBufRead + Unpin>(
+    read: &mut R,
+    dst: &mut [u8],
+    layout: Layout,
+) -> Result<()> {
+    debug_assert!(dst.len().is_multiple_of(4));
+    let mut offset = 0usize;
+    let mut carry = [0u8; 4];
+    let mut carry_len = 0usize;
+    while offset < dst.len() {
+        let buf = read.fill_buf().await?;
+        if buf.is_empty() {
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        if carry_len > 0 {
+            let need = 4 - carry_len;
+            let take = buf.len().min(need);
+            carry[carry_len..carry_len + take].copy_from_slice(&buf[..take]);
+            read.consume(take);
+            carry_len += take;
+            if carry_len == 4 {
+                layout.to_rgba(&mut carry);
+                dst[offset..offset + 4].copy_from_slice(&carry);
+                offset += 4;
+                carry_len = 0;
+            }
+            continue;
+        }
+        let rem = dst.len() - offset;
+        let avail = buf.len().min(rem);
+        let aligned = avail & !3;
+        if aligned > 0 {
+            layout.copy_to_rgba(&mut dst[offset..offset + aligned], &buf[..aligned]);
+            read.consume(aligned);
+            offset += aligned;
+        } else {
+            carry[..avail].copy_from_slice(&buf[..avail]);
+            carry_len = avail;
+            read.consume(avail);
+        }
+    }
+    Ok(())
+}
+
+fn copy_damaged_pixels(dst: &mut [u8], src: &[u8], width: u16, damage: &Damage) {
+    if damage.is_full() {
+        dst.copy_from_slice(src);
+        return;
+    }
+    let stride = usize::from(width) * 4;
+    damage.for_each_span(|x, y, w, h| {
+        let row_bytes = w * 4;
+        if row_bytes == stride {
+            let start = y * stride;
+            let len = h * stride;
+            dst[start..start + len].copy_from_slice(&src[start..start + len]);
+        } else {
+            for row in y..y + h {
+                let start = row * stride + x * 4;
+                dst[start..start + row_bytes].copy_from_slice(&src[start..start + row_bytes]);
+            }
+        }
+    });
 }
 
 impl Update {
@@ -702,18 +1173,28 @@ struct Surface {
     pixels: Layout,
 }
 
-async fn decode<R: AsyncRead + Unpin>(
+async fn decode<R: AsyncBufRead + Unpin>(
     mut read: R,
     surface: Surface,
     layout: Arc<Mutex<Option<Screen>>>,
     commands: &mpsc::Sender<WriteCommand>,
-    events: &mpsc::Sender<Result<Event>>,
+    events: &mpsc::Sender<Result<PooledEvent>>,
     audio: &audio::Sink,
 ) -> Result<()> {
     let Surface {
-        mut frame,
+        frame: initial_frame,
         pixels: pixel_layout,
     } = surface;
+    let pool = Arc::new(Mutex::new(FramePool::default()));
+    let mut generation = 0u64;
+    let mut history: [(u64, Damage); HISTORY_LEN] =
+        [(0, Damage::empty(initial_frame.width, initial_frame.height)); HISTORY_LEN];
+    let mut frame = Arc::new(PooledFrame {
+        damage: Damage::full(initial_frame.width, initial_frame.height),
+        frame: initial_frame,
+        generation: 0,
+        pool: Arc::downgrade(&pool),
+    });
     loop {
         let message = read.read_u8().await.context("read RFB message")?;
         match message {
@@ -723,38 +1204,43 @@ async fn decode<R: AsyncRead + Unpin>(
                 let mut update = Update::new(&frame);
                 for rectangle_index in 0..count {
                     update.share_worker().await;
-                    let x = read.read_u16().await?;
-                    let y = read.read_u16().await?;
-                    let width = read.read_u16().await?;
-                    let height = read.read_u16().await?;
-                    let encoding = read.read_i32().await?;
+                    let header = read_rect_header(&mut read).await?;
+                    let x = u16::from_be_bytes([header[0], header[1]]);
+                    let y = u16::from_be_bytes([header[2], header[3]]);
+                    let width = u16::from_be_bytes([header[4], header[5]]);
+                    let height = u16::from_be_bytes([header[6], header[7]]);
+                    let encoding =
+                        i32::from_be_bytes([header[8], header[9], header[10], header[11]]);
                     match encoding {
                         audio::ENCODING => {
                             audio.available.send_replace(true);
                         }
                         0 => {
                             bounds(&frame, x, y, width, height)?;
-                            update.draws(width, height)?;
-                            let stride = usize::from(frame.width) * 4;
+                            update.draws(x, y, width, height)?;
+                            if width == 0 || height == 0 {
+                                continue;
+                            }
+                            let frame_mut = make_frame_mut(&mut frame, &pool, &history, generation);
+                            let stride = usize::from(frame_mut.width) * 4;
                             let row_bytes = usize::from(width) * 4;
                             if row_bytes == stride {
-                                // Full-width rows are contiguous in the frame. Read
-                                // several per call, in pieces that stay in cache for
-                                // the conversion that follows.
                                 let start = usize::from(y) * stride;
-                                let rows =
-                                    &mut frame.pixels[start..start + usize::from(height) * stride];
-                                let piece = (RAW_READ_BYTES / stride).max(1) * stride;
-                                for pixels in rows.chunks_mut(piece) {
-                                    read.read_exact(pixels).await?;
-                                    pixel_layout.to_rgba(pixels);
+                                let rows = &mut frame_mut.pixels
+                                    [start..start + usize::from(height) * stride];
+                                if rows.len() >= DIRECT_READ_THRESHOLD {
+                                    for chunk in rows.chunks_mut(RAW_READ_BYTES) {
+                                        read.read_exact(chunk).await?;
+                                        pixel_layout.to_rgba(chunk);
+                                    }
+                                } else {
+                                    read_pixels_converted(&mut read, rows, pixel_layout).await?;
                                 }
                             } else {
                                 for row in usize::from(y)..usize::from(y) + usize::from(height) {
                                     let start = row * stride + usize::from(x) * 4;
-                                    let pixels = &mut frame.pixels[start..start + row_bytes];
-                                    read.read_exact(pixels).await?;
-                                    pixel_layout.to_rgba(pixels);
+                                    let pixels = &mut frame_mut.pixels[start..start + row_bytes];
+                                    read_pixels_converted(&mut read, pixels, pixel_layout).await?;
                                 }
                             }
                         }
@@ -763,8 +1249,12 @@ async fn decode<R: AsyncRead + Unpin>(
                             let source_x = read.read_u16().await?;
                             let source_y = read.read_u16().await?;
                             bounds(&frame, source_x, source_y, width, height)?;
-                            update.draws(width, height)?;
-                            let stride = usize::from(frame.width) * 4;
+                            update.draws(x, y, width, height)?;
+                            if width == 0 || height == 0 {
+                                continue;
+                            }
+                            let frame_mut = make_frame_mut(&mut frame, &pool, &history, generation);
+                            let stride = usize::from(frame_mut.width) * 4;
                             let row_bytes = usize::from(width) * 4;
                             // Bottom-up copying handles vertical overlap; copy_within handles horizontal overlap.
                             for index in 0..usize::from(height) {
@@ -777,7 +1267,7 @@ async fn decode<R: AsyncRead + Unpin>(
                                     + usize::from(source_x) * 4;
                                 let destination =
                                     (usize::from(y) + row) * stride + usize::from(x) * 4;
-                                frame
+                                frame_mut
                                     .pixels
                                     .copy_within(source..source + row_bytes, destination);
                             }
@@ -802,8 +1292,7 @@ async fn decode<R: AsyncRead + Unpin>(
                                 continue;
                             }
                             let mut pixels = vec![0; count * 4];
-                            read.read_exact(&mut pixels).await?;
-                            pixel_layout.to_rgba(&mut pixels);
+                            read_pixels_converted(&mut read, &mut pixels, pixel_layout).await?;
                             let mut mask = vec![0; mask_stride * usize::from(height)];
                             read.read_exact(&mut mask).await?;
                             for row in 0..usize::from(height) {
@@ -816,7 +1305,7 @@ async fn decode<R: AsyncRead + Unpin>(
                                 }
                             }
                             events
-                                .send(Ok(Event::Cursor(Cursor {
+                                .send(Ok(PooledEvent::Cursor(Cursor {
                                     width,
                                     height,
                                     hotspot_x: x,
@@ -833,7 +1322,7 @@ async fn decode<R: AsyncRead + Unpin>(
                             );
                             ensure!(x == 0 && y == 0, "invalid RFB DesktopSize origin");
                             dimensions(width, height)?;
-                            update.resizes(&mut frame, width, height)?;
+                            update.resizes(&mut frame, width, height, &pool)?;
                         }
                         -308 => {
                             let count = read.read_u8().await?;
@@ -879,11 +1368,11 @@ async fn decode<R: AsyncRead + Unpin>(
                                     .lock()
                                     .map_err(|_| anyhow::anyhow!("RFB layout lock poisoned"))? =
                                     Some(screens[0].0);
-                                update.resizes(&mut frame, width, height)?;
+                                update.resizes(&mut frame, width, height, &pool)?;
                             }
                             if x == 1 {
                                 events
-                                    .send(Ok(Event::ResizeResult {
+                                    .send(Ok(PooledEvent::ResizeResult {
                                         width,
                                         height,
                                         status: y,
@@ -895,12 +1384,18 @@ async fn decode<R: AsyncRead + Unpin>(
                         other => bail!("unsupported RFB encoding {other}"),
                     }
                 }
-                // Copying the frame is the most expensive step of an update
-                // and starts an encode downstream: only a new picture pays it.
                 let event = if update.changed {
-                    Event::Frame(frame.clone())
+                    generation += 1;
+                    let damage = update.damage;
+                    history[(generation as usize) % HISTORY_LEN] = (generation, damage);
+                    // `make_frame_mut` / `resizes` ensured unique ownership whenever
+                    // `update.changed` became true.
+                    let inner = Arc::get_mut(&mut frame).expect("mutated RFB frame is unique");
+                    inner.damage = damage;
+                    inner.generation = generation;
+                    PooledEvent::Frame(Arc::clone(&frame))
                 } else {
-                    Event::Unchanged
+                    PooledEvent::Unchanged
                 };
                 events
                     .send(Ok(event))
@@ -908,7 +1403,7 @@ async fn decode<R: AsyncRead + Unpin>(
                     .context("RFB receiver dropped")?;
             }
             2 => events
-                .send(Ok(Event::Bell))
+                .send(Ok(PooledEvent::Bell))
                 .await
                 .context("RFB receiver dropped")?,
             3 => {
@@ -938,7 +1433,7 @@ async fn decode<R: AsyncRead + Unpin>(
                 let text = result.await.context("RFB writer closed")??;
                 if let Some(text) = text {
                     events
-                        .send(Ok(Event::Clipboard(text)))
+                        .send(Ok(PooledEvent::Clipboard(text)))
                         .await
                         .context("RFB receiver dropped")?;
                 }
