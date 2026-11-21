@@ -1,20 +1,44 @@
 
 use anyhow::{Context, Result, ensure};
 use gliss_core::Frame;
-use openh264::encoder::{
-    BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile,
-    RateControlMode, SpsPpsStrategy, UsageType, VuiConfig,
+use openh264::formats::{RgbaSliceU8, YUVBuffer, YUVSource};
+use openh264::{OpenH264API, nal_units};
+use openh264_sys2::{
+    API, CAMERA_VIDEO_REAL_TIME, CONSTANT_ID, DEBLOCKING_IDC_1, ENCODER_OPTION_DATAFORMAT,
+    ENCODER_OPTION_TRACE_LEVEL, ISVCEncoder, LOW_COMPLEXITY, PRO_BASELINE, RC_BITRATE_MODE,
+    SEncParamExt, SFrameBSInfo, SM_SINGLE_SLICE, SSourcePicture, UNSPECIFIED_BIT_RATE,
+    WELS_LOG_QUIET, videoFormatI420, videoFrameTypeIDR,
 };
-use openh264::formats::{RgbaSliceU8, YUVBuffer};
-use openh264::{OpenH264API, Timestamp, nal_units};
 
 pub const HEADER_LEN: usize = 24;
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
 pub const DEFAULT_BITRATE_BPS: u32 = 4_000_000;
 
+struct RawEncoder {
+    api: OpenH264API,
+    ptr: *mut ISVCEncoder,
+    initialized: bool,
+}
+
+impl Drop for RawEncoder {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            unsafe {
+                if self.initialized
+                    && let Some(uninit) = (**self.ptr).Uninitialize
+                {
+                    uninit(self.ptr);
+                }
+                self.api.WelsDestroySVCEncoder(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
 /// One-thread software encoder; run encode on a bounded blocking worker.
 pub struct VideoEncoder {
-    encoder: Encoder,
+    encoder: RawEncoder,
     yuv: YUVBuffer,
     width: u16,
     height: u16,
@@ -42,25 +66,74 @@ fn validate_dimensions(width: u16, height: u16) -> Result<()> {
     Ok(())
 }
 
-fn native_encoder(fps: u32, bitrate: u32) -> Result<Encoder> {
-    let config = EncoderConfig::new()
-        .bitrate(BitRate::from_bps(bitrate))
-        .max_frame_rate(FrameRate::from_hz(fps as f32))
-        .rate_control_mode(RateControlMode::Bitrate)
-        .usage_type(UsageType::ScreenContentRealTime)
-        .profile(Profile::Baseline)
-        .complexity(Complexity::Low)
-        .adaptive_quantization(false)
-        .background_detection(false)
-        .num_threads(1)
-        .skip_frames(false)
-        .long_term_reference(false)
-        .intra_frame_period(IntraFramePeriod::from_num_frames(fps * 2))
-        .sps_pps_strategy(SpsPpsStrategy::ConstantId)
-        // The crate's RGB conversion uses BT.601 limited-range coefficients.
-        .vui(VuiConfig::bt601());
-    Encoder::with_api_config(OpenH264API::from_source(), config)
-        .context("Create software OpenH264 encoder")
+fn native_encoder(width: u16, height: u16, fps: u32, bitrate: u32) -> Result<RawEncoder> {
+    let api = OpenH264API::from_source();
+    let mut ptr: *mut ISVCEncoder = std::ptr::null_mut();
+    let status = unsafe { api.WelsCreateSVCEncoder(&raw mut ptr) };
+    ensure!(
+        status == 0 && !ptr.is_null(),
+        "Create software OpenH264 encoder failed ({status})"
+    );
+    let mut raw = RawEncoder {
+        api,
+        ptr,
+        initialized: false,
+    };
+    unsafe {
+        let vtbl = **raw.ptr;
+        let set_opt = vtbl.SetOption.context("missing SetOption")?;
+        let mut trace = WELS_LOG_QUIET;
+        let _ = set_opt(raw.ptr, ENCODER_OPTION_TRACE_LEVEL, (&raw mut trace).cast());
+        let mut param: SEncParamExt = std::mem::zeroed();
+        ensure!(
+            (vtbl.GetDefaultParams.context("missing GetDefaultParams")?)(raw.ptr, &raw mut param)
+                == 0
+        );
+        param.iUsageType = CAMERA_VIDEO_REAL_TIME;
+        param.iPicWidth = i32::from(width);
+        param.iPicHeight = i32::from(height);
+        param.iTargetBitrate = bitrate as i32;
+        param.iMaxBitrate = UNSPECIFIED_BIT_RATE as i32;
+        param.fMaxFrameRate = fps as f32;
+        param.iRCMode = RC_BITRATE_MODE;
+        param.iComplexityMode = LOW_COMPLEXITY;
+        param.bEnableAdaptiveQuant = false;
+        param.bEnableBackgroundDetection = false;
+        param.bEnableSceneChangeDetect = false;
+        param.bEnableDenoise = false;
+        param.bEnableFrameSkip = false;
+        param.bEnableLongTermReference = false;
+        param.uiIntraPeriod = fps * 2;
+        param.iNumRefFrame = 1;
+        param.eSpsPpsIdStrategy = CONSTANT_ID;
+        param.iLoopFilterDisableIdc = DEBLOCKING_IDC_1;
+        param.iMultipleThreadIdc = 1;
+        param.iMinQp = 28;
+        param.iMaxQp = 46;
+        param.iEntropyCodingModeFlag = 0;
+        param.iSpatialLayerNum = 1;
+        param.sSpatialLayers[0].iVideoWidth = i32::from(width);
+        param.sSpatialLayers[0].iVideoHeight = i32::from(height);
+        param.sSpatialLayers[0].fFrameRate = fps as f32;
+        param.sSpatialLayers[0].iSpatialBitrate = bitrate as i32;
+        param.sSpatialLayers[0].iMaxSpatialBitrate = bitrate as i32;
+        param.sSpatialLayers[0].uiProfileIdc = PRO_BASELINE;
+        param.sSpatialLayers[0].sSliceArgument.uiSliceMode = SM_SINGLE_SLICE;
+        param.sSpatialLayers[0].bVideoSignalTypePresent = true;
+        param.sSpatialLayers[0].uiVideoFormat = 5;
+        param.sSpatialLayers[0].bFullRange = false;
+        param.sSpatialLayers[0].bColorDescriptionPresent = true;
+        param.sSpatialLayers[0].uiColorPrimaries = 6;
+        param.sSpatialLayers[0].uiTransferCharacteristics = 6;
+        param.sSpatialLayers[0].uiColorMatrix = 6;
+        ensure!(
+            (vtbl.InitializeExt.context("missing InitializeExt")?)(raw.ptr, &raw const param) == 0
+        );
+        raw.initialized = true;
+        let mut format = videoFormatI420;
+        ensure!(set_opt(raw.ptr, ENCODER_OPTION_DATAFORMAT, (&raw mut format).cast()) == 0);
+    }
+    Ok(raw)
 }
 
 impl VideoEncoder {
@@ -80,7 +153,7 @@ impl VideoEncoder {
             "H.264 bitrate outside 1 kbit/s..50 Mbit/s"
         );
         Ok(Self {
-            encoder: native_encoder(fps, bitrate)?,
+            encoder: native_encoder(width, height, fps, bitrate)?,
             yuv: YUVBuffer::new(usize::from(width), usize::from(height)),
             width,
             height,
@@ -111,20 +184,57 @@ impl VideoEncoder {
             (usize::from(frame.width), usize::from(frame.height)),
         ));
         if self.force_keyframe && self.encoded_frames > 0 {
-            self.encoder.force_intra_frame();
+            unsafe {
+                ensure!(
+                    ((**self.encoder.ptr).ForceIntraFrame.unwrap())(self.encoder.ptr, true) == 0
+                );
+            }
         }
-        let timestamp =
-            Timestamp::from_millis(self.encoded_frames.saturating_mul(1000) / u64::from(self.fps));
-        let encoded = self
-            .encoder
-            .encode_at(&self.yuv, timestamp)
-            .context("Encode H.264 frame")?;
-        let keyframe = encoded.frame_type() == FrameType::IDR;
+        let timestamp_ms =
+            (self.encoded_frames.saturating_mul(1000) / u64::from(self.fps)) as i64;
+        let (sy, su, sv) = self.yuv.strides_i32();
+        let src = SSourcePicture {
+            iColorFormat: videoFormatI420,
+            iStride: [sy, su, sv, 0],
+            pData: [
+                self.yuv.y().as_ptr().cast_mut(),
+                self.yuv.u().as_ptr().cast_mut(),
+                self.yuv.v().as_ptr().cast_mut(),
+                std::ptr::null_mut(),
+            ],
+            iPicWidth: i32::from(self.width),
+            iPicHeight: i32::from(self.height),
+            uiTimeStamp: timestamp_ms,
+            bPsnrY: false,
+            bPsnrU: false,
+            bPsnrV: false,
+        };
+        let mut bs: SFrameBSInfo = unsafe { std::mem::zeroed() };
+        unsafe {
+            ensure!(
+                ((**self.encoder.ptr).EncodeFrame.unwrap())(
+                    self.encoder.ptr,
+                    &raw const src,
+                    &raw mut bs
+                ) == 0,
+                "Encode H.264 frame"
+            );
+        }
+        let keyframe = bs.eFrameType == videoFrameTypeIDR;
         ensure!(
             !self.force_keyframe || keyframe,
             "Encoder did not provide the requested IDR frame"
         );
-        let mut payload = encoded.to_vec();
+        let mut payload = Vec::new();
+        for layer in &bs.sLayerInfo[..(bs.iLayerNum.max(0) as usize).min(bs.sLayerInfo.len())] {
+            let mut total = 0usize;
+            for n in 0..(layer.iNalCount.max(0) as usize) {
+                total += unsafe { (*layer.pNalLengthInByte.add(n)).max(0) as usize };
+            }
+            if total > 0 {
+                payload.extend_from_slice(unsafe { std::slice::from_raw_parts(layer.pBsBuf, total) });
+            }
+        }
         ensure!(!payload.is_empty(), "Encoder unexpectedly skipped a frame");
         let mut has_sps = false;
         let mut has_pps = false;
@@ -246,4 +356,3 @@ pub fn parse_packet(packet: &[u8]) -> Result<VideoPacket<'_>> {
         payload,
     })
 }
-
