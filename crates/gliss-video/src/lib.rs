@@ -446,6 +446,7 @@ impl Drop for RawEncoder {
             // SAFETY: `ptr` was created by `WelsCreateSVCEncoder` and is destroyed once here.
             unsafe {
                 if self.initialized
+                    && !(*self.ptr).is_null()
                     && let Some(uninit) = (**self.ptr).Uninitialize
                 {
                     uninit(self.ptr);
@@ -474,6 +475,10 @@ impl RawEncoder {
         };
         // SAFETY: `raw.ptr` is non-null and valid until `Drop`.
         unsafe {
+            ensure!(
+                !(*raw.ptr).is_null(),
+                "OpenH264 encoder returned null vtable pointer"
+            );
             let vtbl = **raw.ptr;
             let mut trace = WELS_LOG_QUIET;
             let set_opt = vtbl
@@ -547,10 +552,22 @@ impl RawEncoder {
     }
 
     fn set_bitrate(&mut self, target: u32, applied: u32) -> Result<()> {
+        // OpenH264's `WelsEncoderApplyBitRate` rescales spatial layer bitrates
+        // through `f32`, which can round integers above 2^24 upward by 1-2 bps.
+        // Ensuring the max bitrate ceiling covers that `f32` representation
+        // prevents `WelsBitRateVerification` from rejecting valid targets up to
+        // 50 Mbit/s.
+        let max_target = target.max((target as f32) as u32);
         let order = if target < applied {
-            [ENCODER_OPTION_BITRATE, ENCODER_OPTION_MAX_BITRATE]
+            [
+                (ENCODER_OPTION_BITRATE, target as i32),
+                (ENCODER_OPTION_MAX_BITRATE, max_target as i32),
+            ]
         } else {
-            [ENCODER_OPTION_MAX_BITRATE, ENCODER_OPTION_BITRATE]
+            [
+                (ENCODER_OPTION_MAX_BITRATE, max_target as i32),
+                (ENCODER_OPTION_BITRATE, target as i32),
+            ]
         };
         // SAFETY: the encoder is initialized and both options take one `SBitrateInfo`.
         // Update both layer 0 (which controls `iMaxSpatialBitrate`) and `SPATIAL_LAYER_ALL`.
@@ -559,11 +576,11 @@ impl RawEncoder {
                 .SetOption
                 .context("OpenH264 missing SetOption vtable entry")?;
             for layer in [SPATIAL_LAYER_0, SPATIAL_LAYER_ALL] {
-                let mut info = SBitrateInfo {
-                    iLayer: layer,
-                    iBitrate: target as i32,
-                };
-                for option in order {
+                for (option, value) in order {
+                    let mut info = SBitrateInfo {
+                        iLayer: layer,
+                        iBitrate: value,
+                    };
                     let status = set_opt(self.ptr, option, (&raw mut info).cast());
                     ensure!(status == 0, "OpenH264 rejected bitrate {target}");
                 }

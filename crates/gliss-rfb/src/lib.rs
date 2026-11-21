@@ -321,13 +321,19 @@ impl FramePool {
     }
 
     fn put(&mut self, pixels: Vec<u8>, generation: u64) {
-        if self.buffers.len() >= POOL_CAPACITY
-            && let Some((oldest, _)) = self
+        if self.buffers.len() >= POOL_CAPACITY {
+            let Some((oldest, oldest_gen)) = self
                 .buffers
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, buf)| buf.generation)
-        {
+                .map(|(idx, buf)| (idx, buf.generation))
+            else {
+                return;
+            };
+            if oldest_gen >= generation {
+                return;
+            }
             self.buffers.swap_remove(oldest);
         }
         self.buffers.push(PooledBuffer { pixels, generation });
@@ -1037,17 +1043,17 @@ fn compute_sync_damage(
 
 /// Ensures `frame` has exclusive ownership for in-place RFB decoding.
 ///
-/// Fast path: when downstream consumers have already released the previous
-/// snapshot (`Arc::strong_count == 1`), decoding mutates the buffer in place
-/// with zero copies. Slow path: detaches into a pooled buffer synced by tile
-/// damage so live consumers keep an immutable snapshot.
+/// Fast path: when no other strong or weak handle exists (`Arc::get_mut`
+/// succeeds), decoding mutates the buffer in place with zero copies. Slow path:
+/// detaches into a pooled buffer synced by tile damage so live consumers keep
+/// an immutable snapshot.
 fn make_frame_mut<'a>(
     frame: &'a mut Arc<PooledFrame>,
     pool: &Arc<Mutex<FramePool>>,
     history: &[(u64, Damage); HISTORY_LEN],
     generation: u64,
 ) -> &'a mut Frame {
-    if Arc::strong_count(frame) > 1 {
+    if Arc::get_mut(frame).is_none() {
         let width = frame.width;
         let height = frame.height;
         let byte_len = frame.pixels.len();
@@ -1067,7 +1073,9 @@ fn make_frame_mut<'a>(
                 pixels,
             },
             damage: Damage::empty(width, height),
-            generation,
+            // Keep uncommitted frames at generation 0 until the update completes
+            // so a half-mutated buffer dropped on error never claims an older gen.
+            generation: 0,
             pool: Arc::downgrade(pool),
         });
     }

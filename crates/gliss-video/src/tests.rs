@@ -392,3 +392,52 @@ fn yuv_planes_match_openh264_yuv_buffer_bit_for_bit_across_full_and_partial_dama
     assert_eq!(cache.u(), reference.u(), "second partial U mismatch");
     assert_eq!(cache.v(), reference.v(), "second partial V mismatch");
 }
+
+#[test]
+fn dynamic_bitrates_above_24_bit_float_precision_are_accepted() {
+    let mut encoder = VideoEncoder::with_bitrate(128, 96, 30, 50_000_000).unwrap();
+    let frame = scene(128, 96, 0);
+    assert!(parse_packet(&encoder.encode(&frame, 1, 0).unwrap()).is_ok());
+    // These bitrates round upward when OpenH264 rescales layer bitrates via f32.
+    for (seq, target) in [
+        (2u32, 16_777_219),
+        (3, 33_554_435),
+        (4, 49_999_999),
+        (5, 20_000_003),
+        (6, 400_000),
+        (7, 33_554_435),
+    ] {
+        encoder.set_bitrate(target);
+        let packet = encoder
+            .encode(&scene(128, 96, seq as usize), seq, 0)
+            .unwrap();
+        assert!(parse_packet(&packet).is_ok(), "failed at target={target}");
+    }
+}
+
+#[test]
+fn prepared_frame_can_be_reencoded_as_idr_after_reset_and_rejects_unprepared() {
+    let mut encoder = VideoEncoder::new(96, 64, 30).unwrap();
+    assert!(!encoder.has_prepared());
+    assert!(encoder.encode_prepared(1, 0).is_err());
+
+    let frame = scene(96, 64, 0);
+    encoder
+        .prepare_damaged(&frame, &Damage::full(96, 64))
+        .unwrap();
+    assert!(encoder.has_prepared());
+    let first = encoder.encode_prepared(1, 10).unwrap();
+    let parsed_first = parse_packet(&first).unwrap();
+    assert!(parsed_first.keyframe);
+    assert_eq!(parsed_first.input_id, 10);
+
+    let second = encoder.encode_prepared(2, 10).unwrap();
+    assert!(!parse_packet(&second).unwrap().keyframe);
+
+    encoder.reset();
+    let resync = encoder.encode_prepared(3, 10).unwrap();
+    let parsed_resync = parse_packet(&resync).unwrap();
+    assert!(parsed_resync.keyframe);
+    assert_eq!(parsed_resync.sequence, 3);
+    assert_eq!(parsed_resync.input_id, 10);
+}

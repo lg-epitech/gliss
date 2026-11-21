@@ -833,6 +833,74 @@ mod log_tests {
             "stream ended: browser did not acknowledge oldest frame within 10s"
         );
     }
+
+    #[test]
+    fn client_message_parser_covers_held_variants_ping_ids_and_unknown_variant_logging() {
+        let forged = format!(
+            "x\r\n2026-01-01T00:00:00Z  WARN forged\u{1b}[31m{}",
+            "y".repeat(2048)
+        );
+        let err = serde_json::from_str::<ClientMessage>(&json!({ "type": forged }).to_string())
+            .err()
+            .expect("unknown variant must fail");
+        let line = stream_end_message(&anyhow::Error::from(err));
+        assert!(
+            !line
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'),
+            "{line:?}"
+        );
+        assert!(line.len() <= 600, "{} bytes", line.len());
+
+        for (raw, expected) in [
+            (r#"{"type":"ack","sequence":1}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":25}"#,
+                Duration::from_millis(25),
+            ),
+            (
+                r#"{"type":"ack","sequence":1,"held":12.5}"#,
+                Duration::from_micros(12_500),
+            ),
+            (r#"{"type":"ack","sequence":1,"held":-5}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":999999}"#,
+                Duration::from_secs(10),
+            ),
+            (r#"{"type":"ack","sequence":1,"held":null}"#, Duration::ZERO),
+            (r#"{"type":"ack","sequence":1,"held":true}"#, Duration::ZERO),
+            (r#"{"type":"ack","sequence":1,"held":"50"}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":[1,2]}"#,
+                Duration::ZERO,
+            ),
+            (
+                r#"{"type":"ack","sequence":1,"held":{"a":1}}"#,
+                Duration::ZERO,
+            ),
+        ] {
+            let ClientMessage::Ack { sequence, held } =
+                serde_json::from_str::<ClientMessage>(raw).unwrap()
+            else {
+                panic!("expected ack for {raw}");
+            };
+            assert_eq!(sequence, 1);
+            assert_eq!(held, expected, "{raw}");
+        }
+
+        for (raw, expected) in [
+            (r#"{"type":"ping"}"#, None),
+            (r#"{"type":"ping","id":null}"#, None),
+            (r#"{"type":"ping","id":42}"#, Some(json!(42))),
+            (r#"{"type":"ping","id":"abc"}"#, Some(json!("abc"))),
+        ] {
+            let ClientMessage::Ping { id } = serde_json::from_str::<ClientMessage>(raw).unwrap()
+            else {
+                panic!("expected ping for {raw}");
+            };
+            assert_eq!(id, expected, "{raw}");
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -1115,6 +1183,39 @@ struct Encoded {
     worker_wait: Duration,
     cpu_work: Option<Duration>,
     source_age: Option<Duration>,
+}
+
+/// Aborts an uncompleted direct blocking encode handle if the session exits early.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn finish_encode(
+    completed: Encoded,
+    window: &mut scheduler::Window,
+    encoder: &mut Option<StreamEncoder>,
+    waiting: &mut Option<MediaPacket>,
+    force_full_damage: &mut bool,
+) -> Result<()> {
+    window.encoded(completed.work, completed.worker_wait);
+    window.profiled_encode(completed.cpu_work, completed.source_age);
+    *encoder = Some(completed.encoder);
+    if completed.generation != window.generation() {
+        window.discarded_encode();
+        *force_full_damage = true;
+    } else {
+        *waiting = Some(MediaPacket {
+            generation: completed.generation,
+            sequence: completed.sequence,
+            bytes: completed.packet?,
+            blocked_since: None,
+        });
+    }
+    Ok(())
 }
 
 fn deserialize_held<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
@@ -1536,7 +1637,7 @@ where
         timing: app.video_timing,
         bitrate: app.args.h264_bitrate,
     });
-    let mut encode_task = None::<tokio::task::JoinHandle<Encoded>>;
+    let mut encode_task = None::<AbortOnDrop<Encoded>>;
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
     let mut window = scheduler::Window::new(
         usize::from(app.args.in_flight_frames),
@@ -1659,30 +1760,14 @@ where
                     window.skipped(completed.generation, completed.sequence)?;
                 }
             }
-            result = async { encode_task.as_mut().unwrap().await }, if encode_task.is_some() => {
+            result = async { (&mut encode_task.as_mut().unwrap().0).await }, if encode_task.is_some() => {
                 encode_task = None;
                 let completed = result.context("blocking encoder worker failed")?;
-                window.encoded(completed.work, completed.worker_wait);
-                window.profiled_encode(completed.cpu_work, completed.source_age);
-                encoder = Some(completed.encoder);
-                if completed.generation != window.generation() {
-                    window.discarded_encode();
-                    force_full_damage = true;
-                } else {
-                    waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: completed.packet?, blocked_since: None });
-                }
+                finish_encode(completed, &mut window, &mut encoder, &mut waiting, &mut force_full_damage)?;
             }
             Some(result) = encoder_jobs.join_next(), if !encoder_jobs.is_empty() => {
                 let completed = result.context("encoder worker failed")??;
-                window.encoded(completed.work, completed.worker_wait);
-                window.profiled_encode(completed.cpu_work, completed.source_age);
-                encoder = Some(completed.encoder);
-                if completed.generation != window.generation() {
-                    window.discarded_encode();
-                    force_full_damage = true;
-                } else {
-                    waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: completed.packet?, blocked_since: None });
-                }
+                finish_encode(completed, &mut window, &mut encoder, &mut waiting, &mut force_full_damage)?;
             }
             changed = source.frames.changed(), if source_ended.is_none() => {
                 if changed.is_err() {
@@ -1774,7 +1859,9 @@ where
                     Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
                 };
                 if let Ok(permit) = app.encoders.clone().try_acquire_owned() {
-                    encode_task = Some(tokio::task::spawn_blocking(move || run_encode(permit)));
+                    encode_task = Some(AbortOnDrop(tokio::task::spawn_blocking(move || {
+                        run_encode(permit)
+                    })));
                 } else {
                     let permits = app.encoders.clone();
                     encoder_jobs.spawn(async move {

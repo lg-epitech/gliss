@@ -27,7 +27,7 @@ pub fn printable(text: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::printable;
+    use super::{Damage, printable};
 
     #[test]
     fn printable_text_stays_on_its_line_and_within_its_limit() {
@@ -45,6 +45,57 @@ mod tests {
         assert_eq!(printable("abcdefg", 6), "abcdef...");
         assert_eq!(printable(&"\n".repeat(1000), 4), r"\n\n\n\n...");
         assert_eq!(printable("", 0), "");
+    }
+
+    #[test]
+    fn damage_tracks_multi_word_spans_clamps_bounds_and_handles_oversize_fallback() {
+        // 3840x2160 = 60x34 = 2040 tiles, spanning multiple 64-bit bitset words.
+        let mut d = Damage::empty(3840, 2160);
+        assert!(!d.is_full());
+        // Zero and out-of-bounds rectangles leave damage empty.
+        d.mark_rect(100, 100, 0, 50);
+        d.mark_rect(100, 100, 50, 0);
+        d.mark_rect(3840, 0, 10, 10);
+        d.mark_rect(0, 2160, 10, 10);
+        let mut spans = Vec::new();
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert!(spans.is_empty());
+
+        // Mark disjoint rectangles across 64-bit word boundaries and right/bottom edges.
+        d.mark_rect(60, 0, 80, 10); // tiles (0..=2, 0) -> x=0..192, y=0..64
+        d.mark_rect(3800, 2100, 100, 100); // clamped to (3776..3840, 2048..2160)
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(
+            spans,
+            vec![(0, 0, 192, 64), (3776, 2048, 64, 64), (3776, 2112, 64, 48)]
+        );
+
+        // Union with same dimensions merges spans; mismatched dimensions falls back to full.
+        let mut other = Damage::empty(3840, 2160);
+        other.mark_rect(192, 0, 10, 10); // adjacent tile (3, 0) merges into x=0..256
+        d.union_with(&other);
+        spans.clear();
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans[0], (0, 0, 256, 64));
+
+        d.union_with(&Damage::empty(1920, 1080));
+        assert!(d.is_full());
+        assert_eq!(d.dimensions(), (1920, 1080));
+
+        // Portrait 2160x3840 fits inside DAMAGE_MAX_TILES cleanly.
+        let mut portrait = Damage::empty(2160, 3840);
+        assert!(!portrait.is_full());
+        portrait.mark_rect(2100, 3800, 60, 40);
+        spans.clear();
+        portrait.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans, vec![(2048, 3776, 112, 64)]);
+
+        // Oversize (> DAMAGE_MAX_TILES) falls back to full damage safely.
+        let oversize = Damage::empty(4096, 4096);
+        assert!(oversize.is_full());
+        spans.clear();
+        oversize.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans, vec![(0, 0, 4096, 4096)]);
     }
 }
 
@@ -102,12 +153,13 @@ impl Damage {
     pub fn empty(width: u16, height: u16) -> Self {
         let tiles_x = width.div_ceil(DAMAGE_TILE as u16);
         let tiles_y = height.div_ceil(DAMAGE_TILE as u16);
+        let full = usize::from(tiles_x) * usize::from(tiles_y) > DAMAGE_MAX_TILES;
         Self {
             width,
             height,
             tiles_x,
             tiles_y,
-            full: false,
+            full,
             bits: [0; DAMAGE_WORDS],
         }
     }
@@ -127,7 +179,7 @@ impl Damage {
     }
 
     pub fn mark_rect(&mut self, x: u16, y: u16, width: u16, height: u16) {
-        if self.full || width == 0 || height == 0 {
+        if self.full || width == 0 || height == 0 || x >= self.width || y >= self.height {
             return;
         }
         let total = usize::from(self.tiles_x) * usize::from(self.tiles_y);
@@ -219,59 +271,6 @@ impl Damage {
                 let x1 = (tx * DAMAGE_TILE).min(w);
                 f(x0, y0, x1 - x0, y1 - y0);
             }
-        }
-    }
-
-    /// Calls `f(y0, height)` for merged contiguous horizontal row bands that
-    /// contain at least one dirty tile. Each band starts on a tile boundary
-    /// and is clamped to `self.height`, so `y0` and `height` are even whenever
-    /// `self.height` is even.
-    pub fn for_each_row_band(&self, mut f: impl FnMut(usize, usize)) {
-        let w = usize::from(self.width);
-        let h = usize::from(self.height);
-        if w == 0 || h == 0 {
-            return;
-        }
-        if self.full || usize::from(self.tiles_x) * usize::from(self.tiles_y) > DAMAGE_MAX_TILES {
-            f(0, h);
-            return;
-        }
-        let tx_count = usize::from(self.tiles_x);
-        let ty_count = usize::from(self.tiles_y);
-        let row_dirty = |ty: usize| -> bool {
-            let row_base = ty * tx_count;
-            let mut idx = row_base;
-            let end = row_base + tx_count;
-            while idx < end {
-                let word = idx / 64;
-                let bit = idx % 64;
-                let count = (end - idx).min(64 - bit);
-                let mask = if count == 64 {
-                    u64::MAX
-                } else {
-                    ((1u64 << count) - 1) << bit
-                };
-                if self.bits[word] & mask != 0 {
-                    return true;
-                }
-                idx += count;
-            }
-            false
-        };
-        let mut ty = 0;
-        while ty < ty_count {
-            if !row_dirty(ty) {
-                ty += 1;
-                continue;
-            }
-            let start_ty = ty;
-            ty += 1;
-            while ty < ty_count && row_dirty(ty) {
-                ty += 1;
-            }
-            let y0 = start_ty * DAMAGE_TILE;
-            let y1 = (ty * DAMAGE_TILE).min(h);
-            f(y0, y1 - y0);
         }
     }
 }

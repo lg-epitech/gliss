@@ -430,3 +430,119 @@ async fn keyframes_on_request_start_at_most_four_times_a_second() {
     assert!((2..=9).contains(&keyframes), "{keyframes} keyframes");
     assert!(!viewer.session.is_finished());
 }
+
+#[tokio::test]
+async fn rfb_watch_drain_releases_frame_supports_cached_resync_and_ends_on_close() {
+    let app = app(&["--demo"]);
+    let (frame_tx, frame_rx) = watch::channel(None);
+    let (closed_tx, closed_rx) = oneshot::channel();
+    let shared_damage = Arc::new(Mutex::new(Damage::full(64, 48)));
+    let (input, _input_rx) = mpsc::channel(128);
+    let notices = Arc::new(notices::Notices::default());
+    let (audio, _audio_requests, _audio_status) = audio::channel();
+    let mut source = Source {
+        audio,
+        audio_counters: Arc::new(audio::Counters::default()),
+        frames: frame_rx,
+        frame_tx: Some(frame_tx.clone()),
+        frames_closed: Some(closed_rx),
+        damage: Some(shared_damage.clone()),
+        input,
+        notices: notices.clone(),
+        shutdown: None,
+        _tasks: JoinSet::new(),
+    };
+    let (out, mut from_server) = mpsc::channel::<Message>(4);
+    let (to_server, incoming) = mpsc::channel(16);
+    let sink = Box::pin(sink::unfold(out, |out, message| async move {
+        out.send(message)
+            .await
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::BrokenPipe))?;
+        Ok::<_, std::io::Error>(out)
+    }));
+    let receiver = Box::pin(stream::unfold(incoming, |mut incoming| async move {
+        incoming.recv().await.map(|message| (message, incoming))
+    }));
+    let session =
+        tokio::spawn(async move { stream_session(sink, receiver, app, &mut source).await });
+
+    // Consume hello + initial audio_status.
+    assert!(matches!(from_server.recv().await, Some(Message::Text(_))));
+    assert!(matches!(from_server.recv().await, Some(Message::Text(_))));
+
+    // Publish one RFB frame and keep a Weak probe to verify the session drops
+    // its Arc<PooledFrame> immediately after staging.
+    let frame = Arc::new(PooledFrame::from_frame(Frame::new(64, 48).unwrap()));
+    let probe = Arc::downgrade(&frame);
+    {
+        let mut guard = shared_damage.lock().unwrap();
+        guard.union_with(&Damage::full(64, 48));
+        frame_tx.send_replace(Some(Captured {
+            frame,
+            forwarded_input_id: 7,
+            published_at: None,
+        }));
+    }
+    let Message::Binary(first_bytes) =
+        tokio::time::timeout(Duration::from_secs(5), from_server.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected first binary video packet");
+    };
+    let first = gliss_video::parse_packet(&first_bytes).unwrap();
+    assert!(first.keyframe);
+    assert_eq!(first.input_id, 7);
+    assert!(
+        probe.upgrade().is_none(),
+        "RFB watch drain + early drop must release PooledFrame once staged"
+    );
+
+    // Acknowledge, then ask for a resync with NO new RFB frame published: the
+    // session must emit a fresh IDR from its cached YUV planes.
+    to_server
+        .send(Ok(Message::Text(
+            json!({"type":"ack","sequence":first.sequence})
+                .to_string()
+                .into(),
+        )))
+        .await
+        .unwrap();
+    to_server
+        .send(Ok(Message::Text(
+            json!({"type":"resync"}).to_string().into(),
+        )))
+        .await
+        .unwrap();
+    let Message::Binary(resync_bytes) =
+        tokio::time::timeout(Duration::from_secs(5), from_server.recv())
+            .await
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected resync binary video packet");
+    };
+    let resync = gliss_video::parse_packet(&resync_bytes).unwrap();
+    assert!(resync.keyframe);
+    assert_eq!(resync.input_id, 7);
+    assert_eq!(resync.sequence, first.sequence + 1);
+
+    // Dropping the reader liveness oneshot + posting the disconnect notice ends
+    // the session cleanly even while `Source` still retains its `frame_tx`.
+    notices.failed("The VM display disconnected.");
+    drop(closed_tx);
+    let Message::Text(notice) = tokio::time::timeout(Duration::from_secs(5), from_server.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    else {
+        panic!("expected disconnect notice");
+    };
+    assert!(notice.contains("disconnected"), "{notice}");
+    tokio::time::timeout(Duration::from_secs(5), session)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}

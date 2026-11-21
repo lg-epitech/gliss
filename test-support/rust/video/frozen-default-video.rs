@@ -7,7 +7,7 @@ use openh264_sys2::{
     API, CAMERA_VIDEO_REAL_TIME, CONSTANT_ID, DEBLOCKING_IDC_1, ENCODER_OPTION_DATAFORMAT,
     ENCODER_OPTION_TRACE_LEVEL, ISVCEncoder, LOW_COMPLEXITY, PRO_BASELINE, RC_BITRATE_MODE,
     SEncParamExt, SFrameBSInfo, SM_SINGLE_SLICE, SSourcePicture, UNSPECIFIED_BIT_RATE,
-    WELS_LOG_QUIET, videoFormatI420, videoFrameTypeIDR,
+    WELS_LOG_QUIET, videoFormatI420, videoFrameTypeIDR, videoFrameTypeSkip,
 };
 
 pub const HEADER_LEN: usize = 24;
@@ -25,6 +25,7 @@ impl Drop for RawEncoder {
         if !self.ptr.is_null() {
             unsafe {
                 if self.initialized
+                    && !(*self.ptr).is_null()
                     && let Some(uninit) = (**self.ptr).Uninitialize
                 {
                     uninit(self.ptr);
@@ -80,6 +81,7 @@ fn native_encoder(width: u16, height: u16, fps: u32, bitrate: u32) -> Result<Raw
         initialized: false,
     };
     unsafe {
+        ensure!(!(*raw.ptr).is_null(), "missing OpenH264 vtable");
         let vtbl = **raw.ptr;
         let set_opt = vtbl.SetOption.context("missing SetOption")?;
         let mut trace = WELS_LOG_QUIET;
@@ -185,9 +187,10 @@ impl VideoEncoder {
         ));
         if self.force_keyframe && self.encoded_frames > 0 {
             unsafe {
-                ensure!(
-                    ((**self.encoder.ptr).ForceIntraFrame.unwrap())(self.encoder.ptr, true) == 0
-                );
+                let force = (**self.encoder.ptr)
+                    .ForceIntraFrame
+                    .context("missing ForceIntraFrame")?;
+                ensure!(force(self.encoder.ptr, true) == 0);
             }
         }
         let timestamp_ms =
@@ -211,15 +214,18 @@ impl VideoEncoder {
         };
         let mut bs: SFrameBSInfo = unsafe { std::mem::zeroed() };
         unsafe {
+            let encode = (**self.encoder.ptr)
+                .EncodeFrame
+                .context("missing EncodeFrame")?;
             ensure!(
-                ((**self.encoder.ptr).EncodeFrame.unwrap())(
-                    self.encoder.ptr,
-                    &raw const src,
-                    &raw mut bs
-                ) == 0,
+                encode(self.encoder.ptr, &raw const src, &raw mut bs) == 0,
                 "Encode H.264 frame"
             );
         }
+        ensure!(
+            bs.eFrameType != videoFrameTypeSkip,
+            "Unexpected skipped encoder output"
+        );
         let keyframe = bs.eFrameType == videoFrameTypeIDR;
         ensure!(
             !self.force_keyframe || keyframe,
@@ -227,8 +233,12 @@ impl VideoEncoder {
         );
         let mut payload = Vec::new();
         for layer in &bs.sLayerInfo[..(bs.iLayerNum.max(0) as usize).min(bs.sLayerInfo.len())] {
+            let nal_count = layer.iNalCount.max(0) as usize;
+            if nal_count == 0 || layer.pBsBuf.is_null() || layer.pNalLengthInByte.is_null() {
+                continue;
+            }
             let mut total = 0usize;
-            for n in 0..(layer.iNalCount.max(0) as usize) {
+            for n in 0..nal_count {
                 total += unsafe { (*layer.pNalLengthInByte.add(n)).max(0) as usize };
             }
             if total > 0 {

@@ -479,4 +479,58 @@ async fn pooled_frame_reuses_buffer_in_place_when_unshared_and_detaches_when_hel
     assert_eq!(&b.pixels[..4], &[1, 2, 3, 255]);
     assert_eq!(&b.pixels[16..20], &[4, 5, 6, 255]);
     assert_ne!(f2_addr, 0);
+
+    // Holding only a Weak handle must still detach cleanly without panicking.
+    let weak = Arc::downgrade(&b);
+    drop(b);
+    let mut u3 = vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0];
+    for _ in 0..16 {
+        u3.extend_from_slice(&[9, 8, 7, 0]);
+    }
+    peer.write_all(&u3).await.unwrap();
+    let PooledEvent::Frame(c) = reader2.read_pooled_event().await.unwrap() else {
+        panic!("expected c");
+    };
+    assert_ne!(Arc::as_ptr(&c) as usize, a_addr);
+    assert_eq!(&c.pixels[..4], &[9, 8, 7, 255]);
+    assert_eq!(&c.pixels[16..20], &[4, 5, 6, 255]);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn frame_pool_preserves_fresher_generations_and_sync_damage_bounds_history() {
+    let mut pool = FramePool::default();
+    pool.put(vec![1; 16], 10);
+    pool.put(vec![2; 16], 12);
+    pool.put(vec![3; 16], 11);
+    pool.put(vec![4; 16], 13);
+    // An older generation (or 0) must not evict fresher pooled buffers.
+    pool.put(vec![9; 16], 5);
+    pool.put(vec![8; 16], 0);
+    let mut taken = Vec::new();
+    while let Some(buf) = pool.take(16) {
+        taken.push(buf.generation);
+    }
+    assert_eq!(taken.len(), POOL_CAPACITY);
+    assert_eq!(taken, vec![13, 12]);
+
+    // History boundary tests for `compute_sync_damage`.
+    let mut history = [(0u64, Damage::empty(128, 128)); HISTORY_LEN];
+    for step in 1..=(HISTORY_LEN as u64 + 1) {
+        let mut d = Damage::empty(128, 128);
+        d.mark_rect(((step as u16) % 2) * 64, 0, 16, 16);
+        history[(step as usize) % HISTORY_LEN] = (step, d);
+    }
+    // Exactly HISTORY_LEN steps behind: all entries present -> partial damage.
+    let exact = compute_sync_damage(1, 1 + HISTORY_LEN as u64, 128, 128, &history);
+    assert!(!exact.is_full());
+    // HISTORY_LEN + 1 steps behind: falls back to full damage.
+    let too_old = compute_sync_damage(1, 2 + HISTORY_LEN as u64, 128, 128, &history);
+    assert!(too_old.is_full());
+    // Generation 0 (uncommitted) always falls back to full damage.
+    assert!(compute_sync_damage(0, 2, 128, 128, &history).is_full());
+    // Dimension mismatch in history falls back to full damage.
+    let mut mismatched = history;
+    mismatched[2 % HISTORY_LEN] = (2, Damage::empty(64, 64));
+    assert!(compute_sync_damage(1, 2, 128, 128, &mismatched).is_full());
 }
