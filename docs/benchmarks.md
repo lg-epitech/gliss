@@ -1,6 +1,10 @@
 # Benchmarks
 
-The current measurement is the [Distribox path](distribox-path.md). It runs the
+[Buffering QEMU framebuffer reads](distribox-rfb-reads.md) measures Gliss CPU
+per painted frame through both Distribox WebSocket relays at 1080p and an
+8 Mbit/s H.264 target.
+
+The earlier [Distribox path comparison](distribox-path.md) runs the
 server with Distribox's flags against a real QEMU guest and reports
 input-to-paint latency, frame rate and cadence during motion, CPU per painted
 frame and bitrate. [`scripts/bench-distribox-path.mjs`](../scripts/bench-distribox-path.mjs)

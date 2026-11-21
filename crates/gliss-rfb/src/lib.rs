@@ -18,7 +18,7 @@ use des::{
 };
 use gliss_core::{Frame, Input, MAX_CLIPBOARD, MAX_PIXELS};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader},
     net::TcpStream,
     sync::{broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
@@ -204,6 +204,9 @@ async fn connect_inner(
     let (frame, info, layout) = handshake(&mut stream, password).await?;
     // Owned halves: a generic split would put a mutex between reading and writing.
     let (read, write) = stream.into_split();
+    // QEMU sends many small rectangle headers and partial rows during scroll.
+    // A large, contiguous Raw read bypasses the buffer when it is empty.
+    let read = BufReader::with_capacity(32 * 1024, read);
     Ok(start_tasks(read, write, frame, info, layout))
 }
 

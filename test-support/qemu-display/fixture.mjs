@@ -114,10 +114,10 @@ export async function startDisplayVm({directory, width, height, traceRefresh = f
 // The exact command line and bare environment of Distribox's gliss_session()
 // (backend/app/services/gliss.py), for an explicit binary.
 // `origin` is where the browser loads the page from when that is not the server itself.
-export async function startGliss({binary, vnc, origin}) {
+export async function startGliss({binary, vnc, bitrate = 2_000_000, origin}) {
   const port = await freePort(), token = randomBytes(24).toString('base64url'), url = `http://127.0.0.1:${port}`;
   const child = spawn(binary, ['--vnc', vnc, '--bind', `127.0.0.1:${port}`, '--max-clients', '1', '--codec', 'h264',
-    '--h264-bitrate', '2000000', '--fps', '30', '--in-flight-frames', '8', ...(origin ? ['--origin', origin] : [])],
+    '--h264-bitrate', String(bitrate), '--fps', '30', '--in-flight-frames', '8', ...(origin ? ['--origin', origin] : [])],
   {env: {GLISS_TOKEN: token}, stdio: ['ignore', 'ignore', 'pipe']});
   let output = '', failure;
   child.on('error', error => {failure = error;});
