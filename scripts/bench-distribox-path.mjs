@@ -7,7 +7,7 @@
 //
 // node scripts/bench-distribox-path.mjs --binary /abs/gliss-server [--binary /abs/other ...]
 //   [--label name ...] [--size 1920x1080] [--rounds 3] [--scenarios typing,burst,scroll,drag,video]
-//   [--typing-keys 24] [--output file.json] [--trace-refresh] [--link rtt=100,down=1.5]
+//   [--h264-bitrate 2000000] [--typing-keys 24] [--output file.json] [--trace-refresh] [--link rtt=100,down=1.5]
 //
 // Scenarios: typing (isolated keys), burst (fast typing), scroll (60 Hz terminal
 // scroll with probe keys), drag (a window following the pointer), video (30 Hz
@@ -38,10 +38,10 @@ import {TICK_MS, childPids, clock, cpuBetween, openViewer, pageClockOffset, pars
   startGliss, startLink} from '../test-support/qemu-display/fixture.mjs';
 
 const options = {binary: [], label: [], size: '1920x1080', rounds: '3', scenarios: 'typing,burst,scroll,drag,video',
-  'typing-keys': '24', output: null, 'trace-refresh': false, link: null};
+  'typing-keys': '24', 'h264-bitrate': '2000000', output: null, 'trace-refresh': false, link: null};
 const usage = message => {console.error(`${message}\nSee the header of scripts/bench-distribox-path.mjs`);process.exit(2);};
 for (let i = 2; i < process.argv.length; i++) {
-  const match = /^--([a-z-]+)(?:=(.*))?$/.exec(process.argv[i]);
+  const match = /^--([a-z0-9-]+)(?:=(.*))?$/.exec(process.argv[i]);
   if (!match || !(match[1] in options)) usage(`Unknown argument: ${process.argv[i]}`);
   if (options[match[1]] === false) {options[match[1]] = true;continue;}
   const value = match[2] ?? process.argv[++i];
@@ -49,6 +49,8 @@ for (let i = 2; i < process.argv.length; i++) {
   if (Array.isArray(options[match[1]])) options[match[1]].push(value);else options[match[1]] = value;
 }
 const [width, height] = options.size.split('x').map(Number), rounds = Number(options.rounds), typingKeys = Number(options['typing-keys']);
+const bitrate = Number(options['h264-bitrate']);
+if (!(Number.isInteger(bitrate) && bitrate >= 1000 && bitrate <= 50_000_000)) usage('--h264-bitrate must be an integer from 1000 to 50000000');
 const selected = options.scenarios.split(',').filter(Boolean);
 if (!options.binary.length) usage('--binary /abs/path/gliss-server is required');
 if (options.label.length > options.binary.length) usage('More --label than --binary');
@@ -292,7 +294,7 @@ for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]
 
 const results = {
   command: process.argv.slice(1), startedAt: new Date().toISOString(), size: options.size, rounds, scenarios: selected,
-  server: ['--max-clients', '1', '--codec', 'h264', '--h264-bitrate', '2000000', '--fps', '30', '--in-flight-frames', '8'],
+  server: ['--max-clients', '1', '--codec', 'h264', '--h264-bitrate', String(bitrate), '--fps', '30', '--in-flight-frames', '8'],
   link: linkSettings, binaries, host: {kernel: release(), cpus: cpus().length, loadBefore: loadavg(), qemu: execFileSync('qemu-system-x86_64', ['--version'], {encoding: 'utf8'}).split('\n')[0]},
   runs: [], summary: {}, failures: [], warnings: [],
 };
@@ -316,7 +318,7 @@ async function main() {
 
   // One fresh server and page, as Distribox starts them per viewer.
   const session = async (binary, body) => {
-    const server = await startGliss({binary: binary.path, vnc: vm.vnc, origin: link?.origin});
+    const server = await startGliss({binary: binary.path, vnc: vm.vnc, bitrate, origin: link?.origin});
     started(server.stop);spawned.add(server);
     const viewer = await openViewer(browser, link ? await link.attach(server) : server), closePage = () => viewer.page.close();
     started(closePage);
