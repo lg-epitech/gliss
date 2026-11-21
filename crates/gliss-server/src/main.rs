@@ -26,8 +26,8 @@ use axum::{
 };
 use clap::Parser;
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use gliss_core::{Frame, Input, MAX_CLIPBOARD};
-use gliss_rfb::Event;
+use gliss_core::{Damage, Frame, Input, MAX_CLIPBOARD};
+use gliss_rfb::{PooledEvent, PooledFrame};
 use gliss_video::{VideoEncoder, VideoTiming};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 use std::{
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -833,11 +833,79 @@ mod log_tests {
             "stream ended: browser did not acknowledge oldest frame within 10s"
         );
     }
+
+    #[test]
+    fn client_message_parser_covers_held_variants_ping_ids_and_unknown_variant_logging() {
+        let forged = format!(
+            "x\r\n2026-01-01T00:00:00Z  WARN forged\u{1b}[31m{}",
+            "y".repeat(2048)
+        );
+        let err = serde_json::from_str::<ClientMessage>(&json!({ "type": forged }).to_string())
+            .err()
+            .expect("unknown variant must fail");
+        let line = stream_end_message(&anyhow::Error::from(err));
+        assert!(
+            !line
+                .chars()
+                .any(|c| c.is_control() || c == '\u{2028}' || c == '\u{2029}'),
+            "{line:?}"
+        );
+        assert!(line.len() <= 600, "{} bytes", line.len());
+
+        for (raw, expected) in [
+            (r#"{"type":"ack","sequence":1}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":25}"#,
+                Duration::from_millis(25),
+            ),
+            (
+                r#"{"type":"ack","sequence":1,"held":12.5}"#,
+                Duration::from_micros(12_500),
+            ),
+            (r#"{"type":"ack","sequence":1,"held":-5}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":999999}"#,
+                Duration::from_secs(10),
+            ),
+            (r#"{"type":"ack","sequence":1,"held":null}"#, Duration::ZERO),
+            (r#"{"type":"ack","sequence":1,"held":true}"#, Duration::ZERO),
+            (r#"{"type":"ack","sequence":1,"held":"50"}"#, Duration::ZERO),
+            (
+                r#"{"type":"ack","sequence":1,"held":[1,2]}"#,
+                Duration::ZERO,
+            ),
+            (
+                r#"{"type":"ack","sequence":1,"held":{"a":1}}"#,
+                Duration::ZERO,
+            ),
+        ] {
+            let ClientMessage::Ack { sequence, held } =
+                serde_json::from_str::<ClientMessage>(raw).unwrap()
+            else {
+                panic!("expected ack for {raw}");
+            };
+            assert_eq!(sequence, 1);
+            assert_eq!(held, expected, "{raw}");
+        }
+
+        for (raw, expected) in [
+            (r#"{"type":"ping"}"#, None),
+            (r#"{"type":"ping","id":null}"#, None),
+            (r#"{"type":"ping","id":42}"#, Some(json!(42))),
+            (r#"{"type":"ping","id":"abc"}"#, Some(json!("abc"))),
+        ] {
+            let ClientMessage::Ping { id } = serde_json::from_str::<ClientMessage>(raw).unwrap()
+            else {
+                panic!("expected ping for {raw}");
+            };
+            assert_eq!(id, expected, "{raw}");
+        }
+    }
 }
 
 #[derive(Clone)]
 struct Captured {
-    frame: Arc<Frame>,
+    frame: Arc<PooledFrame>,
     forwarded_input_id: u32,
     published_at: Option<Instant>,
 }
@@ -846,6 +914,9 @@ struct Source {
     audio: audio::Session,
     audio_counters: Arc<audio::Counters>,
     frames: watch::Receiver<Option<Captured>>,
+    frame_tx: Option<watch::Sender<Option<Captured>>>,
+    frames_closed: Option<oneshot::Receiver<()>>,
+    damage: Option<Arc<Mutex<Damage>>>,
     input: mpsc::Sender<Input>,
     notices: Arc<notices::Notices>,
     shutdown: Option<oneshot::Receiver<()>>,
@@ -861,6 +932,9 @@ async fn source(app: &App) -> Result<Source> {
     let audio_counters = audio_config.counters.clone();
     let mut tasks = JoinSet::new();
     let mut shutdown = None;
+    let mut source_damage = None;
+    let mut source_frame_tx = None;
+    let mut frames_closed = None;
     if app.args.demo {
         let workload = app.args.workload.clone();
         let fps = app.args.fps;
@@ -887,6 +961,12 @@ async fn source(app: &App) -> Result<Source> {
             audio.packets.clone(),
             audio_config,
         ));
+        let shared_damage = Arc::new(Mutex::new(Damage::full(info.width, info.height)));
+        let reader_damage = shared_damage.clone();
+        source_damage = Some(shared_damage);
+        source_frame_tx = Some(frame_tx.clone());
+        let (closed_tx, closed_rx) = oneshot::channel();
+        frames_closed = Some(closed_rx);
         let input_id = Arc::new(AtomicU32::new(0));
         let dimensions = Arc::new(AtomicU32::new(
             (u32::from(info.width) << 16) | u32::from(info.height),
@@ -907,8 +987,9 @@ async fn source(app: &App) -> Result<Source> {
         let input_notices = notices.clone();
         let profile_capture = app.args.stream_stats;
         tasks.spawn(async move {
+            let _reader_alive = closed_tx;
             loop {
-                let event = match reader.read_event().await {
+                let event = match reader.read_pooled_event().await {
                     Ok(event) => event,
                     Err(error) => {
                         // The viewer only learns that the display is gone; the
@@ -920,7 +1001,7 @@ async fn source(app: &App) -> Result<Source> {
                     }
                 };
                 match event {
-                    Event::Frame(frame) => {
+                    PooledEvent::Frame(frame) => {
                         let size = (u32::from(frame.width) << 16) | u32::from(frame.height);
                         if reader_size.swap(size, Ordering::AcqRel) != size {
                             reader_refresh.store(true, Ordering::Release);
@@ -930,20 +1011,24 @@ async fn source(app: &App) -> Result<Source> {
                             completion.notify_one();
                         }
                         reader_display_changed.notify_one();
-                        let frame = Arc::new(frame);
                         let forwarded_input_id = reader_id.load(Ordering::Acquire);
-                        if frame_tx
-                            .send(Some(Captured {
+                        let previous = {
+                            let mut pending_damage = reader_damage
+                                .lock()
+                                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if frame_tx.is_closed() {
+                                break;
+                            }
+                            pending_damage.union_with(frame.damage());
+                            frame_tx.send_replace(Some(Captured {
                                 frame,
                                 forwarded_input_id,
                                 published_at: profile_capture.then(Instant::now),
                             }))
-                            .is_err()
-                        {
-                            break;
-                        }
+                        };
+                        drop(previous);
                     }
-                    Event::Unchanged => {
+                    PooledEvent::Unchanged => {
                         // The request was answered, so the next one is due and the
                         // server is still active, but there is no picture to
                         // publish and nothing to encode.
@@ -953,10 +1038,10 @@ async fn source(app: &App) -> Result<Source> {
                         }
                         reader_display_changed.notify_one();
                     }
-                    Event::Clipboard(text) => reader_notices.clipboard(text),
-                    Event::Cursor(cursor) => reader_notices.cursor(cursor),
-                    Event::Bell => reader_notices.bell(),
-                    Event::ResizeResult {
+                    PooledEvent::Clipboard(text) => reader_notices.clipboard(text),
+                    PooledEvent::Cursor(cursor) => reader_notices.cursor(cursor),
+                    PooledEvent::Bell => reader_notices.bell(),
+                    PooledEvent::ResizeResult {
                         width,
                         height,
                         status,
@@ -1030,6 +1115,9 @@ async fn source(app: &App) -> Result<Source> {
         audio,
         audio_counters,
         frames,
+        frame_tx: source_frame_tx,
+        frames_closed,
+        damage: source_damage,
         input,
         notices,
         shutdown,
@@ -1095,6 +1183,218 @@ struct Encoded {
     worker_wait: Duration,
     cpu_work: Option<Duration>,
     source_age: Option<Duration>,
+}
+
+/// Aborts an uncompleted direct blocking encode handle if the session exits early.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn finish_encode(
+    completed: Encoded,
+    window: &mut scheduler::Window,
+    encoder: &mut Option<StreamEncoder>,
+    waiting: &mut Option<MediaPacket>,
+    force_full_damage: &mut bool,
+) -> Result<()> {
+    window.encoded(completed.work, completed.worker_wait);
+    window.profiled_encode(completed.cpu_work, completed.source_age);
+    *encoder = Some(completed.encoder);
+    if completed.generation != window.generation() {
+        window.discarded_encode();
+        *force_full_damage = true;
+    } else {
+        *waiting = Some(MediaPacket {
+            generation: completed.generation,
+            sequence: completed.sequence,
+            bytes: completed.packet?,
+            blocked_since: None,
+        });
+    }
+    Ok(())
+}
+
+fn deserialize_held<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct HeldVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for HeldVisitor {
+        type Value = Duration;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("optional held duration in milliseconds")
+        }
+
+        fn visit_i64<E>(self, value: i64) -> std::result::Result<Self::Value, E> {
+            Ok(if value > 0 {
+                Duration::from_secs_f64((value as f64).min(10_000.0) / 1000.0)
+            } else {
+                Duration::ZERO
+            })
+        }
+
+        fn visit_u64<E>(self, value: u64) -> std::result::Result<Self::Value, E> {
+            Ok(if value > 0 {
+                Duration::from_secs_f64((value as f64).min(10_000.0) / 1000.0)
+            } else {
+                Duration::ZERO
+            })
+        }
+
+        fn visit_f64<E>(self, value: f64) -> std::result::Result<Self::Value, E> {
+            Ok(if value.is_finite() && value > 0.0 {
+                Duration::from_secs_f64(value.min(10_000.0) / 1000.0)
+            } else {
+                Duration::ZERO
+            })
+        }
+
+        fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+            Ok(Duration::ZERO)
+        }
+
+        fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+            Ok(Duration::ZERO)
+        }
+
+        fn visit_bool<E>(self, _: bool) -> std::result::Result<Self::Value, E> {
+            Ok(Duration::ZERO)
+        }
+
+        fn visit_str<E>(self, _: &str) -> std::result::Result<Self::Value, E> {
+            Ok(Duration::ZERO)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+            Ok(Duration::ZERO)
+        }
+
+        fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            while map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(Duration::ZERO)
+        }
+    }
+
+    deserializer.deserialize_any(HeldVisitor)
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ClientMessage {
+    Ack {
+        sequence: u32,
+        #[serde(default, deserialize_with = "deserialize_held")]
+        held: Duration,
+    },
+    Resync,
+    Audio {
+        enabled: bool,
+        #[serde(default)]
+        codec: Option<audio::Codec>,
+    },
+    Ping {
+        #[serde(default)]
+        id: Option<serde_json::Value>,
+    },
+    Key {
+        keysym: u32,
+        down: bool,
+        #[serde(default)]
+        id: u32,
+    },
+    Pointer {
+        x: u16,
+        y: u16,
+        buttons: u8,
+        #[serde(default)]
+        id: u32,
+    },
+    Clipboard {
+        text: String,
+        #[serde(default)]
+        id: u32,
+    },
+    Resize {
+        width: u16,
+        height: u16,
+        #[serde(default)]
+        id: u32,
+    },
+}
+
+/// Atomically reads the latest frame and drains any RFB tile damage accumulated
+/// since the previous read so coalesced frames never lose dirty regions.
+fn take_capture(
+    source: &mut Source,
+    pending_damage: &mut Option<Damage>,
+    update_watch: bool,
+) -> Option<Captured> {
+    if let Some(shared) = &source.damage {
+        let mut guard = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let capture = if let Some(tx) = &source.frame_tx {
+            // Move the `Captured` out of the watch slot without bumping its
+            // version so the channel drops its `Arc<PooledFrame>` immediately.
+            let mut taken = None;
+            tx.send_if_modified(|slot| {
+                taken = slot.take();
+                false
+            });
+            if update_watch {
+                source.frames.mark_unchanged();
+            }
+            taken
+        } else if update_watch {
+            source.frames.borrow_and_update().clone()
+        } else {
+            source.frames.borrow().clone()
+        };
+        let taken = if let Some(ref captured) = capture {
+            std::mem::replace(
+                &mut *guard,
+                Damage::empty(captured.frame.width, captured.frame.height),
+            )
+        } else {
+            *guard
+        };
+        drop(guard);
+        if let Some(ref captured) = capture {
+            let (w, h) = (captured.frame.width, captured.frame.height);
+            match pending_damage {
+                Some(existing) if existing.dimensions() == (w, h) => existing.union_with(&taken),
+                Some(existing) => *existing = Damage::full(w, h),
+                None => *pending_damage = Some(taken),
+            }
+        }
+        capture
+    } else {
+        let capture = if update_watch {
+            source.frames.borrow_and_update().clone()
+        } else {
+            source.frames.borrow().clone()
+        };
+        if let Some(ref captured) = capture {
+            *pending_damage = Some(Damage::full(captured.frame.width, captured.frame.height));
+        }
+        capture
+    }
 }
 
 fn replace_latest(
@@ -1216,27 +1516,52 @@ where
         while let Some(message) = receiver.next().await {
             let command = match message? {
                 Message::Text(text) => {
-                    let value: serde_json::Value = serde_json::from_str(&text)?;
-                    match value.get("type").and_then(|value| value.as_str()) {
-                        Some("ack") => {
-                            let sequence = value.get("sequence").and_then(|value| value.as_u64()).and_then(|value| u32::try_from(value).ok()).context("invalid media acknowledgement")?;
-                            // Optional: an older client does not say. More than the
-                            // acknowledgement timeout says nothing about the link.
-                            let held = value.get("held").and_then(|value| value.as_f64()).filter(|ms| ms.is_finite() && *ms > 0.0).map_or(Duration::ZERO, |ms| Duration::from_secs_f64(ms.min(10_000.0) / 1000.0));
+                    match serde_json::from_str::<ClientMessage>(&text)? {
+                        ClientMessage::Ack { sequence, held } => {
                             Some(StreamCommand::Ack(sequence, held))
                         }
-                        Some("resync") => Some(StreamCommand::Resync),
-                        Some("audio") => { audio::request(&audio_request, value)?; None }
-                        Some("ping") => Some(StreamCommand::Reply(Message::Text(json!({"type":"pong","id":value.get("id")}).to_string().into()))),
-                        _ => {
-                            let command: Input = serde_json::from_value(value)?;
-                            if let Input::Clipboard { text, .. } = &command && text.len() > MAX_CLIPBOARD {
+                        ClientMessage::Resync => Some(StreamCommand::Resync),
+                        ClientMessage::Audio { enabled, codec } => {
+                            audio::apply_request(&audio_request, enabled, codec)?;
+                            None
+                        }
+                        ClientMessage::Ping { id } => Some(StreamCommand::Reply(Message::Text(
+                            json!({"type":"pong","id":id}).to_string().into(),
+                        ))),
+                        ClientMessage::Key { keysym, down, id } => {
+                            input
+                                .try_send(Input::Key { keysym, down, id })
+                                .context("input queue full")?;
+                            None
+                        }
+                        ClientMessage::Pointer { x, y, buttons, id } => {
+                            input
+                                .try_send(Input::Pointer { x, y, buttons, id })
+                                .context("input queue full")?;
+                            None
+                        }
+                        ClientMessage::Clipboard { text, id } => {
+                            if text.len() > MAX_CLIPBOARD {
                                 bail!("clipboard too large");
                             }
-                            if matches!(command, Input::Resize { width, height, .. } if width < 16 || height < 16 || width > 3840 || height > 2160 || width % 2 != 0 || height % 2 != 0) {
+                            input
+                                .try_send(Input::Clipboard { text, id })
+                                .context("input queue full")?;
+                            None
+                        }
+                        ClientMessage::Resize { width, height, id } => {
+                            if width < 16
+                                || height < 16
+                                || width > 3840
+                                || height > 2160
+                                || width % 2 != 0
+                                || height % 2 != 0
+                            {
                                 Some(StreamCommand::Reply(Message::Text(json!({"type":"input_error","message":"Software H264 requires even desktop dimensions from 16x16 through 3840x2160."}).to_string().into())))
                             } else {
-                                input.try_send(command).context("input queue full")?;
+                                input
+                                    .try_send(Input::Resize { width, height, id })
+                                    .context("input queue full")?;
                                 None
                             }
                         }
@@ -1312,6 +1637,7 @@ where
         timing: app.video_timing,
         bitrate: app.args.h264_bitrate,
     });
+    let mut encode_task = None::<AbortOnDrop<Encoded>>;
     let mut encoder_jobs = JoinSet::<Result<Encoded>>::new();
     let mut window = scheduler::Window::new(
         usize::from(app.args.in_flight_frames),
@@ -1321,6 +1647,10 @@ where
     let mut writer_jobs = 0usize;
     let mut waiting = None::<MediaPacket>;
     let mut latest = None::<Captured>;
+    let mut pending_damage = None::<Damage>;
+    let mut force_full_damage = true;
+    let mut last_input_id = 0u32;
+    let mut resync_cached = false;
     let mut pacer = pacer::Pacer::new(Duration::from_secs_f64(1.0 / f64::from(app.args.fps)));
     let mut eligible = tokio::time::Instant::now();
     let mut telemetry = tokio::time::interval(Duration::from_secs(1));
@@ -1340,7 +1670,8 @@ where
             }
         }
         let resync_due = window.resync_due(now).map(tokio::time::Instant::from_std);
-        if window.resyncing() && writer_jobs == 0 && encoder_jobs.is_empty() {
+        let encoder_busy = encode_task.is_some() || !encoder_jobs.is_empty();
+        if window.resyncing() && writer_jobs == 0 && !encoder_busy {
             // Old queued writes have been skipped, an already-started write finished,
             // and any old encode returned. Reset before admitting new dependencies.
             encoder
@@ -1348,8 +1679,23 @@ where
                 .context("encoder missing at generation barrier")?
                 .reset();
             window.finish_resync()?;
-            replace_latest(&mut latest, source.frames.borrow().clone(), &mut window);
+            force_full_damage = true;
+            pending_damage = None;
+            let capture = take_capture(source, &mut pending_damage, source.frame_tx.is_some());
+            if capture.is_some() {
+                replace_latest(&mut latest, capture, &mut window);
+                resync_cached = false;
+            } else if latest.is_none()
+                && pause.is_none()
+                && encoder.as_ref().is_some_and(StreamEncoder::has_prepared)
+            {
+                resync_cached = true;
+            }
             hold_unencodable(&mut latest, &mut pause, &mut window, &source.notices);
+            if pause.is_some() {
+                force_full_damage = true;
+                resync_cached = false;
+            }
             eligible = pacer.eligible();
         }
         if waiting
@@ -1372,10 +1718,12 @@ where
         } else if let Some(packet) = &mut waiting {
             packet.blocked_since.get_or_insert_with(Instant::now);
         }
-        let frames_in_flight = writer_jobs > 0 || waiting.is_some() || !encoder_jobs.is_empty();
+        let frames_in_flight = writer_jobs > 0 || waiting.is_some() || encoder_busy;
         report_pause(&mut pause, frames_in_flight, &source.notices);
-        let ready =
-            window.can_encode() && waiting.is_none() && encoder_jobs.is_empty() && latest.is_some();
+        let ready = window.can_encode()
+            && waiting.is_none()
+            && !encoder_busy
+            && (latest.is_some() || resync_cached);
         let hold = if ready {
             window.link_hold(session_now())
         } else {
@@ -1412,16 +1760,14 @@ where
                     window.skipped(completed.generation, completed.sequence)?;
                 }
             }
+            result = async { (&mut encode_task.as_mut().unwrap().0).await }, if encode_task.is_some() => {
+                encode_task = None;
+                let completed = result.context("blocking encoder worker failed")?;
+                finish_encode(completed, &mut window, &mut encoder, &mut waiting, &mut force_full_damage)?;
+            }
             Some(result) = encoder_jobs.join_next(), if !encoder_jobs.is_empty() => {
                 let completed = result.context("encoder worker failed")??;
-                window.encoded(completed.work, completed.worker_wait);
-                window.profiled_encode(completed.cpu_work, completed.source_age);
-                encoder = Some(completed.encoder);
-                if completed.generation != window.generation() {
-                    window.discarded_encode();
-                } else {
-                    waiting = Some(MediaPacket { generation: completed.generation, sequence: completed.sequence, bytes: completed.packet?, blocked_since: None });
-                }
+                finish_encode(completed, &mut window, &mut encoder, &mut waiting, &mut force_full_damage)?;
             }
             changed = source.frames.changed(), if source_ended.is_none() => {
                 if changed.is_err() {
@@ -1431,9 +1777,21 @@ where
                     source_ended = Some(tokio::time::Instant::now() + LAST_NOTICE_WRITE);
                     continue;
                 }
-                replace_latest(&mut latest, source.frames.borrow_and_update().clone(), &mut window);
+                let capture = take_capture(source, &mut pending_damage, true);
+                if capture.is_some() || source.frame_tx.is_none() {
+                    replace_latest(&mut latest, capture, &mut window);
+                    resync_cached = false;
+                }
                 hold_unencodable(&mut latest, &mut pause, &mut window, &source.notices);
+                if pause.is_some() {
+                    force_full_damage = true;
+                    resync_cached = false;
+                }
                 eligible = pacer.eligible();
+            }
+            _ = async { source.frames_closed.as_mut().unwrap().await }, if source_ended.is_none() && source.frames_closed.is_some() => {
+                source.frames_closed = None;
+                source_ended = Some(tokio::time::Instant::now() + LAST_NOTICE_WRITE);
             }
             _ = tokio::time::sleep_until(source_ended.unwrap_or(eligible)), if source_ended.is_some() => break,
             _ = tokio::time::sleep_until(resync_due.unwrap_or(eligible)), if resync_due.is_some() => {}
@@ -1441,39 +1799,84 @@ where
                 // The oldest frame may have become overdue during the wait.
                 if window.link_hold(session_now()) != scheduler::Hold::None { continue; }
                 pacer.started();
-                let captured = latest.take().unwrap();
+                let job = if let Some(captured) = latest.take() {
+                    resync_cached = false;
+                    last_input_id = captured.forwarded_input_id;
+                    let damage = if force_full_damage {
+                        force_full_damage = false;
+                        pending_damage = None;
+                        Damage::full(captured.frame.width, captured.frame.height)
+                    } else {
+                        pending_damage
+                            .take()
+                            .unwrap_or_else(|| Damage::full(captured.frame.width, captured.frame.height))
+                    };
+                    Some((captured, damage))
+                } else {
+                    resync_cached = false;
+                    None
+                };
+                let input_id = last_input_id;
                 let mut next_encoder = encoder.take().context("encoder is already busy")?;
                 sequence = sequence.wrapping_add(1);
                 let packet_sequence = sequence;
                 let packet_generation = window.generation();
-                // Nine tenths of what the link carries, if that is less than configured:
-                // frames that fit it are not held back for the frames before them.
+                // Eight tenths of what the link carries, if that is less than configured:
+                // leaving headroom for TCP/WebSocket framing and P-frame bursts prevents
+                // oscillation on constrained WAN links. Cap the floor at 250 kbit/s so
+                // high-bitrate (e.g. 8 Mbit/s) streams can still adapt below 1 Mbit/s.
                 let configured = app.args.h264_bitrate;
+                let floor = (configured / 8).clamp(1_000, 250_000).min(configured);
                 let bitrate = window.link_bitrate(session_now()).map_or(configured, |link| {
-                    ((link * 0.9) as u32).clamp(configured / 8, configured)
+                    ((link * 0.8) as u32).clamp(floor, configured)
                 });
-                let permits = app.encoders.clone();
                 let queued = Instant::now();
                 let profile_encode = app.args.stream_stats;
-                encoder_jobs.spawn(async move {
-                    let permit = permits.acquire_owned().await?;
-                    tokio::task::spawn_blocking(move || {
-                        let _permit = permit;
-                        let started = Instant::now();
-                        let source_age = captured.published_at.map(|at| started.saturating_duration_since(at));
-                        let cpu_started = profile_encode.then(profiling::thread_cpu_time).flatten();
-                        let packet = next_encoder.encode(&captured.frame, packet_sequence, captured.forwarded_input_id, bitrate);
-                        let work = started.elapsed();
-                        let cpu_work = cpu_started.and_then(|at| profiling::thread_cpu_time()?.checked_sub(at));
-                        Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
-                    }).await.context("blocking encoder worker failed")
-                });
+                let run_encode = move |permit: tokio::sync::OwnedSemaphorePermit| {
+                    let _permit = permit;
+                    let started = Instant::now();
+                    let source_age = job
+                        .as_ref()
+                        .and_then(|(captured, _)| captured.published_at)
+                        .map(|at| started.saturating_duration_since(at));
+                    let cpu_started = profile_encode.then(profiling::thread_cpu_time).flatten();
+                    let prep = match job {
+                        Some((captured, damage)) => {
+                            let result = next_encoder.prepare_damaged(&captured.frame, &damage);
+                            // Drop the `Arc<PooledFrame>` immediately after YUV staging so
+                            // the RFB decoder can mutate the buffer in place while OpenH264
+                            // encodes.
+                            drop(captured);
+                            result
+                        }
+                        None => Ok(()),
+                    };
+                    let packet = prep.and_then(|()| {
+                        next_encoder.encode_prepared(packet_sequence, input_id, bitrate)
+                    });
+                    let work = started.elapsed();
+                    let cpu_work = cpu_started.and_then(|at| profiling::thread_cpu_time()?.checked_sub(at));
+                    Encoded { encoder: next_encoder, generation: packet_generation, sequence: packet_sequence, packet, work, worker_wait: started.saturating_duration_since(queued), cpu_work, source_age }
+                };
+                if let Ok(permit) = app.encoders.clone().try_acquire_owned() {
+                    encode_task = Some(AbortOnDrop(tokio::task::spawn_blocking(move || {
+                        run_encode(permit)
+                    })));
+                } else {
+                    let permits = app.encoders.clone();
+                    encoder_jobs.spawn(async move {
+                        let permit = permits.acquire_owned().await?;
+                        tokio::task::spawn_blocking(move || run_encode(permit))
+                            .await
+                            .context("blocking encoder worker failed")
+                    });
+                }
             }
             _ = telemetry.tick(), if app.args.stream_stats => {
                 let mut stats = window.snapshot();
                 stats["process_cpu"] = profiling::process_cpu(app.started.elapsed());
                 stats["waiting_encoded_bytes"] = json!(waiting.as_ref().map_or(0, |packet| packet.bytes.len()));
-                stats["encoder_busy"] = json!(!encoder_jobs.is_empty());
+                stats["encoder_busy"] = json!(encoder_busy);
                 stats["writer_jobs"] = json!(writer_jobs);
                 stats["audio"] = json!({"packet_ms":app.args.audio_packet_ms.millis(),"counters":source.audio_counters.snapshot()});
                 // Diagnostics never block input/media and have no unbounded history.
@@ -1499,8 +1902,15 @@ impl StreamEncoder {
         }
     }
 
+    fn has_prepared(&self) -> bool {
+        self.encoder
+            .as_ref()
+            .is_some_and(|encoder| encoder.has_prepared())
+    }
+
     /// `bitrate` is what the encoder should aim at from this frame on, at most
     /// the configured one.
+    #[cfg(test)]
     fn encode(
         &mut self,
         frame: &Frame,
@@ -1508,6 +1918,11 @@ impl StreamEncoder {
         input_id: u32,
         bitrate: u32,
     ) -> Result<Vec<u8>> {
+        self.prepare_damaged(frame, &Damage::full(frame.width, frame.height))?;
+        self.encode_prepared(sequence, input_id, bitrate)
+    }
+
+    fn prepare_damaged(&mut self, frame: &Frame, damage: &Damage) -> Result<()> {
         if self.encoder.is_none() {
             self.encoder = Some(Box::new(VideoEncoder::with_timing(
                 frame.width,
@@ -1516,9 +1931,18 @@ impl StreamEncoder {
                 self.timing,
             )?));
         }
-        let encoder = self.encoder.as_mut().unwrap();
+        self.encoder
+            .as_mut()
+            .unwrap()
+            .prepare_damaged(frame, damage)
+    }
+
+    /// `bitrate` is what the encoder should aim at from this frame on, at most
+    /// the configured one.
+    fn encode_prepared(&mut self, sequence: u32, input_id: u32, bitrate: u32) -> Result<Vec<u8>> {
+        let encoder = self.encoder.as_mut().context("encoder not prepared")?;
         encoder.set_bitrate(bitrate);
-        encoder.encode(frame, sequence, input_id)
+        encoder.encode_prepared(sequence, input_id)
     }
 }
 

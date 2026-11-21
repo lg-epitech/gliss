@@ -4,14 +4,638 @@
 //! range BT.601 YUV420, so the stream is lossy, including chroma subsampling.
 
 use anyhow::{Context, Result, ensure};
-use gliss_core::Frame;
-use openh264::encoder::{
-    BitRate, Complexity, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, Profile,
-    RateControlMode, SpsPpsStrategy, UsageType, VuiConfig,
+use gliss_core::{Damage, Frame};
+use openh264::{OpenH264API, nal_units};
+use openh264_sys2::{
+    API, CAMERA_VIDEO_REAL_TIME, CONSTANT_ID, DEBLOCKING_IDC_1, ENCODER_OPTION_BITRATE,
+    ENCODER_OPTION_DATAFORMAT, ENCODER_OPTION_MAX_BITRATE, ENCODER_OPTION_TRACE_LEVEL, ISVCEncoder,
+    LOW_COMPLEXITY, PRO_BASELINE, RC_BITRATE_MODE, SBitrateInfo, SEncParamExt, SFrameBSInfo,
+    SM_SINGLE_SLICE, SPATIAL_LAYER_0, SPATIAL_LAYER_ALL, SSourcePicture, UNSPECIFIED_BIT_RATE,
+    WELS_LOG_QUIET, videoFormatI420, videoFrameTypeIDR, videoFrameTypeSkip,
 };
-use openh264::formats::{RgbaSliceU8, YUVBuffer};
-use openh264::{OpenH264API, Timestamp, nal_units};
-use openh264_sys2::{ENCODER_OPTION_BITRATE, SBitrateInfo, SPATIAL_LAYER_ALL};
+
+/// Minimum and maximum H.264 QP bounds for OpenH264 rate control.
+///
+/// A 28 floor avoids spending encoder and decoder work on sub-perceptual fine
+/// detail on 8 Mbit/s links. With `DEBLOCKING_IDC_1`, capping QP at 46 lets
+/// rate control fit scrolling 1080p desktops within 1 Mbit/s WAN links without
+/// triggering the QP 47..51 un-deblocked reference degradation cycle.
+const MIN_QP: i32 = 28;
+const MAX_QP: i32 = 46;
+
+/// Planar I420 backing store updated directly in-place on dirty tile spans.
+///
+/// Uses the exact limited-range BT.601 integer math of OpenH264's
+/// `YUVBuffer::read_rgba8`:
+/// - `Y = ((66 * R + 129 * G + 25 * B) >> 8) + 16`
+/// - `avg = (p00 + p01 + p10 + p11 + 2) >> 2`
+/// - `U = ((-38 * R_avg - 74 * G_avg + 112 * B_avg) >> 8) + 128`
+/// - `V = ((112 * R_avg - 94 * G_avg - 18 * B_avg) >> 8) + 128`
+struct YuvPlanes {
+    width: usize,
+    height: usize,
+    y: Vec<u8>,
+    u: Vec<u8>,
+    v: Vec<u8>,
+    initialized: bool,
+}
+
+impl YuvPlanes {
+    fn new(width: usize, height: usize) -> Self {
+        let luma = width * height;
+        let chroma = (width / 2) * (height / 2);
+        Self {
+            width,
+            height,
+            y: vec![0; luma],
+            u: vec![0; chroma],
+            v: vec![0; chroma],
+            initialized: false,
+        }
+    }
+
+    fn update_rgba8(&mut self, rgba: &[u8], damage: &Damage) {
+        let w = self.width;
+        let h = self.height;
+        let force_full =
+            !self.initialized || damage.is_full() || damage.dimensions() != (w as u16, h as u16);
+        if force_full {
+            let rect = Rect {
+                x0: 0,
+                y0: 0,
+                bw: w,
+                bh: h,
+            };
+            convert_rgba_rect_to_i420(rgba, w, rect, &mut self.y, &mut self.u, &mut self.v);
+            self.initialized = true;
+            return;
+        }
+        let y_plane = &mut self.y;
+        let u_plane = &mut self.u;
+        let v_plane = &mut self.v;
+        damage.for_each_span(|x0, y0, bw, bh| {
+            let rect = Rect { x0, y0, bw, bh };
+            convert_rgba_rect_to_i420(rgba, w, rect, y_plane, u_plane, v_plane);
+        });
+    }
+
+    #[cfg(test)]
+    fn y(&self) -> &[u8] {
+        &self.y
+    }
+
+    #[cfg(test)]
+    fn u(&self) -> &[u8] {
+        &self.u
+    }
+
+    #[cfg(test)]
+    fn v(&self) -> &[u8] {
+        &self.v
+    }
+}
+
+#[inline]
+fn convert_rgba_pair_scalar(
+    row0: &[u8],
+    row1: &[u8],
+    y0: &mut [u8],
+    y1: &mut [u8],
+    u_out: &mut [u8],
+    v_out: &mut [u8],
+) {
+    let pairs = u_out.len();
+    for cx in 0..pairs {
+        let px0 = cx * 8;
+        let r00 = i32::from(row0[px0]);
+        let g00 = i32::from(row0[px0 + 1]);
+        let b00 = i32::from(row0[px0 + 2]);
+        let r01 = i32::from(row0[px0 + 4]);
+        let g01 = i32::from(row0[px0 + 5]);
+        let b01 = i32::from(row0[px0 + 6]);
+
+        let r10 = i32::from(row1[px0]);
+        let g10 = i32::from(row1[px0 + 1]);
+        let b10 = i32::from(row1[px0 + 2]);
+        let r11 = i32::from(row1[px0 + 4]);
+        let g11 = i32::from(row1[px0 + 5]);
+        let b11 = i32::from(row1[px0 + 6]);
+
+        let lx = cx * 2;
+        y0[lx] = (((66 * r00 + 129 * g00 + 25 * b00) >> 8) + 16) as u8;
+        y0[lx + 1] = (((66 * r01 + 129 * g01 + 25 * b01) >> 8) + 16) as u8;
+        y1[lx] = (((66 * r10 + 129 * g10 + 25 * b10) >> 8) + 16) as u8;
+        y1[lx + 1] = (((66 * r11 + 129 * g11 + 25 * b11) >> 8) + 16) as u8;
+
+        let ra = (r00 + r01 + r10 + r11 + 2) >> 2;
+        let ga = (g00 + g01 + g10 + g11 + 2) >> 2;
+        let ba = (b00 + b01 + b10 + b11 + 2) >> 2;
+
+        u_out[cx] = (((-38 * ra - 74 * ga + 112 * ba) >> 8) + 128) as u8;
+        v_out[cx] = (((112 * ra - 94 * ga - 18 * ba) >> 8) + 128) as u8;
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Rect {
+    x0: usize,
+    y0: usize,
+    bw: usize,
+    bh: usize,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn convert_rgba_rect_to_i420_avx2(
+    rgba: &[u8],
+    stride_w: usize,
+    rect: Rect,
+    y_plane: &mut [u8],
+    u_plane: &mut [u8],
+    v_plane: &mut [u8],
+) {
+    use std::arch::x86_64::*;
+    let Rect { x0, y0, bw, bh } = rect;
+
+    let k_r_lo = _mm256_setr_epi8(
+        0, -1, 4, -1, 8, -1, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 4, -1, 8, -1, 12, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+    let k_r_hi = _mm256_setr_epi8(
+        -1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 4, -1, 8, -1, 12, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, 0, -1, 4, -1, 8, -1, 12, -1,
+    );
+    let k_g_lo = _mm256_setr_epi8(
+        1, -1, 5, -1, 9, -1, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 5, -1, 9, -1, 13, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+    let k_g_hi = _mm256_setr_epi8(
+        -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 5, -1, 9, -1, 13, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, 1, -1, 5, -1, 9, -1, 13, -1,
+    );
+    let k_b_lo = _mm256_setr_epi8(
+        2, -1, 6, -1, 10, -1, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, -1, 6, -1, 10, -1, 14, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+    let k_b_hi = _mm256_setr_epi8(
+        -1, -1, -1, -1, -1, -1, -1, -1, 2, -1, 6, -1, 10, -1, 14, -1, -1, -1, -1, -1, -1, -1, -1,
+        -1, 2, -1, 6, -1, 10, -1, 14, -1,
+    );
+    let shuf_uv = _mm256_setr_epi8(
+        0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4, 8, 12, -1, -1, -1, -1,
+        -1, -1, -1, -1, -1, -1, -1, -1,
+    );
+
+    let c66 = _mm256_set1_epi16(66);
+    let c129 = _mm256_set1_epi16(129);
+    let c25 = _mm256_set1_epi16(25);
+    let c16 = _mm256_set1_epi16(16);
+    let c128 = _mm256_set1_epi16(128);
+    let cm38 = _mm256_set1_epi16(-38);
+    let cm74 = _mm256_set1_epi16(-74);
+    let c112 = _mm256_set1_epi16(112);
+    let cm94 = _mm256_set1_epi16(-94);
+    let cm18 = _mm256_set1_epi16(-18);
+    let c2_even = _mm256_set1_epi32(2);
+    let mask_even = _mm256_set1_epi32(0x0000_ffff);
+
+    let row_rgba = stride_w * 4;
+    let uv_w = stride_w / 2;
+    let simd_w = bw & !15;
+    let tail_w = bw - simd_w;
+
+    for cy in (y0 / 2)..((y0 + bh) / 2) {
+        let r0_base = (cy * 2) * row_rgba + x0 * 4;
+        let r1_base = (cy * 2 + 1) * row_rgba + x0 * 4;
+        let y0_base = (cy * 2) * stride_w + x0;
+        let y1_base = (cy * 2 + 1) * stride_w + x0;
+        let uv_base = cy * uv_w + x0 / 2;
+
+        // SAFETY: caller verified x0 + bw <= stride_w and y0 + bh <= height,
+        // and simd_w <= bw is a multiple of 16, so all accesses stay in bounds.
+        unsafe {
+            let r0_ptr = rgba.as_ptr().add(r0_base);
+            let r1_ptr = rgba.as_ptr().add(r1_base);
+            let y0_ptr = y_plane.as_mut_ptr().add(y0_base);
+            let y1_ptr = y_plane.as_mut_ptr().add(y1_base);
+            let u_ptr = u_plane.as_mut_ptr().add(uv_base);
+            let v_ptr = v_plane.as_mut_ptr().add(uv_base);
+
+            let mut x = 0usize;
+            while x < simd_w {
+                let a0 = _mm256_loadu_si256(r0_ptr.add(x * 4).cast());
+                let a1 = _mm256_loadu_si256(r0_ptr.add(x * 4 + 32).cast());
+                let r0 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(a0, k_r_lo),
+                    _mm256_shuffle_epi8(a1, k_r_hi),
+                );
+                let g0 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(a0, k_g_lo),
+                    _mm256_shuffle_epi8(a1, k_g_hi),
+                );
+                let b0 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(a0, k_b_lo),
+                    _mm256_shuffle_epi8(a1, k_b_hi),
+                );
+                // 66*r + 129*g + 25*b <= 56100 <= u16::MAX; srli_epi16 is unsigned >> 8.
+                let yy0 = _mm256_add_epi16(
+                    _mm256_srli_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(r0, c66),
+                                _mm256_mullo_epi16(g0, c129),
+                            ),
+                            _mm256_mullo_epi16(b0, c25),
+                        ),
+                        8,
+                    ),
+                    c16,
+                );
+                let yy0_lin = _mm256_permute4x64_epi64(yy0, 0xD8);
+
+                let c0 = _mm256_loadu_si256(r1_ptr.add(x * 4).cast());
+                let c1 = _mm256_loadu_si256(r1_ptr.add(x * 4 + 32).cast());
+                let r1 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(c0, k_r_lo),
+                    _mm256_shuffle_epi8(c1, k_r_hi),
+                );
+                let g1 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(c0, k_g_lo),
+                    _mm256_shuffle_epi8(c1, k_g_hi),
+                );
+                let b1 = _mm256_or_si256(
+                    _mm256_shuffle_epi8(c0, k_b_lo),
+                    _mm256_shuffle_epi8(c1, k_b_hi),
+                );
+                let yy1 = _mm256_add_epi16(
+                    _mm256_srli_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(r1, c66),
+                                _mm256_mullo_epi16(g1, c129),
+                            ),
+                            _mm256_mullo_epi16(b1, c25),
+                        ),
+                        8,
+                    ),
+                    c16,
+                );
+                let yy1_lin = _mm256_permute4x64_epi64(yy1, 0xD8);
+
+                let packed_y =
+                    _mm256_permute4x64_epi64(_mm256_packus_epi16(yy0_lin, yy1_lin), 0xD8);
+                _mm_storeu_si128(y0_ptr.add(x).cast(), _mm256_castsi256_si128(packed_y));
+                _mm_storeu_si128(y1_ptr.add(x).cast(), _mm256_extracti128_si256(packed_y, 1));
+
+                let rs = _mm256_add_epi16(r0, r1);
+                let gs = _mm256_add_epi16(g0, g1);
+                let bs = _mm256_add_epi16(b0, b1);
+                let ra = _mm256_srli_epi16(
+                    _mm256_and_si256(
+                        _mm256_add_epi16(_mm256_add_epi16(rs, _mm256_srli_epi32(rs, 16)), c2_even),
+                        mask_even,
+                    ),
+                    2,
+                );
+                let ga = _mm256_srli_epi16(
+                    _mm256_and_si256(
+                        _mm256_add_epi16(_mm256_add_epi16(gs, _mm256_srli_epi32(gs, 16)), c2_even),
+                        mask_even,
+                    ),
+                    2,
+                );
+                let ba = _mm256_srli_epi16(
+                    _mm256_and_si256(
+                        _mm256_add_epi16(_mm256_add_epi16(bs, _mm256_srli_epi32(bs, 16)), c2_even),
+                        mask_even,
+                    ),
+                    2,
+                );
+
+                // U and V sums stay strictly inside [-28560, +28560] <= i16 bounds.
+                let uu = _mm256_add_epi16(
+                    _mm256_srai_epi16(
+                        _mm256_add_epi16(
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(ra, cm38),
+                                _mm256_mullo_epi16(ga, cm74),
+                            ),
+                            _mm256_mullo_epi16(ba, c112),
+                        ),
+                        8,
+                    ),
+                    c128,
+                );
+                let vv = _mm256_add_epi16(
+                    _mm256_srai_epi16(
+                        _mm256_add_epi16(
+                            _mm256_mullo_epi16(ra, c112),
+                            _mm256_add_epi16(
+                                _mm256_mullo_epi16(ga, cm94),
+                                _mm256_mullo_epi16(ba, cm18),
+                            ),
+                        ),
+                        8,
+                    ),
+                    c128,
+                );
+
+                let u_b = _mm256_shuffle_epi8(uu, shuf_uv);
+                let v_b = _mm256_shuffle_epi8(vv, shuf_uv);
+                let u_lin = _mm_unpacklo_epi16(
+                    _mm256_castsi256_si128(u_b),
+                    _mm256_extracti128_si256(u_b, 1),
+                );
+                let v_lin = _mm_unpacklo_epi16(
+                    _mm256_castsi256_si128(v_b),
+                    _mm256_extracti128_si256(v_b, 1),
+                );
+                std::ptr::write_unaligned(u_ptr.add(x / 2).cast::<i64>(), _mm_cvtsi128_si64(u_lin));
+                std::ptr::write_unaligned(v_ptr.add(x / 2).cast::<i64>(), _mm_cvtsi128_si64(v_lin));
+
+                x += 16;
+            }
+        }
+
+        if tail_w > 0 {
+            let tail_px = simd_w;
+            let tail_uv = simd_w / 2;
+            let (y_row0, y_row1) = y_plane[y0_base..y1_base + bw].split_at_mut(stride_w);
+            convert_rgba_pair_scalar(
+                &rgba[r0_base + tail_px * 4..r0_base + bw * 4],
+                &rgba[r1_base + tail_px * 4..r1_base + bw * 4],
+                &mut y_row0[tail_px..bw],
+                &mut y_row1[tail_px..bw],
+                &mut u_plane[uv_base + tail_uv..uv_base + bw / 2],
+                &mut v_plane[uv_base + tail_uv..uv_base + bw / 2],
+            );
+        }
+    }
+}
+
+fn convert_rgba_rect_to_i420(
+    rgba: &[u8],
+    stride_w: usize,
+    rect: Rect,
+    y_plane: &mut [u8],
+    u_plane: &mut [u8],
+    v_plane: &mut [u8],
+) {
+    let Rect { x0, y0, bw, bh } = rect;
+    if bw == 0 || bh == 0 {
+        return;
+    }
+    let height = y_plane.len() / stride_w;
+    assert!(
+        x0.is_multiple_of(2)
+            && y0.is_multiple_of(2)
+            && bw.is_multiple_of(2)
+            && bh.is_multiple_of(2)
+            && stride_w.is_multiple_of(2)
+            && height.is_multiple_of(2)
+            && x0 + bw <= stride_w
+            && y0 + bh <= height
+            && rgba.len() >= height * stride_w * 4
+            && u_plane.len() == (stride_w / 2) * (height / 2)
+            && v_plane.len() == (stride_w / 2) * (height / 2)
+    );
+
+    #[cfg(target_arch = "x86_64")]
+    if bw >= 16 && std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: AVX2 support checked above and bounds asserted above.
+        unsafe {
+            convert_rgba_rect_to_i420_avx2(rgba, stride_w, rect, y_plane, u_plane, v_plane);
+        }
+        return;
+    }
+
+    let row_rgba = stride_w * 4;
+    let uv_w = stride_w / 2;
+    for cy in (y0 / 2)..((y0 + bh) / 2) {
+        let r0_base = (cy * 2) * row_rgba + x0 * 4;
+        let r1_base = (cy * 2 + 1) * row_rgba + x0 * 4;
+        let y0_base = (cy * 2) * stride_w + x0;
+        let y1_base = (cy * 2 + 1) * stride_w + x0;
+        let uv_base = cy * uv_w + x0 / 2;
+        let (y_row0, y_row1) = y_plane[y0_base..y1_base + bw].split_at_mut(stride_w);
+        convert_rgba_pair_scalar(
+            &rgba[r0_base..r0_base + bw * 4],
+            &rgba[r1_base..r1_base + bw * 4],
+            &mut y_row0[..bw],
+            &mut y_row1[..bw],
+            &mut u_plane[uv_base..uv_base + bw / 2],
+            &mut v_plane[uv_base..uv_base + bw / 2],
+        );
+    }
+}
+
+/// Owned native OpenH264 `ISVCEncoder` configured at init time via `InitializeExt`.
+struct RawEncoder {
+    api: OpenH264API,
+    ptr: *mut ISVCEncoder,
+    initialized: bool,
+}
+
+// SAFETY: `RawEncoder` exclusively owns its single-threaded `ISVCEncoder`
+// instance and never exposes shared aliases across threads.
+unsafe impl Send for RawEncoder {}
+
+impl Drop for RawEncoder {
+    fn drop(&mut self) {
+        if !self.ptr.is_null() {
+            // SAFETY: `ptr` was created by `WelsCreateSVCEncoder` and is destroyed once here.
+            unsafe {
+                if self.initialized
+                    && !(*self.ptr).is_null()
+                    && let Some(uninit) = (**self.ptr).Uninitialize
+                {
+                    uninit(self.ptr);
+                }
+                self.api.WelsDestroySVCEncoder(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+impl RawEncoder {
+    fn new(width: u16, height: u16, timing: VideoTiming, bitrate: u32) -> Result<Self> {
+        let api = OpenH264API::from_source();
+        let mut ptr: *mut ISVCEncoder = std::ptr::null_mut();
+        // SAFETY: `WelsCreateSVCEncoder` writes a valid `ISVCEncoder` pointer on status 0.
+        let create_status = unsafe { api.WelsCreateSVCEncoder(&raw mut ptr) };
+        ensure!(
+            create_status == 0 && !ptr.is_null(),
+            "Create software OpenH264 encoder failed (status {create_status})"
+        );
+        let mut raw = Self {
+            api,
+            ptr,
+            initialized: false,
+        };
+        // SAFETY: `raw.ptr` is non-null and valid until `Drop`.
+        unsafe {
+            ensure!(
+                !(*raw.ptr).is_null(),
+                "OpenH264 encoder returned null vtable pointer"
+            );
+            let vtbl = **raw.ptr;
+            let mut trace = WELS_LOG_QUIET;
+            let set_opt = vtbl
+                .SetOption
+                .context("OpenH264 missing SetOption vtable entry")?;
+            let _ = set_opt(raw.ptr, ENCODER_OPTION_TRACE_LEVEL, (&raw mut trace).cast());
+
+            let get_defaults = vtbl
+                .GetDefaultParams
+                .context("OpenH264 missing GetDefaultParams vtable entry")?;
+            let mut param: SEncParamExt = std::mem::zeroed();
+            let status = get_defaults(raw.ptr, &raw mut param);
+            ensure!(status == 0, "OpenH264 GetDefaultParams failed ({status})");
+
+            param.iUsageType = CAMERA_VIDEO_REAL_TIME;
+            param.iPicWidth = i32::from(width);
+            param.iPicHeight = i32::from(height);
+            param.iTargetBitrate = bitrate as i32;
+            param.iMaxBitrate = UNSPECIFIED_BIT_RATE as i32;
+            param.fMaxFrameRate = timing.fps as f32;
+            param.iRCMode = RC_BITRATE_MODE;
+            param.iComplexityMode = LOW_COMPLEXITY;
+            param.bEnableAdaptiveQuant = false;
+            param.bEnableBackgroundDetection = false;
+            param.bEnableSceneChangeDetect = false;
+            param.bEnableDenoise = false;
+            param.bEnableFrameSkip = false;
+            param.bEnableLongTermReference = false;
+            param.uiIntraPeriod = timing.intra_period;
+            param.iNumRefFrame = 1;
+            param.eSpsPpsIdStrategy = CONSTANT_ID;
+            // Disabling the in-loop deblocking filter at init time avoids blurring
+            // sharp desktop edges and cuts both software encode and decode CPU.
+            param.iLoopFilterDisableIdc = DEBLOCKING_IDC_1;
+            param.iMultipleThreadIdc = 1;
+            param.iMinQp = MIN_QP;
+            param.iMaxQp = MAX_QP;
+            param.iEntropyCodingModeFlag = 0;
+            param.iSpatialLayerNum = 1;
+            param.sSpatialLayers[0].iVideoWidth = i32::from(width);
+            param.sSpatialLayers[0].iVideoHeight = i32::from(height);
+            param.sSpatialLayers[0].fFrameRate = timing.fps as f32;
+            param.sSpatialLayers[0].iSpatialBitrate = bitrate as i32;
+            param.sSpatialLayers[0].iMaxSpatialBitrate = bitrate as i32;
+            param.sSpatialLayers[0].uiProfileIdc = PRO_BASELINE;
+            param.sSpatialLayers[0].sSliceArgument.uiSliceMode = SM_SINGLE_SLICE;
+            // Signal limited-range BT.601 to match our RGBA->I420 conversion.
+            param.sSpatialLayers[0].bVideoSignalTypePresent = true;
+            param.sSpatialLayers[0].uiVideoFormat = 5;
+            param.sSpatialLayers[0].bFullRange = false;
+            param.sSpatialLayers[0].bColorDescriptionPresent = true;
+            param.sSpatialLayers[0].uiColorPrimaries = 6;
+            param.sSpatialLayers[0].uiTransferCharacteristics = 6;
+            param.sSpatialLayers[0].uiColorMatrix = 6;
+
+            let init_ext = vtbl
+                .InitializeExt
+                .context("OpenH264 missing InitializeExt vtable entry")?;
+            let status = init_ext(raw.ptr, &raw const param);
+            ensure!(status == 0, "OpenH264 InitializeExt failed ({status})");
+            raw.initialized = true;
+
+            let mut format = videoFormatI420;
+            let status = set_opt(raw.ptr, ENCODER_OPTION_DATAFORMAT, (&raw mut format).cast());
+            ensure!(
+                status == 0,
+                "OpenH264 ENCODER_OPTION_DATAFORMAT failed ({status})"
+            );
+        }
+        Ok(raw)
+    }
+
+    fn set_bitrate(&mut self, target: u32, applied: u32) -> Result<()> {
+        // OpenH264's `WelsEncoderApplyBitRate` rescales spatial layer bitrates
+        // through `f32`, which can round integers above 2^24 upward by 1-2 bps.
+        // Ensuring the max bitrate ceiling covers that `f32` representation
+        // prevents `WelsBitRateVerification` from rejecting valid targets up to
+        // 50 Mbit/s.
+        let max_target = target.max((target as f32) as u32);
+        let order = if target < applied {
+            [
+                (ENCODER_OPTION_BITRATE, target as i32),
+                (ENCODER_OPTION_MAX_BITRATE, max_target as i32),
+            ]
+        } else {
+            [
+                (ENCODER_OPTION_MAX_BITRATE, max_target as i32),
+                (ENCODER_OPTION_BITRATE, target as i32),
+            ]
+        };
+        // SAFETY: the encoder is initialized and both options take one `SBitrateInfo`.
+        // Update both layer 0 (which controls `iMaxSpatialBitrate`) and `SPATIAL_LAYER_ALL`.
+        unsafe {
+            let set_opt = (**self.ptr)
+                .SetOption
+                .context("OpenH264 missing SetOption vtable entry")?;
+            for layer in [SPATIAL_LAYER_0, SPATIAL_LAYER_ALL] {
+                for (option, value) in order {
+                    let mut info = SBitrateInfo {
+                        iLayer: layer,
+                        iBitrate: value,
+                    };
+                    let status = set_opt(self.ptr, option, (&raw mut info).cast());
+                    ensure!(status == 0, "OpenH264 rejected bitrate {target}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn force_intra_frame(&mut self) -> Result<()> {
+        // SAFETY: the encoder is initialized.
+        unsafe {
+            let force = (**self.ptr)
+                .ForceIntraFrame
+                .context("OpenH264 missing ForceIntraFrame vtable entry")?;
+            let status = force(self.ptr, true);
+            ensure!(status == 0, "OpenH264 ForceIntraFrame failed ({status})");
+        }
+        Ok(())
+    }
+
+    fn encode_frame(&mut self, yuv: &YuvPlanes, timestamp_ms: i64) -> Result<SFrameBSInfo> {
+        let mut bs: SFrameBSInfo = unsafe { std::mem::zeroed() };
+        let src = SSourcePicture {
+            iColorFormat: videoFormatI420,
+            iStride: [
+                yuv.width as i32,
+                (yuv.width / 2) as i32,
+                (yuv.width / 2) as i32,
+                0,
+            ],
+            pData: [
+                yuv.y.as_ptr().cast_mut(),
+                yuv.u.as_ptr().cast_mut(),
+                yuv.v.as_ptr().cast_mut(),
+                std::ptr::null_mut(),
+            ],
+            iPicWidth: yuv.width as i32,
+            iPicHeight: yuv.height as i32,
+            uiTimeStamp: timestamp_ms,
+            bPsnrY: false,
+            bPsnrU: false,
+            bPsnrV: false,
+        };
+        // SAFETY: `self.ptr` is initialized and `src` points into live `yuv` planes
+        // for the full duration of `EncodeFrame`.
+        let status = unsafe {
+            let encode = (**self.ptr)
+                .EncodeFrame
+                .context("OpenH264 missing EncodeFrame vtable entry")?;
+            encode(self.ptr, &raw const src, &raw mut bs)
+        };
+        ensure!(status == 0, "Encode H.264 frame failed ({status})");
+        Ok(bs)
+    }
+}
 
 pub const HEADER_LEN: usize = 24;
 pub const MAX_PAYLOAD: usize = 16 * 1024 * 1024;
@@ -49,8 +673,8 @@ impl VideoTiming {
 
 /// One-thread software encoder; run encode on a bounded blocking worker.
 pub struct VideoEncoder {
-    encoder: Encoder,
-    yuv: YUVBuffer,
+    encoder: RawEncoder,
+    yuv: YuvPlanes,
     width: u16,
     height: u16,
     timing: VideoTiming,
@@ -87,27 +711,6 @@ pub fn encodable(width: u16, height: u16) -> bool {
     validate_dimensions(width, height).is_ok()
 }
 
-fn native_encoder(timing: VideoTiming, bitrate: u32) -> Result<Encoder> {
-    let config = EncoderConfig::new()
-        .bitrate(BitRate::from_bps(bitrate))
-        .max_frame_rate(FrameRate::from_hz(timing.fps as f32))
-        .rate_control_mode(RateControlMode::Bitrate)
-        .usage_type(UsageType::ScreenContentRealTime)
-        .profile(Profile::Baseline)
-        .complexity(Complexity::Low)
-        .adaptive_quantization(false)
-        .background_detection(false)
-        .num_threads(1)
-        .skip_frames(false)
-        .long_term_reference(false)
-        .intra_frame_period(IntraFramePeriod::from_num_frames(timing.intra_period))
-        .sps_pps_strategy(SpsPpsStrategy::ConstantId)
-        // The crate's RGB conversion uses BT.601 limited-range coefficients.
-        .vui(VuiConfig::bt601());
-    Encoder::with_api_config(OpenH264API::from_source(), config)
-        .context("Create software OpenH264 encoder")
-}
-
 impl VideoEncoder {
     pub fn new(width: u16, height: u16, fps: u32) -> Result<Self> {
         Self::with_bitrate(width, height, fps, DEFAULT_BITRATE_BPS)
@@ -130,8 +733,8 @@ impl VideoEncoder {
             "H.264 bitrate outside 1 kbit/s..50 Mbit/s"
         );
         Ok(Self {
-            encoder: native_encoder(timing, bitrate)?,
-            yuv: YUVBuffer::new(usize::from(width), usize::from(height)),
+            encoder: RawEncoder::new(width, height, timing, bitrate)?,
+            yuv: YuvPlanes::new(usize::from(width), usize::from(height)),
             width,
             height,
             timing,
@@ -162,17 +765,7 @@ impl VideoEncoder {
         if self.encoded_frames == 0 || self.target.abs_diff(self.applied) <= self.applied / 10 {
             return Ok(());
         }
-        let mut info = SBitrateInfo {
-            iLayer: SPATIAL_LAYER_ALL,
-            iBitrate: self.target as i32,
-        };
-        // SAFETY: the encoder is initialised, and this option reads one SBitrateInfo.
-        let status = unsafe {
-            self.encoder
-                .raw_api()
-                .set_option(ENCODER_OPTION_BITRATE, (&raw mut info).cast())
-        };
-        ensure!(status == 0, "OpenH264 rejected bitrate {}", self.target);
+        self.encoder.set_bitrate(self.target, self.applied)?;
         self.applied = self.target;
         Ok(())
     }
@@ -182,8 +775,24 @@ impl VideoEncoder {
         self.force_keyframe = true;
     }
 
+    /// Whether a frame has already been staged in the encoder's planar YUV buffer.
+    pub fn has_prepared(&self) -> bool {
+        self.yuv.initialized
+    }
+
     /// Encode one complete RGBA frame; size changes rebuild native state.
     pub fn encode(&mut self, frame: &Frame, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
+        let full = Damage::full(frame.width, frame.height);
+        self.encode_damaged(frame, &full, sequence, input_id)
+    }
+
+    /// Stage one RGBA frame into the encoder's planar I420 store, updating only
+    /// the tiles marked in `damage`.
+    ///
+    /// Callers may drop `frame` immediately after this returns and before
+    /// calling [`Self::encode_prepared`] so upstream buffers can be reused while
+    /// OpenH264 encodes.
+    pub fn prepare_damaged(&mut self, frame: &Frame, damage: &Damage) -> Result<()> {
         ensure!(frame.is_valid(), "Invalid RGBA frame length or dimensions");
         validate_dimensions(frame.width, frame.height)?;
         if (frame.width, frame.height) != (self.width, self.height) {
@@ -195,63 +804,92 @@ impl VideoEncoder {
             *self = Self::with_timing(frame.width, frame.height, self.bitrate, self.timing)?;
             self.target = target;
         }
+        let effective_damage = if self.encoded_frames == 0 {
+            Damage::full(frame.width, frame.height)
+        } else {
+            *damage
+        };
+        self.yuv.update_rgba8(&frame.pixels, &effective_damage);
+        Ok(())
+    }
+
+    /// Encode the frame currently staged by [`Self::prepare_damaged`].
+    pub fn encode_prepared(&mut self, sequence: u32, input_id: u32) -> Result<Vec<u8>> {
+        ensure!(self.yuv.initialized, "No prepared frame to encode");
         self.apply_bitrate()?;
-        self.yuv.read_rgba8(RgbaSliceU8::new(
-            &frame.pixels,
-            (usize::from(frame.width), usize::from(frame.height)),
-        ));
         if self.force_keyframe && self.encoded_frames > 0 {
-            self.encoder.force_intra_frame();
+            self.encoder.force_intra_frame()?;
         }
-        let timestamp = Timestamp::from_millis(
-            self.encoded_frames.saturating_mul(1000) / u64::from(self.timing.fps),
-        );
-        let encoded = self
-            .encoder
-            .encode_at(&self.yuv, timestamp)
-            .context("Encode H.264 frame")?;
-        let keyframe = encoded.frame_type() == FrameType::IDR;
+        let timestamp_ms =
+            (self.encoded_frames.saturating_mul(1000) / u64::from(self.timing.fps)) as i64;
+        let bs = self.encoder.encode_frame(&self.yuv, timestamp_ms)?;
         ensure!(
-            encoded.frame_type() != FrameType::Skip,
+            bs.eFrameType != videoFrameTypeSkip,
             "Unexpected skipped encoder output"
         );
+        let keyframe = bs.eFrameType == videoFrameTypeIDR;
         ensure!(
             !self.force_keyframe || keyframe,
             "Encoder did not provide the requested IDR frame"
         );
-        let mut payload = encoded.to_vec();
-        ensure!(!payload.is_empty(), "Encoder unexpectedly skipped a frame");
+
+        let layer_count = (bs.iLayerNum.max(0) as usize).min(bs.sLayerInfo.len());
+        let mut raw_len = 0usize;
         let mut has_sps = false;
         let mut has_pps = false;
-        for nal in nal_units(&payload) {
-            match nal_type(nal) {
-                Some(7) => {
-                    self.sps = nal.to_vec();
-                    has_sps = true;
+        for layer in &bs.sLayerInfo[..layer_count] {
+            let nal_count = layer.iNalCount.max(0) as usize;
+            if nal_count == 0 || layer.pBsBuf.is_null() || layer.pNalLengthInByte.is_null() {
+                continue;
+            }
+            let mut offset = 0usize;
+            for nal_index in 0..nal_count {
+                // SAFETY: OpenH264 populates `pNalLengthInByte[..iNalCount]` and
+                // contiguous NAL bytes in `pBsBuf` valid until the next encode call.
+                let nal = unsafe {
+                    let len = (*layer.pNalLengthInByte.add(nal_index)).max(0) as usize;
+                    let slice = std::slice::from_raw_parts(layer.pBsBuf.add(offset), len);
+                    offset += len;
+                    slice
+                };
+                raw_len += nal.len();
+                match nal_type(nal) {
+                    Some(7) => {
+                        if self.sps.as_slice() != nal {
+                            self.sps.clear();
+                            self.sps.extend_from_slice(nal);
+                        }
+                        has_sps = true;
+                    }
+                    Some(8) => {
+                        if self.pps.as_slice() != nal {
+                            self.pps.clear();
+                            self.pps.extend_from_slice(nal);
+                        }
+                        has_pps = true;
+                    }
+                    _ => {}
                 }
-                Some(8) => {
-                    self.pps = nal.to_vec();
-                    has_pps = true;
-                }
-                _ => {}
             }
         }
-        if keyframe && (!has_sps || !has_pps) {
+        ensure!(raw_len > 0, "Encoder unexpectedly skipped a frame");
+        let prepend_params = keyframe && (!has_sps || !has_pps);
+        if prepend_params {
             ensure!(
                 !self.sps.is_empty() && !self.pps.is_empty(),
                 "IDR lacks SPS/PPS"
             );
-            let mut complete = Vec::with_capacity(self.sps.len() + self.pps.len() + payload.len());
-            complete.extend_from_slice(&self.sps);
-            complete.extend_from_slice(&self.pps);
-            complete.extend_from_slice(&payload);
-            payload = complete;
         }
+        let payload_len = if prepend_params {
+            self.sps.len() + self.pps.len() + raw_len
+        } else {
+            raw_len
+        };
         ensure!(
-            payload.len() <= MAX_PAYLOAD,
+            payload_len <= MAX_PAYLOAD,
             "Encoded access unit exceeds packet limit"
         );
-        let mut packet = Vec::with_capacity(HEADER_LEN + payload.len());
+        let mut packet = Vec::with_capacity(HEADER_LEN + payload_len);
         packet.extend_from_slice(b"GLV1");
         packet.extend_from_slice(&sequence.to_le_bytes());
         packet.extend_from_slice(&input_id.to_le_bytes());
@@ -259,11 +897,42 @@ impl VideoEncoder {
         packet.extend_from_slice(&self.height.to_le_bytes());
         packet.extend_from_slice(&0_u16.to_le_bytes());
         packet.extend_from_slice(&u16::from(keyframe).to_le_bytes());
-        packet.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        packet.extend_from_slice(&payload);
+        packet.extend_from_slice(&(payload_len as u32).to_le_bytes());
+        if prepend_params {
+            packet.extend_from_slice(&self.sps);
+            packet.extend_from_slice(&self.pps);
+        }
+        for layer in &bs.sLayerInfo[..layer_count] {
+            let nal_count = layer.iNalCount.max(0) as usize;
+            if nal_count == 0 || layer.pBsBuf.is_null() || layer.pNalLengthInByte.is_null() {
+                continue;
+            }
+            let mut layer_len = 0usize;
+            for nal_index in 0..nal_count {
+                // SAFETY: same as above; all NALs of a layer are contiguous in `pBsBuf`.
+                layer_len += unsafe { (*layer.pNalLengthInByte.add(nal_index)).max(0) as usize };
+            }
+            if layer_len > 0 {
+                // SAFETY: `pBsBuf` holds `layer_len` contiguous encoded bytes.
+                let bytes = unsafe { std::slice::from_raw_parts(layer.pBsBuf, layer_len) };
+                packet.extend_from_slice(bytes);
+            }
+        }
         self.encoded_frames += 1;
         self.force_keyframe = false;
         Ok(packet)
+    }
+
+    /// Encode one RGBA frame, updating only the tiles marked in `damage`.
+    pub fn encode_damaged(
+        &mut self,
+        frame: &Frame,
+        damage: &Damage,
+        sequence: u32,
+        input_id: u32,
+    ) -> Result<Vec<u8>> {
+        self.prepare_damaged(frame, damage)?;
+        self.encode_prepared(sequence, input_id)
     }
 }
 

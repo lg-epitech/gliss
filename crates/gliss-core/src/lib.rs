@@ -27,7 +27,7 @@ pub fn printable(text: &str, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::printable;
+    use super::{Damage, printable};
 
     #[test]
     fn printable_text_stays_on_its_line_and_within_its_limit() {
@@ -45,6 +45,57 @@ mod tests {
         assert_eq!(printable("abcdefg", 6), "abcdef...");
         assert_eq!(printable(&"\n".repeat(1000), 4), r"\n\n\n\n...");
         assert_eq!(printable("", 0), "");
+    }
+
+    #[test]
+    fn damage_tracks_multi_word_spans_clamps_bounds_and_handles_oversize_fallback() {
+        // 3840x2160 = 60x34 = 2040 tiles, spanning multiple 64-bit bitset words.
+        let mut d = Damage::empty(3840, 2160);
+        assert!(!d.is_full());
+        // Zero and out-of-bounds rectangles leave damage empty.
+        d.mark_rect(100, 100, 0, 50);
+        d.mark_rect(100, 100, 50, 0);
+        d.mark_rect(3840, 0, 10, 10);
+        d.mark_rect(0, 2160, 10, 10);
+        let mut spans = Vec::new();
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert!(spans.is_empty());
+
+        // Mark disjoint rectangles across 64-bit word boundaries and right/bottom edges.
+        d.mark_rect(60, 0, 80, 10); // tiles (0..=2, 0) -> x=0..192, y=0..64
+        d.mark_rect(3800, 2100, 100, 100); // clamped to (3776..3840, 2048..2160)
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(
+            spans,
+            vec![(0, 0, 192, 64), (3776, 2048, 64, 64), (3776, 2112, 64, 48)]
+        );
+
+        // Union with same dimensions merges spans; mismatched dimensions falls back to full.
+        let mut other = Damage::empty(3840, 2160);
+        other.mark_rect(192, 0, 10, 10); // adjacent tile (3, 0) merges into x=0..256
+        d.union_with(&other);
+        spans.clear();
+        d.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans[0], (0, 0, 256, 64));
+
+        d.union_with(&Damage::empty(1920, 1080));
+        assert!(d.is_full());
+        assert_eq!(d.dimensions(), (1920, 1080));
+
+        // Portrait 2160x3840 fits inside DAMAGE_MAX_TILES cleanly.
+        let mut portrait = Damage::empty(2160, 3840);
+        assert!(!portrait.is_full());
+        portrait.mark_rect(2100, 3800, 60, 40);
+        spans.clear();
+        portrait.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans, vec![(2048, 3776, 112, 64)]);
+
+        // Oversize (> DAMAGE_MAX_TILES) falls back to full damage safely.
+        let oversize = Damage::empty(4096, 4096);
+        assert!(oversize.is_full());
+        spans.clear();
+        oversize.for_each_span(|x, y, w, h| spans.push((x, y, w, h)));
+        assert_eq!(spans, vec![(0, 0, 4096, 4096)]);
     }
 }
 
@@ -75,6 +126,152 @@ impl Frame {
     pub fn is_valid(&self) -> bool {
         let count = usize::from(self.width) * usize::from(self.height);
         count > 0 && count <= MAX_PIXELS && self.pixels.len() == count * 4
+    }
+}
+
+/// Tile edge length in pixels for [`Damage`] tracking.
+///
+/// 64 is a multiple of both YUV420 2x2 chroma blocks and 16-pixel AVX2 rows,
+/// and 60x34 = 2040 tiles fit in 32 u64 words (256 bytes) for both 3840x2160
+/// and 2160x3840 displays with zero heap allocation.
+pub const DAMAGE_TILE: usize = 64;
+const DAMAGE_WORDS: usize = 32;
+const DAMAGE_MAX_TILES: usize = DAMAGE_WORDS * 64;
+
+/// Compact tile-level dirty region for a framebuffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Damage {
+    width: u16,
+    height: u16,
+    tiles_x: u16,
+    tiles_y: u16,
+    full: bool,
+    bits: [u64; DAMAGE_WORDS],
+}
+
+impl Damage {
+    pub fn empty(width: u16, height: u16) -> Self {
+        let tiles_x = width.div_ceil(DAMAGE_TILE as u16);
+        let tiles_y = height.div_ceil(DAMAGE_TILE as u16);
+        let full = usize::from(tiles_x) * usize::from(tiles_y) > DAMAGE_MAX_TILES;
+        Self {
+            width,
+            height,
+            tiles_x,
+            tiles_y,
+            full,
+            bits: [0; DAMAGE_WORDS],
+        }
+    }
+
+    pub fn full(width: u16, height: u16) -> Self {
+        let mut damage = Self::empty(width, height);
+        damage.full = true;
+        damage
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    pub fn dimensions(&self) -> (u16, u16) {
+        (self.width, self.height)
+    }
+
+    pub fn mark_rect(&mut self, x: u16, y: u16, width: u16, height: u16) {
+        if self.full || width == 0 || height == 0 || x >= self.width || y >= self.height {
+            return;
+        }
+        let total = usize::from(self.tiles_x) * usize::from(self.tiles_y);
+        if total == 0 || total > DAMAGE_MAX_TILES {
+            self.full = true;
+            return;
+        }
+        let x0 = usize::from(x) / DAMAGE_TILE;
+        let y0 = usize::from(y) / DAMAGE_TILE;
+        let x1 = (usize::from(x) + usize::from(width) - 1) / DAMAGE_TILE;
+        let y1 = (usize::from(y) + usize::from(height) - 1) / DAMAGE_TILE;
+        let max_tx = usize::from(self.tiles_x).saturating_sub(1);
+        let max_ty = usize::from(self.tiles_y).saturating_sub(1);
+        let x1 = x1.min(max_tx);
+        let y1 = y1.min(max_ty);
+        if x0 > x1 || y0 > y1 {
+            return;
+        }
+        let stride = usize::from(self.tiles_x);
+        for ty in y0..=y1 {
+            let row_base = ty * stride;
+            let mut idx = row_base + x0;
+            let end = row_base + x1 + 1;
+            while idx < end {
+                let word = idx / 64;
+                let bit = idx % 64;
+                let count = (end - idx).min(64 - bit);
+                let mask = if count == 64 {
+                    u64::MAX
+                } else {
+                    ((1u64 << count) - 1) << bit
+                };
+                self.bits[word] |= mask;
+                idx += count;
+            }
+        }
+    }
+
+    pub fn union_with(&mut self, other: &Self) {
+        if (self.width, self.height) != (other.width, other.height) {
+            *self = Self::full(other.width, other.height);
+            return;
+        }
+        if self.full || other.full {
+            self.full = true;
+            return;
+        }
+        for (dst, src) in self.bits.iter_mut().zip(other.bits.iter()) {
+            *dst |= *src;
+        }
+    }
+
+    /// Calls `f(x, y, width, height)` for disjoint pixel spans covering every
+    /// dirty tile. All coordinates are tile-aligned on the start and clamped
+    /// to `(self.width, self.height)` on the end.
+    pub fn for_each_span(&self, mut f: impl FnMut(usize, usize, usize, usize)) {
+        let w = usize::from(self.width);
+        let h = usize::from(self.height);
+        if w == 0 || h == 0 {
+            return;
+        }
+        if self.full || usize::from(self.tiles_x) * usize::from(self.tiles_y) > DAMAGE_MAX_TILES {
+            f(0, 0, w, h);
+            return;
+        }
+        let tx_count = usize::from(self.tiles_x);
+        let ty_count = usize::from(self.tiles_y);
+        for ty in 0..ty_count {
+            let y0 = ty * DAMAGE_TILE;
+            let y1 = (y0 + DAMAGE_TILE).min(h);
+            let row_base = ty * tx_count;
+            let mut tx = 0;
+            while tx < tx_count {
+                let idx = row_base + tx;
+                if (self.bits[idx / 64] >> (idx % 64)) & 1 == 0 {
+                    tx += 1;
+                    continue;
+                }
+                let start_tx = tx;
+                tx += 1;
+                while tx < tx_count {
+                    let next_idx = row_base + tx;
+                    if (self.bits[next_idx / 64] >> (next_idx % 64)) & 1 == 0 {
+                        break;
+                    }
+                    tx += 1;
+                }
+                let x0 = start_tx * DAMAGE_TILE;
+                let x1 = (tx * DAMAGE_TILE).min(w);
+                f(x0, y0, x1 - x0, y1 - y0);
+            }
+        }
     }
 }
 

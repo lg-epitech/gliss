@@ -310,3 +310,134 @@ fn a_lower_bitrate_makes_the_frames_that_follow_smaller() {
     // More than the encoder was made for is no change.
     assert_eq!(bytes_after(Some(50_000_000)), kept);
 }
+
+#[test]
+fn bitrate_can_be_lowered_and_raised_without_error() {
+    let mut encoder = VideoEncoder::with_bitrate(128, 96, 30, 4_000_000).unwrap();
+    let frame = scene(128, 96, 0);
+    assert!(parse_packet(&encoder.encode(&frame, 1, 0).unwrap()).is_ok());
+    encoder.set_bitrate(400_000);
+    assert!(parse_packet(&encoder.encode(&scene(128, 96, 2), 2, 0).unwrap()).is_ok());
+    encoder.set_bitrate(4_000_000);
+    assert!(parse_packet(&encoder.encode(&scene(128, 96, 4), 3, 0).unwrap()).is_ok());
+}
+
+#[test]
+fn yuv_planes_match_openh264_yuv_buffer_bit_for_bit_across_full_and_partial_damage() {
+    use openh264::formats::{RgbaSliceU8, YUVBuffer};
+
+    // Include a non-16-aligned width (142) and multi-tile height (260) to cover SIMD + scalar tails.
+    let (w, h) = (142u16, 260u16);
+    let mut frame = Frame::new(w, h).unwrap();
+    let mut state = 0x1234_5678_u32;
+    for px in frame.pixels.as_chunks_mut::<4>().0 {
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        px[0] = (state >> 24) as u8;
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        px[1] = (state >> 24) as u8;
+        state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+        px[2] = (state >> 24) as u8;
+        px[3] = 255;
+    }
+
+    let mut reference = YUVBuffer::new(usize::from(w), usize::from(h));
+    reference.read_rgba8(RgbaSliceU8::new(
+        &frame.pixels,
+        (usize::from(w), usize::from(h)),
+    ));
+
+    let mut cache = YuvPlanes::new(usize::from(w), usize::from(h));
+    cache.update_rgba8(&frame.pixels, &Damage::full(w, h));
+    assert_eq!(cache.y(), reference.y(), "full Y mismatch");
+    assert_eq!(cache.u(), reference.u(), "full U mismatch");
+    assert_eq!(cache.v(), reference.v(), "full V mismatch");
+
+    // Mutate a sparse band (<50% of rows) crossing a tile boundary.
+    for y in 60..110 {
+        for x in 10..138 {
+            let off = (y * usize::from(w) + x) * 4;
+            frame.pixels[off] = ((x * 3 + y) & 0xff) as u8;
+            frame.pixels[off + 1] = ((x + y * 5) & 0xff) as u8;
+            frame.pixels[off + 2] = ((x ^ y) & 0xff) as u8;
+        }
+    }
+    let mut partial = Damage::empty(w, h);
+    partial.mark_rect(10, 60, 128, 50);
+    cache.update_rgba8(&frame.pixels, &partial);
+    reference.read_rgba8(RgbaSliceU8::new(
+        &frame.pixels,
+        (usize::from(w), usize::from(h)),
+    ));
+    assert_eq!(cache.y(), reference.y(), "partial Y mismatch");
+    assert_eq!(cache.u(), reference.u(), "partial U mismatch");
+    assert_eq!(cache.v(), reference.v(), "partial V mismatch");
+
+    // Mutate a second sparse band including non-16-aligned right edge.
+    for y in 200..250 {
+        for x in 0..142 {
+            let off = (y * usize::from(w) + x) * 4;
+            frame.pixels[off] = ((x * 7) & 0xff) as u8;
+            frame.pixels[off + 1] = ((y * 3) & 0xff) as u8;
+            frame.pixels[off + 2] = 180;
+        }
+    }
+    let mut partial2 = Damage::empty(w, h);
+    partial2.mark_rect(0, 200, 142, 50);
+    cache.update_rgba8(&frame.pixels, &partial2);
+    reference.read_rgba8(RgbaSliceU8::new(
+        &frame.pixels,
+        (usize::from(w), usize::from(h)),
+    ));
+    assert_eq!(cache.y(), reference.y(), "second partial Y mismatch");
+    assert_eq!(cache.u(), reference.u(), "second partial U mismatch");
+    assert_eq!(cache.v(), reference.v(), "second partial V mismatch");
+}
+
+#[test]
+fn dynamic_bitrates_above_24_bit_float_precision_are_accepted() {
+    let mut encoder = VideoEncoder::with_bitrate(128, 96, 30, 50_000_000).unwrap();
+    let frame = scene(128, 96, 0);
+    assert!(parse_packet(&encoder.encode(&frame, 1, 0).unwrap()).is_ok());
+    // These bitrates round upward when OpenH264 rescales layer bitrates via f32.
+    for (seq, target) in [
+        (2u32, 16_777_219),
+        (3, 33_554_435),
+        (4, 49_999_999),
+        (5, 20_000_003),
+        (6, 400_000),
+        (7, 33_554_435),
+    ] {
+        encoder.set_bitrate(target);
+        let packet = encoder
+            .encode(&scene(128, 96, seq as usize), seq, 0)
+            .unwrap();
+        assert!(parse_packet(&packet).is_ok(), "failed at target={target}");
+    }
+}
+
+#[test]
+fn prepared_frame_can_be_reencoded_as_idr_after_reset_and_rejects_unprepared() {
+    let mut encoder = VideoEncoder::new(96, 64, 30).unwrap();
+    assert!(!encoder.has_prepared());
+    assert!(encoder.encode_prepared(1, 0).is_err());
+
+    let frame = scene(96, 64, 0);
+    encoder
+        .prepare_damaged(&frame, &Damage::full(96, 64))
+        .unwrap();
+    assert!(encoder.has_prepared());
+    let first = encoder.encode_prepared(1, 10).unwrap();
+    let parsed_first = parse_packet(&first).unwrap();
+    assert!(parsed_first.keyframe);
+    assert_eq!(parsed_first.input_id, 10);
+
+    let second = encoder.encode_prepared(2, 10).unwrap();
+    assert!(!parse_packet(&second).unwrap().keyframe);
+
+    encoder.reset();
+    let resync = encoder.encode_prepared(3, 10).unwrap();
+    let parsed_resync = parse_packet(&resync).unwrap();
+    assert!(parsed_resync.keyframe);
+    assert_eq!(parsed_resync.sequence, 3);
+    assert_eq!(parsed_resync.input_id, 10);
+}

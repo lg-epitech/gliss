@@ -250,3 +250,287 @@ async fn a_change_of_size_does_not_renew_the_pixel_budget_of_an_update() {
     rows(&mut shrunk, 100, 1);
     assert!(over_budget(updated(4, &shrunk).await));
 }
+
+#[tokio::test]
+async fn pooled_frames_reuse_buffers_and_sync_dirty_tiles_across_updates_and_resizes() {
+    let (w, h) = (130u16, 130u16);
+    let mut wire = Vec::new();
+    let push_raw = |wire: &mut Vec<u8>, x: u16, y: u16, rw: u16, rh: u16, rgb: [u8; 3]| {
+        wire.extend_from_slice(&[0, 0, 0, 1]);
+        rectangle(wire, x, y, rw, rh, 0);
+        for _ in 0..usize::from(rw) * usize::from(rh) {
+            wire.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 0]);
+        }
+    };
+    // Update 1: fill top-left 64x64 with [10, 20, 30]
+    push_raw(&mut wire, 0, 0, 64, 64, [10, 20, 30]);
+    // Update 2: fill bottom-right 20x20 with [40, 50, 60]
+    push_raw(&mut wire, 100, 100, 20, 20, [40, 50, 60]);
+    // Update 3: overwrite top-left 10x10 with [70, 80, 90] (buffer from update 1 recycled!)
+    push_raw(&mut wire, 0, 0, 10, 10, [70, 80, 90]);
+    // Update 4: resize to 80x80 and fill 8x8 with [110, 120, 130]
+    wire.extend_from_slice(&[0, 0, 0, 2]);
+    desktop_size(&mut wire, 80, 80);
+    rectangle(&mut wire, 0, 0, 8, 8, 0);
+    for _ in 0..64 {
+        wire.extend_from_slice(&[110, 120, 130, 0]);
+    }
+
+    let info = ServerInfo {
+        width: w,
+        height: h,
+        name: "pool-test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader, _writer, _) = start_tasks(
+        std::io::Cursor::new(wire),
+        tokio::io::sink(),
+        Frame::new(w, h).unwrap(),
+        info,
+        Layout::Rgbx,
+    );
+
+    let px = |frame: &Frame, x: usize, y: usize| -> [u8; 4] {
+        let o = (y * usize::from(frame.width) + x) * 4;
+        [
+            frame.pixels[o],
+            frame.pixels[o + 1],
+            frame.pixels[o + 2],
+            frame.pixels[o + 3],
+        ]
+    };
+
+    let PooledEvent::Frame(f1) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 1");
+    };
+    assert!(!f1.damage().is_full());
+    assert_eq!(px(&f1, 0, 0), [10, 20, 30, 255]);
+    assert_eq!(px(&f1, 100, 100), [0, 0, 0, 255]);
+    // Drop f1 so its pixel buffer returns to the pool before update 2/3.
+    drop(f1);
+
+    let PooledEvent::Frame(f2) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 2");
+    };
+    assert!(!f2.damage().is_full());
+    assert_eq!(px(&f2, 0, 0), [10, 20, 30, 255]);
+    assert_eq!(px(&f2, 100, 100), [40, 50, 60, 255]);
+    drop(f2);
+
+    let PooledEvent::Frame(f3) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 3");
+    };
+    assert!(!f3.damage().is_full());
+    assert_eq!(px(&f3, 0, 0), [70, 80, 90, 255]);
+    assert_eq!(px(&f3, 20, 20), [10, 20, 30, 255]);
+    assert_eq!(px(&f3, 100, 100), [40, 50, 60, 255]);
+    drop(f3);
+
+    let PooledEvent::Frame(f4) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 4");
+    };
+    assert!(f4.damage().is_full());
+    assert_eq!((f4.width, f4.height), (80, 80));
+    assert_eq!(px(&f4, 0, 0), [110, 120, 130, 255]);
+    assert_eq!(px(&f4, 20, 20), [0, 0, 0, 255]);
+}
+
+#[test]
+fn bgrx_to_rgba_matches_scalar_across_aligned_and_tail_lengths() {
+    for pixels in [0usize, 1, 7, 8, 9, 15, 16, 17, 63, 64, 1920] {
+        let mut actual = vec![0u8; pixels * 4];
+        let mut state = 0x9e37_79b9_u32;
+        for byte in &mut actual {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            *byte = (state >> 24) as u8;
+        }
+        let mut expected = actual.clone();
+        Layout::Bgrx.to_rgba(&mut actual);
+        bgrx_to_rgba_scalar(&mut expected);
+        assert_eq!(actual, expected, "mismatch for {pixels} pixels");
+    }
+}
+
+#[tokio::test]
+async fn fused_pixel_reader_matches_in_place_conversion_across_chunk_sizes() {
+    for layout in [Layout::Bgrx, Layout::Rgbx] {
+        let mut raw = vec![0u8; 73 * 4];
+        let mut state = 0x1357_9bdf_u32;
+        for byte in &mut raw {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            *byte = (state >> 24) as u8;
+        }
+        let mut expected = raw.clone();
+        layout.to_rgba(&mut expected);
+        for chunk in [1usize, 3, 5, 17, 32, 64, 292] {
+            let mut reader = BufReader::with_capacity(chunk, std::io::Cursor::new(raw.clone()));
+            let mut actual = vec![0u8; raw.len()];
+            read_pixels_converted(&mut reader, &mut actual, layout)
+                .await
+                .unwrap();
+            assert_eq!(actual, expected, "layout={layout:?} chunk={chunk}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn pooled_frame_reuses_buffer_in_place_when_unshared_and_detaches_when_held() {
+    let mut wire = Vec::new();
+    // Update 1: 4x4 rect at (0, 0) filled with [10, 20, 30, 255].
+    wire.extend_from_slice(&[0, 0, 0, 1]);
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&0i32.to_be_bytes());
+    for _ in 0..16 {
+        wire.extend_from_slice(&[10, 20, 30, 0]);
+    }
+    // Update 2: 4x4 rect at (4, 0) filled with [40, 50, 60, 255].
+    wire.extend_from_slice(&[0, 0, 0, 1]);
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&0i32.to_be_bytes());
+    for _ in 0..16 {
+        wire.extend_from_slice(&[40, 50, 60, 0]);
+    }
+    // Update 3: 4x4 rect at (0, 0) overwritten with [70, 80, 90, 255].
+    wire.extend_from_slice(&[0, 0, 0, 1]);
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&0u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&4u16.to_be_bytes());
+    wire.extend_from_slice(&0i32.to_be_bytes());
+    for _ in 0..16 {
+        wire.extend_from_slice(&[70, 80, 90, 0]);
+    }
+
+    let info = ServerInfo {
+        width: 16,
+        height: 16,
+        name: "test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader, _writer, _) = start_tasks(
+        std::io::Cursor::new(wire),
+        tokio::io::sink(),
+        Frame::new(16, 16).unwrap(),
+        info,
+        Layout::Rgbx,
+    );
+    let PooledEvent::Frame(f1) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 1");
+    };
+    assert_eq!(&f1.pixels[..4], &[10, 20, 30, 255]);
+    // Hold `f1` across update 2: decoder must detach into a separate buffer so
+    // `f1` remains immutable.
+    let PooledEvent::Frame(f2) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected frame 2");
+    };
+    assert!(!Arc::ptr_eq(&f1, &f2));
+    assert_eq!(&f1.pixels[..4], &[10, 20, 30, 255]);
+    assert_eq!(&f1.pixels[16..20], &[0, 0, 0, 255]);
+    assert_eq!(&f2.pixels[..4], &[10, 20, 30, 255]);
+    assert_eq!(&f2.pixels[16..20], &[40, 50, 60, 255]);
+
+    // Drop `f1` and `f2` and verify in-place reuse when unshared.
+    let f2_addr = Arc::as_ptr(&f2) as usize;
+    drop(f1);
+    drop(f2);
+    // Use a duplex pipe so update 3 arrives strictly after `f2` is dropped.
+    let (client, mut peer) = duplex(4096);
+    let (read, write) = tokio::io::split(client);
+    let info2 = ServerInfo {
+        width: 16,
+        height: 16,
+        name: "test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader2, _writer2, _) = start_tasks(
+        read,
+        write,
+        Frame::new(16, 16).unwrap(),
+        info2,
+        Layout::Rgbx,
+    );
+    let mut u1 = vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0];
+    for _ in 0..16 {
+        u1.extend_from_slice(&[1, 2, 3, 0]);
+    }
+    peer.write_all(&u1).await.unwrap();
+    let PooledEvent::Frame(a) = reader2.read_pooled_event().await.unwrap() else {
+        panic!("expected a");
+    };
+    let a_addr = Arc::as_ptr(&a) as usize;
+    assert_eq!(&a.pixels[..4], &[1, 2, 3, 255]);
+    drop(a);
+
+    let mut u2 = vec![0, 0, 0, 1, 0, 4, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0];
+    for _ in 0..16 {
+        u2.extend_from_slice(&[4, 5, 6, 0]);
+    }
+    peer.write_all(&u2).await.unwrap();
+    let PooledEvent::Frame(b) = reader2.read_pooled_event().await.unwrap() else {
+        panic!("expected b");
+    };
+    assert_eq!(Arc::as_ptr(&b) as usize, a_addr);
+    assert_eq!(&b.pixels[..4], &[1, 2, 3, 255]);
+    assert_eq!(&b.pixels[16..20], &[4, 5, 6, 255]);
+    assert_ne!(f2_addr, 0);
+
+    // Holding only a Weak handle must still detach cleanly without panicking.
+    let weak = Arc::downgrade(&b);
+    drop(b);
+    let mut u3 = vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 4, 0, 4, 0, 0, 0, 0];
+    for _ in 0..16 {
+        u3.extend_from_slice(&[9, 8, 7, 0]);
+    }
+    peer.write_all(&u3).await.unwrap();
+    let PooledEvent::Frame(c) = reader2.read_pooled_event().await.unwrap() else {
+        panic!("expected c");
+    };
+    assert_ne!(Arc::as_ptr(&c) as usize, a_addr);
+    assert_eq!(&c.pixels[..4], &[9, 8, 7, 255]);
+    assert_eq!(&c.pixels[16..20], &[4, 5, 6, 255]);
+    assert!(weak.upgrade().is_none());
+}
+
+#[test]
+fn frame_pool_preserves_fresher_generations_and_sync_damage_bounds_history() {
+    let mut pool = FramePool::default();
+    pool.put(vec![1; 16], 10);
+    pool.put(vec![2; 16], 12);
+    pool.put(vec![3; 16], 11);
+    pool.put(vec![4; 16], 13);
+    // An older generation (or 0) must not evict fresher pooled buffers.
+    pool.put(vec![9; 16], 5);
+    pool.put(vec![8; 16], 0);
+    let mut taken = Vec::new();
+    while let Some(buf) = pool.take(16) {
+        taken.push(buf.generation);
+    }
+    assert_eq!(taken.len(), POOL_CAPACITY);
+    assert_eq!(taken, vec![13, 12]);
+
+    // History boundary tests for `compute_sync_damage`.
+    let mut history = [(0u64, Damage::empty(128, 128)); HISTORY_LEN];
+    for step in 1..=(HISTORY_LEN as u64 + 1) {
+        let mut d = Damage::empty(128, 128);
+        d.mark_rect(((step as u16) % 2) * 64, 0, 16, 16);
+        history[(step as usize) % HISTORY_LEN] = (step, d);
+    }
+    // Exactly HISTORY_LEN steps behind: all entries present -> partial damage.
+    let exact = compute_sync_damage(1, 1 + HISTORY_LEN as u64, 128, 128, &history);
+    assert!(!exact.is_full());
+    // HISTORY_LEN + 1 steps behind: falls back to full damage.
+    let too_old = compute_sync_damage(1, 2 + HISTORY_LEN as u64, 128, 128, &history);
+    assert!(too_old.is_full());
+    // Generation 0 (uncommitted) always falls back to full damage.
+    assert!(compute_sync_damage(0, 2, 128, 128, &history).is_full());
+    // Dimension mismatch in history falls back to full damage.
+    let mut mismatched = history;
+    mismatched[2 % HISTORY_LEN] = (2, Damage::empty(64, 64));
+    assert!(compute_sync_damage(1, 2, 128, 128, &mismatched).is_full());
+}

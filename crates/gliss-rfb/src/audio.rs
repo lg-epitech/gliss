@@ -27,20 +27,24 @@ pub enum Event {
 }
 
 /// Selects the only format this crate captures. Sending it again changes nothing.
-pub(crate) fn format() -> Vec<u8> {
+pub(crate) fn format() -> [u8; 10] {
     // QEMU format 3 = signed 16-bit little endian, stereo, 48 kHz.
-    let mut bytes = vec![255, 1, 0, 2, 3, CHANNELS];
-    bytes.extend_from_slice(&SAMPLE_RATE.to_be_bytes());
-    bytes
+    let rate = SAMPLE_RATE.to_be_bytes();
+    [
+        255, 1, 0, 2, 3, CHANNELS, rate[0], rate[1], rate[2], rate[3],
+    ]
 }
 
-pub(crate) fn control(enabled: bool) -> Vec<u8> {
+pub(crate) fn control(enabled: bool) -> ([u8; 14], u8) {
     if !enabled {
-        return vec![255, 1, 0, 1];
+        let mut bytes = [0; 14];
+        bytes[..4].copy_from_slice(&[255, 1, 0, 1]);
+        return (bytes, 4);
     }
-    let mut bytes = format();
-    bytes.extend_from_slice(&[255, 1, 0, 0]);
-    bytes
+    let mut bytes = [0; 14];
+    bytes[..10].copy_from_slice(&format());
+    bytes[10..14].copy_from_slice(&[255, 1, 0, 0]);
+    (bytes, 14)
 }
 
 pub(crate) async fn read<R: AsyncRead + Unpin>(read: &mut R) -> Result<Event> {

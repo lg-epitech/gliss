@@ -165,15 +165,13 @@ pub fn channel() -> (Session, watch::Receiver<Request>, watch::Sender<Status>) {
     )
 }
 
-pub fn request(sender: &watch::Sender<Request>, value: Value) -> Result<()> {
-    #[derive(Deserialize)]
-    struct Control {
-        enabled: bool,
-        codec: Option<Codec>,
-    }
-    let control: Control = serde_json::from_value(value).context("invalid audio control")?;
-    let codec = if control.enabled {
-        Some(control.codec.context("audio codec is required")?)
+pub fn apply_request(
+    sender: &watch::Sender<Request>,
+    enabled: bool,
+    codec: Option<Codec>,
+) -> Result<()> {
+    let codec = if enabled {
+        Some(codec.context("audio codec is required")?)
     } else {
         None
     };
@@ -186,6 +184,17 @@ pub fn request(sender: &watch::Sender<Request>, value: Value) -> Result<()> {
         true
     });
     Ok(())
+}
+
+#[cfg(test)]
+pub fn request(sender: &watch::Sender<Request>, value: Value) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Control {
+        enabled: bool,
+        codec: Option<Codec>,
+    }
+    let control: Control = serde_json::from_value(value).context("invalid audio control")?;
+    apply_request(sender, control.enabled, control.codec)
 }
 
 pub async fn update_capture(
