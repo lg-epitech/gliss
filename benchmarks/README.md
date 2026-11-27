@@ -1,5 +1,10 @@
 # Measurements
 
+The November 27 archive contains six paired native replays, the QEMU rectangle
+fixtures, and before/after runs through both Distribox relays at 8 and 2 Mbit/s.
+It includes the replay drivers and chart generator.
+[Archive](distribox-frame-processing-2026-11-27.tar.gz) · [Report](../docs/distribox-frame-processing.md)
+
 [distribox-round2-2026-11-21.json.gz](distribox-round2-2026-11-21.json.gz)
 contains the four-round 8 Mbit/s and three-round 2 Mbit/s two-relay ABBA
 comparisons, the three-round 1 Mbit/s emulated WAN ABBA comparison, the
