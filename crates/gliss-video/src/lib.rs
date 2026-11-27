@@ -155,219 +155,105 @@ unsafe fn convert_rgba_rect_to_i420_avx2(
     v_plane: &mut [u8],
 ) {
     use std::arch::x86_64::*;
+
+    // Each RGBA quad produces two partial sums: 66R + 129G and 25B.
+    // Centering the input lets maddubs take unsigned coefficients and signed
+    // pixels. Neither partial sum saturates, and their sum fits in i16.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn luma(first: __m256i, second: __m256i) -> __m256i {
+        let center = _mm256_set1_epi8(i8::MIN);
+        let coefficients = _mm256_set1_epi32(i32::from_le_bytes([66, 129, 25, 0]));
+        let first = _mm256_maddubs_epi16(coefficients, _mm256_xor_si256(first, center));
+        let second = _mm256_maddubs_epi16(coefficients, _mm256_xor_si256(second, center));
+        let sums = _mm256_hadd_epi16(first, second);
+        // Undo centering, add the limited-range offset, then take the high byte.
+        // 128 * (66 + 129 + 25) + (16 << 8) = 126 << 8.
+        _mm256_srli_epi16::<8>(_mm256_add_epi16(sums, _mm256_set1_epi16(126 << 8)))
+    }
+
+    // Sum vertically adjacent bytes, then horizontally adjacent RGBA pixels.
+    // The four u16 channel sums fit in ten bits. Round just once per 2x2 block.
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn chroma_averages(top: __m256i, bottom: __m256i) -> __m256i {
+        let ones = _mm256_set1_epi8(1);
+        let lo = _mm256_maddubs_epi16(_mm256_unpacklo_epi8(top, bottom), ones);
+        let hi = _mm256_maddubs_epi16(_mm256_unpackhi_epi8(top, bottom), ones);
+        let even = _mm256_unpacklo_epi64(lo, hi);
+        let odd = _mm256_unpackhi_epi64(lo, hi);
+        let sums = _mm256_add_epi16(even, odd);
+        _mm256_srli_epi16::<2>(_mm256_add_epi16(sums, _mm256_set1_epi16(2)))
+    }
+
+    #[inline]
+    #[target_feature(enable = "avx2")]
+    fn chroma(first: __m256i, second: __m256i) -> __m128i {
+        let averages = _mm256_packus_epi16(first, second);
+        let u = _mm256_set1_epi32(i32::from_le_bytes([-38i8 as u8, -74i8 as u8, 112, 0]));
+        let v = _mm256_set1_epi32(i32::from_le_bytes([112, -94i8 as u8, -18i8 as u8, 0]));
+        let sums = _mm256_hadd_epi16(
+            _mm256_maddubs_epi16(averages, u),
+            _mm256_maddubs_epi16(averages, v),
+        );
+        // Adding 128 << 8 shifts each signed result into the u16 range.
+        // Each lane now holds pairs of U samples followed by pairs of V.
+        let biased = _mm256_add_epi16(sums, _mm256_set1_epi16(i16::MIN));
+        let high_bytes = _mm256_broadcastsi128_si256(_mm_setr_epi8(
+            1, 3, 5, 7, 9, 11, 13, 15, -1, -1, -1, -1, -1, -1, -1, -1,
+        ));
+        let uv = _mm256_shuffle_epi8(biased, high_bytes);
+        _mm_unpacklo_epi16(
+            _mm256_castsi256_si128(uv),
+            _mm256_extracti128_si256::<1>(uv),
+        )
+    }
+
     let Rect { x0, y0, bw, bh } = rect;
+    let simd_width = bw & !15;
+    for y in (y0..y0 + bh).step_by(2) {
+        let pos = y * stride_w + x0;
+        let uv_pos = (y / 2) * (stride_w / 2) + x0 / 2;
+        let top = &rgba[pos * 4..(pos + bw) * 4];
+        let bottom = &rgba[(pos + stride_w) * 4..(pos + stride_w + bw) * 4];
+        let (rows, next) = y_plane[pos..pos + stride_w + bw].split_at_mut(stride_w);
+        let y_top = &mut rows[..bw];
+        let y_bottom = &mut next[..bw];
+        let u = &mut u_plane[uv_pos..uv_pos + bw / 2];
+        let v = &mut v_plane[uv_pos..uv_pos + bw / 2];
 
-    let k_r_lo = _mm256_setr_epi8(
-        0, -1, 4, -1, 8, -1, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 4, -1, 8, -1, 12, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1,
-    );
-    let k_r_hi = _mm256_setr_epi8(
-        -1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 4, -1, 8, -1, 12, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, 0, -1, 4, -1, 8, -1, 12, -1,
-    );
-    let k_g_lo = _mm256_setr_epi8(
-        1, -1, 5, -1, 9, -1, 13, -1, -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 5, -1, 9, -1, 13, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1,
-    );
-    let k_g_hi = _mm256_setr_epi8(
-        -1, -1, -1, -1, -1, -1, -1, -1, 1, -1, 5, -1, 9, -1, 13, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, 1, -1, 5, -1, 9, -1, 13, -1,
-    );
-    let k_b_lo = _mm256_setr_epi8(
-        2, -1, 6, -1, 10, -1, 14, -1, -1, -1, -1, -1, -1, -1, -1, -1, 2, -1, 6, -1, 10, -1, 14, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1,
-    );
-    let k_b_hi = _mm256_setr_epi8(
-        -1, -1, -1, -1, -1, -1, -1, -1, 2, -1, 6, -1, 10, -1, 14, -1, -1, -1, -1, -1, -1, -1, -1,
-        -1, 2, -1, 6, -1, 10, -1, 14, -1,
-    );
-    let shuf_uv = _mm256_setr_epi8(
-        0, 4, 8, 12, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 4, 8, 12, -1, -1, -1, -1,
-        -1, -1, -1, -1, -1, -1, -1, -1,
-    );
-
-    let c66 = _mm256_set1_epi16(66);
-    let c129 = _mm256_set1_epi16(129);
-    let c25 = _mm256_set1_epi16(25);
-    let c16 = _mm256_set1_epi16(16);
-    let c128 = _mm256_set1_epi16(128);
-    let cm38 = _mm256_set1_epi16(-38);
-    let cm74 = _mm256_set1_epi16(-74);
-    let c112 = _mm256_set1_epi16(112);
-    let cm94 = _mm256_set1_epi16(-94);
-    let cm18 = _mm256_set1_epi16(-18);
-    let c2_even = _mm256_set1_epi32(2);
-    let mask_even = _mm256_set1_epi32(0x0000_ffff);
-
-    let row_rgba = stride_w * 4;
-    let uv_w = stride_w / 2;
-    let simd_w = bw & !15;
-    let tail_w = bw - simd_w;
-
-    for cy in (y0 / 2)..((y0 + bh) / 2) {
-        let r0_base = (cy * 2) * row_rgba + x0 * 4;
-        let r1_base = (cy * 2 + 1) * row_rgba + x0 * 4;
-        let y0_base = (cy * 2) * stride_w + x0;
-        let y1_base = (cy * 2 + 1) * stride_w + x0;
-        let uv_base = cy * uv_w + x0 / 2;
-
-        // SAFETY: caller verified x0 + bw <= stride_w and y0 + bh <= height,
-        // and simd_w <= bw is a multiple of 16, so all accesses stay in bounds.
-        unsafe {
-            let r0_ptr = rgba.as_ptr().add(r0_base);
-            let r1_ptr = rgba.as_ptr().add(r1_base);
-            let y0_ptr = y_plane.as_mut_ptr().add(y0_base);
-            let y1_ptr = y_plane.as_mut_ptr().add(y1_base);
-            let u_ptr = u_plane.as_mut_ptr().add(uv_base);
-            let v_ptr = v_plane.as_mut_ptr().add(uv_base);
-
-            let mut x = 0usize;
-            while x < simd_w {
-                let a0 = _mm256_loadu_si256(r0_ptr.add(x * 4).cast());
-                let a1 = _mm256_loadu_si256(r0_ptr.add(x * 4 + 32).cast());
-                let r0 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(a0, k_r_lo),
-                    _mm256_shuffle_epi8(a1, k_r_hi),
+        for x in (0..simd_width).step_by(16) {
+            // SAFETY: each input row has bw * 4 bytes. x + 16 <= bw, covering
+            // both unaligned 32-byte loads, sixteen Y and eight U/V stores.
+            unsafe {
+                let t = top.as_ptr().add(x * 4);
+                let b = bottom.as_ptr().add(x * 4);
+                let t0 = _mm256_loadu_si256(t.cast());
+                let t1 = _mm256_loadu_si256(t.add(32).cast());
+                let b0 = _mm256_loadu_si256(b.cast());
+                let b1 = _mm256_loadu_si256(b.add(32).cast());
+                let ys = _mm256_packus_epi16(luma(t0, t1), luma(b0, b1));
+                // Each 128-bit lane holds groups of four top and bottom Y.
+                let lo = _mm256_castsi256_si128(ys);
+                let hi = _mm256_extracti128_si256::<1>(ys);
+                _mm_storeu_si128(y_top.as_mut_ptr().add(x).cast(), _mm_unpacklo_epi32(lo, hi));
+                _mm_storeu_si128(
+                    y_bottom.as_mut_ptr().add(x).cast(),
+                    _mm_unpackhi_epi32(lo, hi),
                 );
-                let g0 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(a0, k_g_lo),
-                    _mm256_shuffle_epi8(a1, k_g_hi),
-                );
-                let b0 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(a0, k_b_lo),
-                    _mm256_shuffle_epi8(a1, k_b_hi),
-                );
-                // 66*r + 129*g + 25*b <= 56100 <= u16::MAX; srli_epi16 is unsigned >> 8.
-                let yy0 = _mm256_add_epi16(
-                    _mm256_srli_epi16(
-                        _mm256_add_epi16(
-                            _mm256_add_epi16(
-                                _mm256_mullo_epi16(r0, c66),
-                                _mm256_mullo_epi16(g0, c129),
-                            ),
-                            _mm256_mullo_epi16(b0, c25),
-                        ),
-                        8,
-                    ),
-                    c16,
-                );
-                let yy0_lin = _mm256_permute4x64_epi64(yy0, 0xD8);
-
-                let c0 = _mm256_loadu_si256(r1_ptr.add(x * 4).cast());
-                let c1 = _mm256_loadu_si256(r1_ptr.add(x * 4 + 32).cast());
-                let r1 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(c0, k_r_lo),
-                    _mm256_shuffle_epi8(c1, k_r_hi),
-                );
-                let g1 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(c0, k_g_lo),
-                    _mm256_shuffle_epi8(c1, k_g_hi),
-                );
-                let b1 = _mm256_or_si256(
-                    _mm256_shuffle_epi8(c0, k_b_lo),
-                    _mm256_shuffle_epi8(c1, k_b_hi),
-                );
-                let yy1 = _mm256_add_epi16(
-                    _mm256_srli_epi16(
-                        _mm256_add_epi16(
-                            _mm256_add_epi16(
-                                _mm256_mullo_epi16(r1, c66),
-                                _mm256_mullo_epi16(g1, c129),
-                            ),
-                            _mm256_mullo_epi16(b1, c25),
-                        ),
-                        8,
-                    ),
-                    c16,
-                );
-                let yy1_lin = _mm256_permute4x64_epi64(yy1, 0xD8);
-
-                let packed_y =
-                    _mm256_permute4x64_epi64(_mm256_packus_epi16(yy0_lin, yy1_lin), 0xD8);
-                _mm_storeu_si128(y0_ptr.add(x).cast(), _mm256_castsi256_si128(packed_y));
-                _mm_storeu_si128(y1_ptr.add(x).cast(), _mm256_extracti128_si256(packed_y, 1));
-
-                let rs = _mm256_add_epi16(r0, r1);
-                let gs = _mm256_add_epi16(g0, g1);
-                let bs = _mm256_add_epi16(b0, b1);
-                let ra = _mm256_srli_epi16(
-                    _mm256_and_si256(
-                        _mm256_add_epi16(_mm256_add_epi16(rs, _mm256_srli_epi32(rs, 16)), c2_even),
-                        mask_even,
-                    ),
-                    2,
-                );
-                let ga = _mm256_srli_epi16(
-                    _mm256_and_si256(
-                        _mm256_add_epi16(_mm256_add_epi16(gs, _mm256_srli_epi32(gs, 16)), c2_even),
-                        mask_even,
-                    ),
-                    2,
-                );
-                let ba = _mm256_srli_epi16(
-                    _mm256_and_si256(
-                        _mm256_add_epi16(_mm256_add_epi16(bs, _mm256_srli_epi32(bs, 16)), c2_even),
-                        mask_even,
-                    ),
-                    2,
-                );
-
-                // U and V sums stay strictly inside [-28560, +28560] <= i16 bounds.
-                let uu = _mm256_add_epi16(
-                    _mm256_srai_epi16(
-                        _mm256_add_epi16(
-                            _mm256_add_epi16(
-                                _mm256_mullo_epi16(ra, cm38),
-                                _mm256_mullo_epi16(ga, cm74),
-                            ),
-                            _mm256_mullo_epi16(ba, c112),
-                        ),
-                        8,
-                    ),
-                    c128,
-                );
-                let vv = _mm256_add_epi16(
-                    _mm256_srai_epi16(
-                        _mm256_add_epi16(
-                            _mm256_mullo_epi16(ra, c112),
-                            _mm256_add_epi16(
-                                _mm256_mullo_epi16(ga, cm94),
-                                _mm256_mullo_epi16(ba, cm18),
-                            ),
-                        ),
-                        8,
-                    ),
-                    c128,
-                );
-
-                let u_b = _mm256_shuffle_epi8(uu, shuf_uv);
-                let v_b = _mm256_shuffle_epi8(vv, shuf_uv);
-                let u_lin = _mm_unpacklo_epi16(
-                    _mm256_castsi256_si128(u_b),
-                    _mm256_extracti128_si256(u_b, 1),
-                );
-                let v_lin = _mm_unpacklo_epi16(
-                    _mm256_castsi256_si128(v_b),
-                    _mm256_extracti128_si256(v_b, 1),
-                );
-                std::ptr::write_unaligned(u_ptr.add(x / 2).cast::<i64>(), _mm_cvtsi128_si64(u_lin));
-                std::ptr::write_unaligned(v_ptr.add(x / 2).cast::<i64>(), _mm_cvtsi128_si64(v_lin));
-
-                x += 16;
+                let uv = chroma(chroma_averages(t0, b0), chroma_averages(t1, b1));
+                _mm_storel_epi64(u.as_mut_ptr().add(x / 2).cast(), uv);
+                _mm_storel_epi64(v.as_mut_ptr().add(x / 2).cast(), _mm_srli_si128::<8>(uv));
             }
         }
-
-        if tail_w > 0 {
-            let tail_px = simd_w;
-            let tail_uv = simd_w / 2;
-            let (y_row0, y_row1) = y_plane[y0_base..y1_base + bw].split_at_mut(stride_w);
+        if simd_width < bw {
             convert_rgba_pair_scalar(
-                &rgba[r0_base + tail_px * 4..r0_base + bw * 4],
-                &rgba[r1_base + tail_px * 4..r1_base + bw * 4],
-                &mut y_row0[tail_px..bw],
-                &mut y_row1[tail_px..bw],
-                &mut u_plane[uv_base + tail_uv..uv_base + bw / 2],
-                &mut v_plane[uv_base + tail_uv..uv_base + bw / 2],
+                &top[simd_width * 4..],
+                &bottom[simd_width * 4..],
+                &mut y_top[simd_width..],
+                &mut y_bottom[simd_width..],
+                &mut u[simd_width / 2..],
+                &mut v[simd_width / 2..],
             );
         }
     }

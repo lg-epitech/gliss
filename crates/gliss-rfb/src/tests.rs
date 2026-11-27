@@ -148,6 +148,20 @@ async fn decoding_returns_to_the_runtime_as_its_work_adds_up() {
         (30..=45).contains(&small),
         "another task ran {small} times during 3200 small rectangles"
     );
+
+    // These 1024 Raw rectangles fit in one read buffer. Rectangle work alone
+    // requires eight yields, even when the pixel bytes are already available.
+    let count = 1024u16;
+    let mut wire = vec![0, 0];
+    wire.extend_from_slice(&count.to_be_bytes());
+    for _ in 0..count {
+        rows(&mut wire, 1, 1);
+    }
+    let raw = turns_of_another_task(32, 32, wire).await;
+    assert!(
+        raw >= 8,
+        "another task ran {raw} times during buffered Raw decoding"
+    );
 }
 
 fn rectangle(wire: &mut Vec<u8>, x: u16, y: u16, width: u16, height: u16, encoding: i32) {
@@ -249,6 +263,60 @@ async fn a_change_of_size_does_not_renew_the_pixel_budget_of_an_update() {
     assert_eq!(updated(3, &shrunk).await.unwrap(), (100, 30));
     rows(&mut shrunk, 100, 1);
     assert!(over_budget(updated(4, &shrunk).await));
+}
+
+#[tokio::test]
+async fn split_and_buffered_raw_rectangles_preserve_row_padding_and_message_boundaries() {
+    let mut wire = vec![0, 0, 0, 1];
+    rectangle(&mut wire, 0, 0, 5, 3, 0);
+    wire.extend([0, 0, 77, 0].repeat(15));
+
+    wire.extend_from_slice(&[0, 0, 0, 3]);
+    rectangle(&mut wire, 1, 0, 2, 3, 0);
+    let split = wire.len() + 9; // One full row and one byte of the next pixel.
+    for red in 1..=6 {
+        wire.extend_from_slice(&[0, 0, red, 0]);
+    }
+    // This whole Raw rectangle and the following CopyRect arrive together.
+    rectangle(&mut wire, 3, 1, 2, 2, 0);
+    for red in 7..=10 {
+        wire.extend_from_slice(&[0, 0, red, 0]);
+    }
+    rectangle(&mut wire, 0, 0, 1, 3, 1);
+    wire.extend_from_slice(&[0, 4, 0, 0]); // Copy column 4 to column 0.
+    wire.push(2); // Bell, a separate server message.
+
+    let tail = wire.split_off(split);
+    let stream = std::io::Cursor::new(wire).chain(std::io::Cursor::new(tail));
+    let info = ServerInfo {
+        width: 5,
+        height: 3,
+        name: "test".into(),
+        protocol_version: (3, 8),
+    };
+    let (mut reader, _writer, _) = start_tasks(
+        stream,
+        tokio::io::sink(),
+        Frame::new(5, 3).unwrap(),
+        info,
+        Layout::Bgrx,
+    );
+    let PooledEvent::Frame(before) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected initial frame");
+    };
+    let PooledEvent::Frame(after) = reader.read_pooled_event().await.unwrap() else {
+        panic!("expected updated frame");
+    };
+    let expected: Vec<u8> = [77, 1, 2, 77, 77, 8, 3, 4, 7, 8, 10, 5, 6, 9, 10]
+        .into_iter()
+        .flat_map(|red| [red, 0, 0, 255])
+        .collect();
+    assert_eq!(after.pixels, expected);
+    assert_eq!(before.pixels, [77, 0, 0, 255].repeat(15));
+    assert!(matches!(
+        reader.read_pooled_event().await.unwrap(),
+        PooledEvent::Bell
+    ));
 }
 
 #[tokio::test]

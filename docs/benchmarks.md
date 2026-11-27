@@ -1,5 +1,9 @@
 # Benchmarks
 
+The beta.3 comparison measures CPU spent reading QEMU rectangles, preparing
+H.264 input, and streaming a 1080p desktop through both Distribox relays.
+[Measurements and charts](distribox-frame-processing.md)
+
 [Round-2 Distribox CPU and latency optimizations](distribox-performance-round2.md)
 measures Gliss, QEMU, Chromium and Distribox relay CPU, interactive latency and
 emulated 1 Mbit/s WAN behavior across 8 Mbit/s and 2 Mbit/s targets.
