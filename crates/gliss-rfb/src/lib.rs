@@ -1095,6 +1095,57 @@ async fn read_rect_header<R: AsyncBufRead + Unpin>(read: &mut R) -> Result<[u8; 
     Ok(header)
 }
 
+fn rectangle_fields(header: &[u8; 12]) -> (u16, u16, u16, u16, i32) {
+    (
+        u16::from_be_bytes([header[0], header[1]]),
+        u16::from_be_bytes([header[2], header[3]]),
+        u16::from_be_bytes([header[4], header[5]]),
+        u16::from_be_bytes([header[6], header[7]]),
+        i32::from_be_bytes([header[8], header[9], header[10], header[11]]),
+    )
+}
+
+/// Copy packed wire rows into a rectangle of the wider RGBA framebuffer.
+fn copy_raw_rows(layout: Layout, dst: &mut [u8], stride: usize, src: &[u8], row_bytes: usize) {
+    if row_bytes == stride {
+        layout.copy_to_rgba(&mut dst[..src.len()], src);
+    } else {
+        for (row, wire) in dst.chunks_mut(stride).zip(src.chunks_exact(row_bytes)) {
+            layout.copy_to_rgba(&mut row[..row_bytes], wire);
+        }
+    }
+}
+
+/// Process a complete Raw rectangle already in the input buffer, continuing
+/// to use the preceding rectangle's exclusive framebuffer borrow.
+fn buffered_raw(
+    buf: &[u8],
+    frame: &mut Frame,
+    update: &mut Update,
+    layout: Layout,
+) -> Result<usize> {
+    let Some((header, body)) = buf.split_first_chunk::<12>() else {
+        return Ok(0);
+    };
+    let (x, y, width, height, encoding) = rectangle_fields(header);
+    if encoding != 0 || width == 0 || height == 0 {
+        return Ok(0);
+    }
+    bounds(frame, x, y, width, height)?;
+    let row_bytes = usize::from(width) * 4;
+    let Some(pixels) = body.get(..row_bytes * usize::from(height)) else {
+        return Ok(0);
+    };
+
+    update.work += RECTANGLE_WORK;
+    update.draws(x, y, width, height)?;
+    let stride = usize::from(frame.width) * 4;
+    let offset = usize::from(y) * stride + usize::from(x) * 4;
+    let dst = &mut frame.pixels[offset..];
+    copy_raw_rows(layout, dst, stride, pixels, row_bytes);
+    Ok(header.len() + pixels.len())
+}
+
 /// Reads `dst.len()` wire bytes (a multiple of 4) and writes opaque RGBA into
 /// `dst` in one fused pass straight out of the `AsyncBufRead` buffer.
 async fn read_pixels_converted<R: AsyncBufRead + Unpin>(
@@ -1141,6 +1192,45 @@ async fn read_pixels_converted<R: AsyncBufRead + Unpin>(
     Ok(())
 }
 
+/// Convert complete rows directly from each buffer fill. Only a row split
+/// across fills needs the decoder that carries partial pixels.
+async fn read_strided_pixels<R: AsyncBufRead + Unpin>(
+    read: &mut R,
+    pixels: &mut [u8],
+    stride: usize,
+    row_bytes: usize,
+    height: usize,
+    layout: Layout,
+) -> Result<()> {
+    let mut row = 0;
+    while row < height {
+        let buf = read.fill_buf().await?;
+        let remaining = height - row;
+        let rows = if buf.len() >= remaining * row_bytes {
+            remaining
+        } else {
+            buf.len() / row_bytes
+        };
+        let start = row * stride;
+        if rows == 0 {
+            read_pixels_converted(read, &mut pixels[start..start + row_bytes], layout).await?;
+            row += 1;
+        } else {
+            let bytes = rows * row_bytes;
+            copy_raw_rows(
+                layout,
+                &mut pixels[start..],
+                stride,
+                &buf[..bytes],
+                row_bytes,
+            );
+            read.consume(bytes);
+            row += rows;
+        }
+    }
+    Ok(())
+}
+
 fn copy_damaged_pixels(dst: &mut [u8], src: &[u8], width: u16, damage: &Damage) {
     if damage.is_full() {
         dst.copy_from_slice(src);
@@ -1181,8 +1271,8 @@ struct Surface {
     pixels: Layout,
 }
 
-async fn decode<R: AsyncBufRead + Unpin>(
-    mut read: R,
+async fn decode<R: AsyncRead + Unpin>(
+    mut read: BufReader<R>,
     surface: Surface,
     layout: Arc<Mutex<Option<Screen>>>,
     commands: &mpsc::Sender<WriteCommand>,
@@ -1210,15 +1300,12 @@ async fn decode<R: AsyncBufRead + Unpin>(
                 read.read_u8().await?;
                 let count = read.read_u16().await?;
                 let mut update = Update::new(&frame);
-                for rectangle_index in 0..count {
+                let mut remaining = count;
+                while remaining > 0 {
+                    remaining -= 1;
                     update.share_worker().await;
                     let header = read_rect_header(&mut read).await?;
-                    let x = u16::from_be_bytes([header[0], header[1]]);
-                    let y = u16::from_be_bytes([header[2], header[3]]);
-                    let width = u16::from_be_bytes([header[4], header[5]]);
-                    let height = u16::from_be_bytes([header[6], header[7]]);
-                    let encoding =
-                        i32::from_be_bytes([header[8], header[9], header[10], header[11]]);
+                    let (x, y, width, height, encoding) = rectangle_fields(&header);
                     match encoding {
                         audio::ENCODING => {
                             audio.available.send_replace(true);
@@ -1245,11 +1332,30 @@ async fn decode<R: AsyncBufRead + Unpin>(
                                     read_pixels_converted(&mut read, rows, pixel_layout).await?;
                                 }
                             } else {
-                                for row in usize::from(y)..usize::from(y) + usize::from(height) {
-                                    let start = row * stride + usize::from(x) * 4;
-                                    let pixels = &mut frame_mut.pixels[start..start + row_bytes];
-                                    read_pixels_converted(&mut read, pixels, pixel_layout).await?;
+                                let offset = usize::from(y) * stride + usize::from(x) * 4;
+                                read_strided_pixels(
+                                    &mut read,
+                                    &mut frame_mut.pixels[offset..],
+                                    stride,
+                                    row_bytes,
+                                    usize::from(height),
+                                    pixel_layout,
+                                )
+                                .await?;
+                            }
+                            // Leave the next rectangle to share_worker when a yield is due.
+                            while remaining > 0 && update.work + RECTANGLE_WORK < YIELD_WORK {
+                                let consumed = buffered_raw(
+                                    read.buffer(),
+                                    frame_mut,
+                                    &mut update,
+                                    pixel_layout,
+                                )?;
+                                if consumed == 0 {
+                                    break;
                                 }
+                                read.consume(consumed);
+                                remaining -= 1;
                             }
                         }
                         1 => {
@@ -1325,7 +1431,7 @@ async fn decode<R: AsyncBufRead + Unpin>(
                         }
                         -223 => {
                             ensure!(
-                                rectangle_index + 1 == count,
+                                remaining == 0,
                                 "RFB DesktopSize must be the final rectangle"
                             );
                             ensure!(x == 0 && y == 0, "invalid RFB DesktopSize origin");
