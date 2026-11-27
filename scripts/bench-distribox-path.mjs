@@ -183,9 +183,11 @@ async function runScenario(name, {vm, server, viewer, chromium, link}) {
     : await play(plan.events, plan.duration);
   const after = processTimes(), to = clock();
   if (link?.failure()) throw new Error(link.failure());
-  if (spec.path) await play([{at: 0, message: {type: 'pointer', x: width >> 1, y: height >> 1, buttons: 0}, tag: 'release'}], 0);
   await sleep(GRACE_MS);  // late frames may still answer the last probes
   const taken = await page.evaluate(() => window.glissBench.take());
+  // The guest can coalesce the final move and button-up before it draws the window.
+  // Keep the button down until the last position has had its observation window.
+  if (spec.path) await play([{at: 0, message: {type: 'pointer', x: width >> 1, y: height >> 1, buttons: 0}, tag: 'release'}], 0);
   const cpu = {server: cpuBetween(before, after, [server.pid]), qemu: cpuBetween(before, after, [vm.pid]),
     qemuGuest: cpuBetween(before, after, [vm.pid], true), chromium: cpuBetween(before, after, chromium)};
   return {...taken, span: span.slice(0, 2), wire: span[2], host: [from, to], cpu};
